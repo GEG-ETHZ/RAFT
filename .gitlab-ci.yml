@@ -1,0 +1,60 @@
+default:
+  tags:
+    - laptop
+
+stages:
+  - lint
+  - typecheck
+  - test
+  - tag
+
+# Install project dependencies into the virtual environment before every job
+before_script:
+  - uv sync
+
+lint_code:
+  stage: lint
+  script:
+    - uv run ruff format --check .
+    - uv run ruff check .
+
+mypy_check:
+  stage: typecheck
+  script:
+    - uv run mypy .
+
+pytest:
+  stage: test
+  script:
+    - uv run pytest -v
+
+# Automatically tag the source branch tip before it is deleted by the squash
+# merge. This preserves CHANGELOG.md comparison links (see CONTRIBUTING.md §
+# "Tagging deleted branches"). Runs only in merge-request pipelines, and only
+# for topic branches (not develop / main).
+tag_branch:
+  stage: tag
+  before_script: []  # skip uv sync — git is all we need
+  script:
+    - BRANCH="$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
+    # Rewrite the remote URL to authenticate with a Project Access Token.
+    # By default the git remote uses the CI_JOB_TOKEN credential, which GitLab
+    # only grants read (clone/fetch) access for git operations. To push tags we
+    # need write_repository permission, which requires a separate Project Access
+    # Token stored as the CI/CD variable GITLAB_PUSH_TOKEN (see CONTRIBUTING.md
+    # § "Tagging deleted branches" for setup instructions). The oauth2: prefix
+    # is the standard username GitLab expects when authenticating with a PAT
+    # over HTTPS.
+    - git remote set-url origin "https://oauth2:${GITLAB_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    # Guard: if a newer commit was pushed while this pipeline was running,
+    # skip tagging — the pipeline on that newer commit will tag correctly.
+    - REMOTE_TIP=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+    - |
+      if [ "$CI_COMMIT_SHA" != "$REMOTE_TIP" ]; then
+        echo "Skipping tag: pipeline commit $CI_COMMIT_SHA is stale (branch tip is $REMOTE_TIP)."
+        exit 0
+      fi
+    - git tag --force "bak/$BRANCH"
+    - git push --force origin "refs/tags/bak/$BRANCH"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME !~ /^(main|develop)$/'

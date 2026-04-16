@@ -1,0 +1,51 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+default_stages: [pre-commit, pre-push]
+
+repos:
+  # Fast checks (run on both commit and push just to be safe)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.5
+    hooks:
+      - id: ruff
+        args: [ --fix ]
+      - id: ruff-format
+
+  # Strict/Slow checks (run ONLY on push)
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+        args: [ . ]
+
+  # Built-in hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+
+      - id: end-of-file-fixer
+
+      - id: check-yaml
+
+      - id: check-added-large-files
+      - id: no-commit-to-branch # This perfectly replaces the custom bash script by blocking commits AND pushes to main/develop
+        args: [--branch, main, --branch, develop]
+        stages: [pre-commit, pre-push]
+
+  # Tests (run ONLY on push)
+  - repo: local
+    hooks:
+      - id: pytest
+        name: Run test suite
+        entry: uv run pytest -v
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+

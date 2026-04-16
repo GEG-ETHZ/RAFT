@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+*.DS_Store
+.duckversions/
+
+data/*
+!data/**/.gitkeep
+outputs/*
+!outputs/**/.gitkeep
+
+# Ignore Jupyter notebooks and checkpoints if users create them anyway
+*.ipynb
+.ipynb_checkpoints/
