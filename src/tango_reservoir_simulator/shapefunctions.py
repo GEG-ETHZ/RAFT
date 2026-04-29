@@ -4,7 +4,7 @@ import numpy as np
 import numpy.typing as npt
 
 
-def getNmatrix(parent_coords: npt.NDarray[np.float64]) -> npt.NDarray[np.float64]:
+def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Get the shape function matrix from parent coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
     #
@@ -27,8 +27,8 @@ def getNmatrix(parent_coords: npt.NDarray[np.float64]) -> npt.NDarray[np.float64
 
 
 def getBmatrix(
-    parents_coords: np.tNDarray[np.float64], phys_coords: npt.NDarray[np.float64]
-) -> npt.NDarray[np.float64]:
+    parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Get the gradient and Jacobian matrices from parent and physical coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
     #
