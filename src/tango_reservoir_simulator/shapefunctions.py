@@ -77,7 +77,8 @@ def getBmatrix(
                     1 + xi + eta + xi * eta,
                     1 - xi + eta - xi * eta,
                 ],
-            ]
+            ],
+            dtype=np.float64,
         )
     )
 
