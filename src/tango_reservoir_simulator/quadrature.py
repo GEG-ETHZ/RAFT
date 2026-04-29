@@ -3,7 +3,7 @@
 import numpy as np
 
 
-def getquadrature(qt: int, ndim: int):
+def getquadrature(qt: int, ndim: int) -> np.NDarray[np.float64]:
     """Returns the Gauss quadrature points and weights for the
     specified order of integration and number of dimensions.
     """
