@@ -87,6 +87,6 @@ def getBmatrix(
     # Jinv = 1/(J[1,1]*J[2,2] - J[1,2]*J[2,2])*np.array([ [J[2,2], -J[1,2]], [-J[2,1], J[1,1]]  ])
     # B = Jinv @ dNdxi
 
-    B = np.linalg.solve(J, dNdxi)
+    B = np.linalg.solve(J, dNdxi).astype(np.float64)
 
     return B, J
