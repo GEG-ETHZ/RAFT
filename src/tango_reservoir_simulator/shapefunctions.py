@@ -28,7 +28,7 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
 
 def getBmatrix(
     parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the gradient and Jacobian matrices from parent and physical coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
     #
