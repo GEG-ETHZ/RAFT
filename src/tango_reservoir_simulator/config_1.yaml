@@ -1,0 +1,50 @@
+mesh:
+  file: box3D.msh
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod:  20.0e+9 # Pa
+      density: 2700       # kg/m^3
+      therm_cond: 3.0   # W/mK
+      specific_heat: 900       # J/kgK
+      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
+
+  # Fluid parameters
+  fluid:
+      bulk_mod: 2.10e+9       # Pa
+      density:      925      # kg/m^3
+      therm_cond:   0.6   # W/mK
+      therm_expansion: 200.0e-6 # 1/K
+      specific_heat: 4250      # J/kgK
+      viscosity: 0.7e-3    # m^2 (permeability)
+
+  # Coupled parameters
+  porosity: 0.01
+  biot_coeff: 0.5
+  permeability: 1.0e-14  # m^2
+
+initial_conditions:
+  geothermal_gradient: 0.0   # deg C/m
+  T_surf: 200                # deg C
+  pressure_gradient: 0.0     # Pa/m
+  p_surf: 0
+
+
+boundary_conditions:
+  pressure:
+    value: 0.0e6
+    fix_all_boundaries: true
+
+  temperature_fixed:
+      - {node: 1, value: 70}
+
+  fluid_flow:
+      - {node: 1, value: -0.001}
+
+simulation:
+  t0: 0
+  tend: 3e+9
+  timestep: 3e+6
+
+numerical:
