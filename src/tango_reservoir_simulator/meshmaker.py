@@ -1,7 +1,5 @@
 """Import mesh and create mesh objects."""
 
-from pathlib import Path
-
 import numpy as np
 import numpy.typing as npt
 
@@ -84,6 +82,6 @@ def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDAr
     return nodes, conn
 
 
-script_dir = Path(__file__).parent
-config_path = script_dir.parent / "config" / "box3D_B27.msh"
-[nodes, conn] = loadmesh(str(config_path), 3)
+# script_dir = Path(__file__).parent
+# config_path = script_dir.parent / "config" / "box3D_B27.msh"
+# [nodes, conn] = loadmesh(str(config_path), 3)
