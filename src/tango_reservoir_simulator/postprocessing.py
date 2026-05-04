@@ -1,7 +1,9 @@
 """Postprocessing of FEM file."""
 
+import os
+
 import numpy as np
-from shapefunctions import getBmatrix
+from writevtk import write_mesh2vtk
 
 
 def compute_fluid_flux(mesh, mat, p):
@@ -9,6 +11,8 @@ def compute_fluid_flux(mesh, mat, p):
 
     Returns nsd x nn array of fluxes at each node.
     """
+    from shapefunctions import getBmatrix
+
     nn = mesh["nn"]
     nsd = mesh["nsd"]
     ne = mesh["ne"]
@@ -102,3 +106,52 @@ def compute_fluid_flux(mesh, mat, p):
         q[n, :] /= nonzero_count
 
     return q
+
+
+def postprocessing(n, mesh, config, p, T):  # noqa
+    """Postprocessing of FEM data.
+
+    Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
+    """
+    # --- Path Management
+    base_path = config["simulation"]["output_directory"]
+    io_path = os.path.join(base_path, config)
+
+    if not os.path.exists(io_path):
+        os.makedirs(io_path)
+
+    name = f"Solution.vtk.{n}"
+    filename = os.path.join(io_path, name)
+
+    # --- Calculate Fluxes ---
+    # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
+    flux = compute_fluid_flux(mesh, config["material"], p, T)
+
+    # Calculate Peclet Number
+    if mesh["nsd"] == 3:
+        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[3, :] ** 2)
+    else:
+        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2)
+
+    pe = (config["material"]["fluid"]["specific_heat"] * config["material"]["fluid"]["density"] * q) / config[
+        "material"
+    ]["therm_cond_eff"]
+
+    # --- Sanitize and Collect Scalar Data ---
+    def sanitize(data, threshold=1e-9):
+        data[np.abs(data) < threshold] = threshold
+        return data
+
+    # Collect scalar data in an dictionary for export
+    scalardata = [
+        {"name": "T", "data": sanitize(T.copy())},
+        {"name": "p", "data": sanitize(p.copy())},
+        {"name": "Pe", "data": sanitize(pe)},
+    ]
+
+    # --- Vector Data ---
+    vectordata = [{"name": "flux", "data": flux.T}]
+
+    # --- Final Export ---
+    # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
+    write_mesh2vtk(filename, "", mesh["nodes"], mesh["conn"], scalardata, vectordata)

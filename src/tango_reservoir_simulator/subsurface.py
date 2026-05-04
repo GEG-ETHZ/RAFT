@@ -26,8 +26,8 @@ def load_config(path):
     )
     # effective conductivity
     lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
-    # effective heat capacity
-    cp_e = (
+    # effective volumetric heat capacity
+    m_e = (
         phi * mat["fluid"]["specific_heat"] * mat["fluid"]["density"]
         + (1 - phi) * mat["solid"]["specific_heat"] * mat["solid"]["density"]
     )
@@ -35,7 +35,7 @@ def load_config(path):
     config["material"]["storage_mod"] = M
     config["material"]["therm_cond_eff"] = lambda_e
     config["material"]["therm_expansion_eff"] = a_e
-    config["material"]["volumetric_heat_capacity_eff"] = cp_e
+    config["material"]["volumetric_heat_capacity_eff"] = m_e
 
     return config
 
@@ -56,6 +56,7 @@ def load_mesh(config_mesh):
     mesh["nn"] = np.shape(nodes)[0]  # number of nodes
     mesh["ne"] = np.shape(conn)[0]  # number of elements
     mesh["nne"] = np.shape(conn)[1]  # number of nodes per element
+    mesh["nsd"] = np.shape(nodes)[1]  # number of space dimensions
 
     return mesh
 
