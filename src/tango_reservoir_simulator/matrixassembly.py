@@ -15,7 +15,7 @@ def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):  # noqa: N803
             A[gi, gj] += block[li, lj]
 
 
-def integratelinearmatices(mesh: dict, mat: dict) -> dict:
+def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
     """Integrate linear matrices outside of time integration loop."""
     # ----- material properties
     kf = mat["permeability"]
@@ -60,7 +60,7 @@ def integratelinearmatices(mesh: dict, mat: dict) -> dict:
 
     # ----- gravity vector
     g = np.zeros((nsd, 1))
-    g[nsd] = -9.81
+    g[nsd - 1] = -9.81
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     Kpp = lil_matrix((nn, nn))  # Pressure conductance matrix
@@ -71,7 +71,7 @@ def integratelinearmatices(mesh: dict, mat: dict) -> dict:
     KbT = lil_matrix((nn, nn))  # Pressure buoyancy matrix - body
 
     # ----- Quadrature points
-    W, Q = getquadrature(2, nsd)  # body
+    Q, W = getquadrature(2, nsd)  # body
     nq = len(W)
 
     # ----- Matrix integration element loop
@@ -91,14 +91,14 @@ def integratelinearmatices(mesh: dict, mat: dict) -> dict:
             Wi = W[q]
 
             B, Je = getBmatrix(xi, nodes[enodes, :])
-            N = getNmatrix(xi, nodes[enodes, :])
+            N = getNmatrix(xi)
 
-            wJe = Wi * np.linalg.det(Je)
+            wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
 
             KMe += N.T @ (comp_f * N) * wJe
             Kppe += B.T @ (kf / mu * B) * wJe
             KpTe += N.T @ (alpha_e * N) * wJe
-            KbTe += B.T @ (kf / mu * alpha_f * rho_f * g.T) @ N * wJe
+            KbTe += N.T @ (kf / mu * alpha_f * rho_f * g.T) @ B * wJe
             Ce += N.T @ (m_e * N) * wJe
             KTTe += B.T @ (lambda_e * B) * wJe
 

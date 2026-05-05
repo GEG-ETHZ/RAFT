@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from matrixassembly import integratelinearmatices
+from matrixassembly import integrate_linear_matrices
 
 
 def load_config(path):
@@ -74,7 +74,10 @@ def main():
     cv = rate_coefficient(dt, dt, config["simulation"]["rate_order"])  # noqa: F841
 
     # Linear Matrix Assembly
-    matrices_linear = integratelinearmatices(mesh, config["material"])  # noqa: F841
+    #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
+    #                        there should be an edge integral perform to remove its contribution
+    #                        along the upper surfaces.
+    matrices_linear = integrate_linear_matrices(mesh, config["material"])  # noqa: F841
 
     # --- Initial Conditions
     # assume uniform
