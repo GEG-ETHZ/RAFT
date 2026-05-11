@@ -23,7 +23,7 @@ def load_mesh(config_mesh):
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
     mesh = {
         "nodes": nodes,
-        "conn": conn,
+        "conn": conn - 1,
     }
 
     # Extract key values
@@ -56,6 +56,7 @@ def main():
     # ----- Config file
     config_name = "config_1.yaml"
     config = load_config(config_name)
+    material = config["material"]
 
     # ----- Initialize simulation parameters
 
@@ -77,13 +78,12 @@ def main():
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
     #                        there should be an edge integral perform to remove its contribution
     #                        along the upper surfaces.
-    matrices_linear = integrate_linear_matrices(mesh, config["material"])  # noqa: F841
+    matrices_linear, material, mesh = integrate_linear_matrices(mesh, material)
 
     # --- Initial Conditions
-    # assume uniform
+    # assume uniform, non-uniform to be implemented in future.
     p[p_dofs, :] = config["initial_conditions"]["p_surf"]
     T[T_dofs, :] = config["initial_conditions"]["T_surf"]
-    # non-uniform to be implemented in future.
 
     # ---- Boundary Conditions
 
