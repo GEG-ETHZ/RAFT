@@ -1,6 +1,7 @@
 """Assembles global linear FEM matrices."""
 
 import numpy as np
+import numpy.typing as npt
 from quadrature import getquadrature
 from scipy.sparse import csc_matrix, lil_matrix
 from shapefunctions import getBmatrix, getNmatrix
@@ -69,6 +70,7 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
     C = lil_matrix((nn, nn))  # Thermal capacity matrix
     KTT = lil_matrix((nn, nn))  # Thermal conductance matrix
     KbT = lil_matrix((nn, nn))  # Pressure buoyancy matrix - body
+    L_char = np.zeros((nn, 1))  # Characteristic element lengths
 
     # ----- Quadrature points
     Q, W = getquadrature(2, nsd)  # body
@@ -85,6 +87,7 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
         KbTe = np.zeros((nne, nne))
         Ce = np.zeros((nne, nne))
         KTTe = np.zeros((nne, nne))
+        Ve = 0
 
         for q in range(nq):
             xi = Q[q, :]
@@ -101,6 +104,7 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
             KbTe += N.T @ (kf / mu * alpha_f * rho_f * g.T) @ B * wJe
             Ce += N.T @ (m_e * N) * wJe
             KTTe += B.T @ (lambda_e * B) * wJe
+            Ve += wJe
 
         # ----- Assemble element contributions into global matrices
         # Using index arrays for lil_matrix:
@@ -110,13 +114,121 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
         _add_block(KbT, enodes, enodes, KbTe)
         _add_block(C, enodes, enodes, Ce)
         _add_block(KTT, enodes, enodes, KTTe)
+        L_char[i] = Ve ** (1 / 3)
+
+    # ----- Convert to CSC for efficient arithmetic
+    mesh["L_char"] = L_char
+    return (
+        {
+            "Kpp": csc_matrix(Kpp),
+            "KM": csc_matrix(KM),
+            "KpT": csc_matrix(KpT),
+            "C": csc_matrix(C),
+            "KTT": csc_matrix(KTT),
+            "KbT": csc_matrix(KbT),
+        },
+        mat,
+        mesh,
+    )
+
+
+def integrate_nonlinear_matrices(
+    mesh: dict,
+    mat: dict,
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],  # noqa: N803
+) -> dict:
+    """Integrate non-linear matrices inside time integration loop."""
+    # ----- material properties
+    kf = mat["permeability"]
+    mu = mat["fluid"]["viscosity"]
+    cp_f = mat["fluid"]["specific_heat"]
+    rho_f = mat["fluid"]["density"]
+    lambda_e = mat["therm_cond_eff"]
+
+    advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
+    # advection velocity = advection_conduct * pressure gradient
+
+    # ----- mesh data
+    nn = mesh["nn"]
+    ne = mesh["ne"]
+    nne = mesh["nne"]
+    nsd = mesh["nsd"]
+    conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
+    nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    L_char = mesh["L_char"]
+
+    # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
+    KATT = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt temperature
+    KATP = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt pressure
+    K_stab_TT = lil_matrix((nn, nn))  # Advection stabilization wrt temperature
+    K_stab_TP = lil_matrix((nn, nn))  # Advection stabilization wrt pressure
+
+    # ----- Quadrature points
+    Q, W = getquadrature(2, nsd)  # body
+    nq = len(W)
+
+    # ----- Matrix integration element loop
+    for i in range(ne):
+        enodes = conn[i, :]  # local element nodes
+        Le = L_char[i]  # characteristic area
+        Te = T[enodes]  # element nodal temperatures
+        pe = p[enodes]  # element nodal pressures
+
+        # Element matrices
+        KATTe = np.zeros((nne, nne))
+        KATPe = np.zeros((nne, nne))
+        K_stab_TTe = np.zeros((nne, nne))
+        K_stab_TPe = np.zeros((nne, nne))
+
+        for q in range(nq):
+            xi = Q[q, :]
+            Wi = W[q]
+
+            B, Je = getBmatrix(xi, nodes[enodes, :])
+            N = getNmatrix(xi)
+
+            # gradients
+            gradT = B @ Te
+            gradp = B @ pe
+
+            # fluxes
+            flux = advec_conduct * gradp
+            flux_mag = np.linalg.norm(flux)
+
+            # Peclet number
+            Pe = flux_mag / lambda_e
+
+            # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
+            tau = Le / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+
+            # Resdiual of the discretized form, dropping 2nd order terms
+            Rth = flux.T @ gradT
+            # - lambda_e * G * Te
+            # - m_e * cv1 * N * Te
+            # G = d^2/dx^2 ( N )
+            # 2nd order terms are usually negligible, but may be necessary for higher order elements.
+
+            # Integrate
+            wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
+            KATTe += N.T @ flux.T @ B * wJe
+            KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
+            K_stab_TTe += B.T * tau * advec_conduct @ gradp * (flux.T * B) * wJe
+            # with 2nd order terms
+            # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
+            K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
+
+        # ----- Assemble element contributions into global matrices
+        # Using index arrays for lil_matrix:
+        _add_block(KATT, enodes, enodes, KATTe)
+        _add_block(KATP, enodes, enodes, KATPe)
+        _add_block(K_stab_TT, enodes, enodes, K_stab_TTe)
+        _add_block(K_stab_TP, enodes, enodes, K_stab_TPe)
 
     # ----- Convert to CSC for efficient arithmetic
     return {
-        "Kpp": csc_matrix(Kpp),
-        "KM": csc_matrix(KM),
-        "KpT": csc_matrix(KpT),
-        "C": csc_matrix(C),
-        "KTT": csc_matrix(KTT),
-        "KbT": csc_matrix(KbT),
-    }, mat
+        "KATT": csc_matrix(KATT),
+        "KATP": csc_matrix(KATP),
+        "K_stab_TT": csc_matrix(K_stab_TT),
+        "K_stab_TP": csc_matrix(K_stab_TP),
+    }
