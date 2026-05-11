@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 from matrixassembly import integrate_linear_matrices
+from parseboundaryconditions import parsebcs
 
 
 def load_config(path):
@@ -37,8 +38,8 @@ def load_mesh(config_mesh):
 
 def rate_coefficient(dt1, dt2, order):
     """Calculate the rate of change coefficients."""
-    # dt1 = t^n - t^(n-1)
-    # dt2 = t^(n-1) - t^(n-2)
+    # dt1 = t_n - t_(n-1)
+    # dt2 = t_(n-1) - t_(n-2)
     cv = np.ones((3, 1))
     if order == 2:
         cv[0] = (2 * dt1 + dt2) / dt1 / (dt1 + dt2)
@@ -86,6 +87,7 @@ def main():
     T[T_dofs, :] = config["initial_conditions"]["T_surf"]
 
     # ---- Boundary Conditions
+    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, p, T)  # noqa: F841
 
     # Force Vector Assembly
 
