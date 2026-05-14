@@ -123,35 +123,39 @@ def postprocessing(n, mesh, config, p, T):  # noqa
     name = f"Solution.vtk.{n}"
     filename = os.path.join(io_path, name)
 
-    # --- Calculate Fluxes ---
-    # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
-    flux = compute_fluid_flux(mesh, config["material"], p)
+    # --- Output, frequency is controlled by user user input
+    if (n % config["simulation"]["output_frequency"]) == 0:
+        print("      Writing to output file...")
 
-    # Calculate Peclet Number
-    if mesh["nsd"] == 3:
-        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[2, :] ** 2)
-    else:
-        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2)
+        # --- Calculate Fluxes ---
+        # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
+        flux = compute_fluid_flux(mesh, config["material"], p)
 
-    pe = (config["material"]["fluid"]["specific_heat"] * config["material"]["fluid"]["density"] * q) / config[
-        "material"
-    ]["therm_cond_eff"]
+        # Calculate Peclet Number
+        if mesh["nsd"] == 3:
+            q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[2, :] ** 2)
+        else:
+            q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2)
 
-    # --- Sanitize and Collect Scalar Data ---
-    def sanitize(data, threshold=1e-9):
-        data[np.abs(data) < threshold] = threshold
-        return data
+        pe = (
+            config["material"]["fluid"]["specific_heat"] * config["material"]["fluid"]["density"] * q
+        ) / config["material"]["therm_cond_eff"]
 
-    # Collect scalar data in an dictionary for export
-    scalardata = [
-        {"name": "T", "data": sanitize(T.copy())},
-        {"name": "p", "data": sanitize(p.copy())},
-        {"name": "Pe", "data": sanitize(pe)},
-    ]
+        # --- Sanitize and Collect Scalar Data ---
+        def sanitize(data, threshold=1e-9):
+            data[np.abs(data) < threshold] = threshold
+            return data
 
-    # --- Vector Data ---
-    vectordata = [{"name": "flux", "data": flux.T}]
+        # Collect scalar data in an dictionary for export
+        scalardata = [
+            {"name": "T", "data": sanitize(T.copy())},
+            {"name": "p", "data": sanitize(p.copy())},
+            {"name": "Pe", "data": sanitize(pe)},
+        ]
 
-    # --- Final Export ---
-    # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
-    write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)
+        # --- Vector Data ---
+        vectordata = [{"name": "flux", "data": flux.T}]
+
+        # --- Final Export ---
+        # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
+        write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)

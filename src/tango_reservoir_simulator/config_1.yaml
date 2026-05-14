@@ -6,9 +6,9 @@ material:
   # Rock mass parameters
   solid:
       bulk_mod:  20.0e+9        # Pa
-      density: 2700             # kg/m^3
-      therm_cond: 3.0           # W/mK
-      specific_heat: 900        # J/kgK
+      density: 2.0             # kg/m^3
+      therm_cond: 3.0e+6          # W/mK
+      specific_heat: 0        # J/kgK
       therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
 
   # Fluid parameters
@@ -23,7 +23,7 @@ material:
   # Coupled parameters
   porosity: 0.01                # -
   biot_coeff: 0.5               # -
-  permeability: 1.0e-14         # m^2
+  permeability: 1.0e-13         # m^2
 
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
@@ -34,27 +34,28 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [4, 8], values: [0,0]}
+      - {nodes: [7], values: [0]}
 
   temperature_fixed:
-      - {nodes: [1], values: [70]}
+      - {nodes: [0, 6], values: [70, 200]}
 
   fluid_flux:
-      - {nodes: [1], values: [-0.001]}
+      - {nodes: [0], values: [10]}
 
   temperature_flux:
       - {nodes: [], values: []}
 
 simulation:
   # Time
-  t_start: 0
-  t_end: 10
-  timestep: 2
+  t_start: 0.0
+  t_end: 500000.0
+  timestep: 1000.0
   # Output
+  output_frequency: 2
   output_directory: "/Users/brugee/tango-reservoir-simulator/outputs"
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 0
+  advection_on: 1
   pressurization_on: 0
   buoyancy_on: 0
 
