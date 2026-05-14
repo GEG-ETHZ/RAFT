@@ -27,7 +27,7 @@ def compute_fluid_flux(mesh, mat, p):
 
     # Material properties
     kf = mat["permeability"]
-    mu = mat["viscosity"]
+    mu = mat["fluid"]["viscosity"]
 
     # Local coordinates (xi) based on element type
     if nne == 4:  # Q4 element
@@ -115,7 +115,7 @@ def postprocessing(n, mesh, config, p, T):  # noqa
     """
     # --- Path Management
     base_path = config["simulation"]["output_directory"]
-    io_path = os.path.join(base_path, config)
+    io_path = os.path.join(base_path, config["config_name"])
 
     if not os.path.exists(io_path):
         os.makedirs(io_path)
@@ -125,11 +125,11 @@ def postprocessing(n, mesh, config, p, T):  # noqa
 
     # --- Calculate Fluxes ---
     # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
-    flux = compute_fluid_flux(mesh, config["material"], p, T)
+    flux = compute_fluid_flux(mesh, config["material"], p)
 
     # Calculate Peclet Number
     if mesh["nsd"] == 3:
-        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[3, :] ** 2)
+        q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[2, :] ** 2)
     else:
         q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2)
 
@@ -154,4 +154,4 @@ def postprocessing(n, mesh, config, p, T):  # noqa
 
     # --- Final Export ---
     # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
-    write_mesh2vtk(filename, "", mesh["nodes"], mesh["conn"], scalardata, vectordata)
+    write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)

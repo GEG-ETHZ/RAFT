@@ -58,10 +58,6 @@ def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_
         fid.write(f"HFX mesh description: {description}\n")
         fid.write("ASCII\n")
 
-        # Determine VTK cell type and build augmented connectivity
-        # conn is converted from 1-indexed to 0-indexed here
-        conn0 = conn - 1  # 0-indexed copy
-
         # cell type array for look-up
         # nne x nsd
         cell_types = np.array(
@@ -101,12 +97,12 @@ def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_
 
         if nne == 9 or nne == 27:
             nodes_out, conn0, scalar_data, vector_data = _strip_nodes(
-                nodes_out, conn0, scalar_data, vector_data, nne
+                nodes_out, conn, scalar_data, vector_data, nne
             )
             nn = nodes_out.shape[0]
 
         # Prepend node-count column to connectivity
-        conn_vtk = np.hstack([np.full((ne, 1), nne, dtype=int), conn0])
+        conn_vtk = np.hstack([np.full((ne, 1), nne, dtype=int), conn])
 
         fid.write("DATASET UNSTRUCTURED_GRID\n")
         fid.write(f"POINTS {nn} float\n")
@@ -137,7 +133,7 @@ def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_
             fid.write(f"VECTORS {field['name']} float\n")
             data = np.asarray(field["data"])
             for j in range(nn):
-                fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {0:.4e}\n")
+                fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {data[j, 2]:.4e} \n")
 
 
 # ---------------------------------------------------------------------------
