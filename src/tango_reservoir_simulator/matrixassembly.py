@@ -172,8 +172,8 @@ def integrate_nonlinear_matrices(
     for i in range(ne):
         enodes = conn[i, :]  # local element nodes
         Le = L_char[i]  # characteristic area
-        Te = T[enodes]  # element nodal temperatures
-        pe = p[enodes]  # element nodal pressures
+        Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
+        pe = p[enodes].reshape(-1, 1)  # element nodal pressures
 
         # Element matrices
         KATTe = np.zeros((nne, nne))
@@ -211,9 +211,9 @@ def integrate_nonlinear_matrices(
 
             # Integrate
             wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
-            KATTe += N.T @ flux.T @ B * wJe
+            KATTe += N.T @ (flux.T @ B) * wJe
             KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
-            K_stab_TTe += B.T * tau * advec_conduct @ gradp * (flux.T * B) * wJe
+            K_stab_TTe += B.T * tau * advec_conduct @ gradp @ (flux.T @ B) * wJe
             # with 2nd order terms
             # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
             K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe

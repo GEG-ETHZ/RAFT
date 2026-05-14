@@ -5,8 +5,10 @@ import numpy.typing as npt
 
 
 def _listprescribednodes(incoming: dict) -> npt.NDArray[np.float64]:
-    outgoing = np.array(list(zip(incoming["nodes"], incoming["values"])))
-    return outgoing
+    pairs = list(zip(incoming["nodes"], incoming["values"]))
+    if pairs:
+        return np.array(pairs, dtype=np.float64)
+    return np.empty((0, 2), dtype=np.float64)
 
 
 def parsebcs(
@@ -14,6 +16,7 @@ def parsebcs(
     mesh: dict,  # noqa
     p: npt.NDArray[np.float64],  # noqa
     T: npt.NDArray[np.float64],  # noqa
+    t: float,  # noqa
 ) -> dict:
     """Parse input boundary conditions and return a dictionary containing the following.
 
@@ -29,6 +32,8 @@ def parsebcs(
     # for initial pass, directly specify the nodes. In the future, this
     # function can be modified to find the corresponding nodes based
     # on specifying the coordinates or to perform edge integration.
+    #
+    # pressure, temperature, and time (p, T, t) passed in for future use
 
     # can I remove the [0]? How to format the input yaml to take it out level out?
     p_dirichlet = _listprescribednodes(bc_config["pressure_fixed"][0])
@@ -36,11 +41,9 @@ def parsebcs(
     T_dirichlet = _listprescribednodes(bc_config["temperature_fixed"][0])
     T_neumann = _listprescribednodes(bc_config["temperature_flux"][0])
 
-    return (
-        {
-            "T_dirichlet": T_dirichlet,
-            "T_neumann": T_neumann,
-            "p_dirichlet": p_dirichlet,
-            "p_neumann": p_neumann,
-        },
-    )
+    return {
+        "T_dirichlet": T_dirichlet,
+        "T_neumann": T_neumann,
+        "p_dirichlet": p_dirichlet,
+        "p_neumann": p_neumann,
+    }
