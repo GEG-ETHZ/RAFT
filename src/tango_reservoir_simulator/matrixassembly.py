@@ -73,7 +73,8 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
     L_char = np.zeros((nn, 1))  # Characteristic element lengths
 
     # ----- Quadrature points
-    Q, W = getquadrature(2, nsd)  # body
+    nq = mesh["n_quadrature"]
+    Q, W = getquadrature(nq, nsd)
     nq = len(W)
 
     # ----- Matrix integration element loop
@@ -165,7 +166,8 @@ def integrate_nonlinear_matrices(
     K_stab_TP = lil_matrix((nn, nn))  # Advection stabilization wrt pressure
 
     # ----- Quadrature points
-    Q, W = getquadrature(2, nsd)  # body
+    nq = mesh["n_quadrature"]
+    Q, W = getquadrature(nq, nsd)
     nq = len(W)
 
     # ----- Matrix integration element loop

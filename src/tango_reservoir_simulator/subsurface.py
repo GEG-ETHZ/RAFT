@@ -37,6 +37,18 @@ def load_mesh(config_mesh):
     mesh["nne"] = np.shape(conn)[1]  # number of nodes per element
     mesh["nsd"] = np.shape(nodes)[1]  # number of space dimensions
 
+    # Define number of quadrature points
+    match (mesh["nsd"], mesh["nne"]):
+        case (3, 8):  # B8
+            nq = 2
+        case (3, 27):  # B27
+            nq = 3
+        case (2, 4):  # Q4
+            nq = 2
+        case (2, 9):  # Q9
+            nq = 3
+    mesh["n_quadrature"] = nq
+
     return mesh
 
 
@@ -226,6 +238,8 @@ def main():
         # Check end condition
         if t >= t_end:
             break
+
+    return p, T
 
 
 if __name__ == "__main__":
