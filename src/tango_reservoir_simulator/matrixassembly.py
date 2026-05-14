@@ -7,7 +7,7 @@ from scipy.sparse import csc_matrix, lil_matrix
 from shapefunctions import getBmatrix, getNmatrix
 
 
-def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):  # noqa: N803
+def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):
     """Scatter dense element matrix into sparse global matrix."""
     rows = np.asarray(rows).ravel()
     cols = np.asarray(cols).ravel()
@@ -137,7 +137,7 @@ def integrate_nonlinear_matrices(
     mesh: dict,
     mat: dict,
     p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],  # noqa: N803
+    T: npt.NDArray[np.float64],  # noqa: ARG001, N803
 ) -> dict:
     """Integrate non-linear matrices inside time integration loop."""
     # ----- material properties
@@ -161,9 +161,15 @@ def integrate_nonlinear_matrices(
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     KATT = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt temperature
-    KATP = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt pressure
     K_stab_TT = lil_matrix((nn, nn))  # Advection stabilization wrt temperature
-    K_stab_TP = lil_matrix((nn, nn))  # Advection stabilization wrt pressure
+
+    # These following two matrices are not used in the linearized extrapolation.
+    # They are the derivatives w.r.t pressure.
+    # They are commented out as they are only needed in a fully-coupled solver.
+    # potential fully-coupled version in the future.
+
+    # K_stab_TP = lil_matrix((nn, nn))  # Advection stabilization wrt pressure
+    # KATP = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt pressure
 
     # ----- Quadrature points
     nq = mesh["n_quadrature"]
@@ -174,14 +180,14 @@ def integrate_nonlinear_matrices(
     for i in range(ne):
         enodes = conn[i, :]  # local element nodes
         Le = L_char[i]  # characteristic area
-        Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
         pe = p[enodes].reshape(-1, 1)  # element nodal pressures
+        # Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
 
         # Element matrices
         KATTe = np.zeros((nne, nne))
-        KATPe = np.zeros((nne, nne))
         K_stab_TTe = np.zeros((nne, nne))
-        K_stab_TPe = np.zeros((nne, nne))
+        # KATPe = np.zeros((nne, nne))
+        # K_stab_TPe = np.zeros((nne, nne))
 
         for q in range(nq):
             xi = Q[q, :]
@@ -191,8 +197,8 @@ def integrate_nonlinear_matrices(
             N = getNmatrix(xi)
 
             # gradients
-            gradT = B @ Te
             gradp = B @ pe
+            # gradT = B @ Te
 
             # fluxes
             flux = advec_conduct * gradp
@@ -205,32 +211,34 @@ def integrate_nonlinear_matrices(
             tau = Le / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
 
             # Resdiual of the discretized form, dropping 2nd order terms
-            Rth = flux.T @ gradT
+            # Rth = flux.T @ gradT
+            # 2nd order terms are usually negligible, but may be necessary for higher order elements.
             # - lambda_e * G * Te
             # - m_e * cv1 * N * Te
             # G = d^2/dx^2 ( N )
-            # 2nd order terms are usually negligible, but may be necessary for higher order elements.
 
             # Integrate
             wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
             KATTe += N.T @ (flux.T @ B) * wJe
-            KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
             K_stab_TTe += B.T * tau * advec_conduct @ gradp @ (flux.T @ B) * wJe
             # with 2nd order terms
             # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
-            K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
+
+            # Derivatives wrt pressure
+            # KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
+            # K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
 
         # ----- Assemble element contributions into global matrices
         # Using index arrays for lil_matrix:
         _add_block(KATT, enodes, enodes, KATTe)
-        _add_block(KATP, enodes, enodes, KATPe)
         _add_block(K_stab_TT, enodes, enodes, K_stab_TTe)
-        _add_block(K_stab_TP, enodes, enodes, K_stab_TPe)
+        # _add_block(KATP, enodes, enodes, KATPe)
+        # _add_block(K_stab_TP, enodes, enodes, K_stab_TPe)
 
     # ----- Convert to CSC for efficient arithmetic
     return {
         "KATT": csc_matrix(KATT),
-        "KATP": csc_matrix(KATP),
         "K_stab_TT": csc_matrix(K_stab_TT),
-        "K_stab_TP": csc_matrix(K_stab_TP),
+        # "KATP": csc_matrix(KATP),
+        # "K_stab_TP": csc_matrix(K_stab_TP),
     }

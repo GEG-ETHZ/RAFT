@@ -181,8 +181,12 @@ def _lin_extrap_time_integration(
 
 def main():
     """Main simulation run."""
-    # ----- Config file
     config_name = "config_1.yaml"
+
+    print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
+    print("Beginning simulation " + config_name + "\n")
+
+    # ----- Load onfig file
     config = load_config(config_name)
     material = config["material"]
 
@@ -215,12 +219,17 @@ def main():
     T[T_dofs, :] = config["initial_conditions"]["T_surf"]
     material["T_0"] = T[:, 1]  # initial condition reference temperature
 
+    # --- Export initial condition
+    n = 0  # Time step counter
+    postprocessing(n, mesh, config, p[:, 0], T[:, 0])
+    n += 1
+
     # ---- Boundary Conditions
     boundary_conditions = parsebcs(config["boundary_conditions"], mesh, p, T, t)  # noqa: F841
 
     # ---- Time integration
-    n = 0  # Time step counter
     while True:
+        print(f"Timestep n, t = {t}, {100 * t / t_end} % complete")
         # Perform time integration
         p, T = _lin_extrap_time_integration(
             config["simulation"], mesh, material, matrices_linear, p, T, boundary_conditions, dt
@@ -237,6 +246,10 @@ def main():
 
         # Check end condition
         if t >= t_end:
+            print(
+                "Simulation complete. Output files are stored in: \n"
+                + config["simulation"]["output_directory"]
+            )
             break
 
     return p, T
