@@ -1,21 +1,26 @@
 """Subsurface Simulator."""
 
+import argparse
 from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
 import yaml
+from scipy.sparse.linalg import spsolve
+
 from matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
 from parseboundaryconditions import parsebcs
 from postprocessing import postprocessing
-from scipy.sparse.linalg import spsolve
 
 
-def load_config(path):
+def load_config(config_name: str) -> dict:
     """Load config file."""
-    with open(path) as f:
+    script_dir = Path(__file__).parent
+    config_path = script_dir.parent / "config" / config_name
+    with open(config_path) as f:
         config = yaml.safe_load(f)
-    config["config_name"] = path
+    config["config_name"] = config_name
+    config["config_dir"] = str(config_path.parent)
     return config
 
 
@@ -23,8 +28,7 @@ def load_mesh(config_mesh):
     """Load mesh and define mesh structures."""
     from meshmaker import loadmesh
 
-    script_dir = Path(__file__).parent
-    config_path = script_dir.parent / "config" / config_mesh["file"]
+    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
     mesh = {
         "nodes": nodes,
@@ -181,7 +185,10 @@ def _lin_extrap_time_integration(
 
 def main():
     """Main simulation run."""
-    config_name = "config_1.yaml"
+    parser = argparse.ArgumentParser(description="GRAFT - Geothermal Reservoir Analysis for TANGO")
+    parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
+    args = parser.parse_args()
+    config_name = args.config
 
     print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
     print("Beginning simulation " + config_name + "\n")
@@ -193,7 +200,9 @@ def main():
     # ----- Initialize simulation parameters
 
     ## Load Mesh
+    config["mesh"]["config_dir"] = config["config_dir"]
     mesh = load_mesh(config["mesh"])
+
     ## Initialize vectors
     p_dofs = np.arange(0, mesh["nn"])
     T_dofs = np.arange(0, mesh["nn"])
@@ -246,10 +255,7 @@ def main():
 
         # Check end condition
         if t >= t_end:
-            print(
-                "Simulation complete. Output files are stored in: \n"
-                + config["simulation"]["output_directory"]
-            )
+            print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
             break
 
     return p, T

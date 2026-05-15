@@ -2,8 +2,9 @@
 
 import numpy as np
 import numpy.typing as npt
-from quadrature import getquadrature
 from scipy.sparse import csc_matrix, lil_matrix
+
+from quadrature import getquadrature
 from shapefunctions import getBmatrix, getNmatrix
 
 

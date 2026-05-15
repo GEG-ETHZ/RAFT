@@ -52,7 +52,7 @@ simulation:
   timestep: 1000.0
   # Output
   output_frequency: 2
-  output_directory: "/Users/brugee/tango-reservoir-simulator/outputs"
+  # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1

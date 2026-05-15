@@ -1,9 +1,15 @@
 """Postprocessing of FEM file."""
 
 import os
+from pathlib import Path
 
 import numpy as np
+
 from writevtk import write_mesh2vtk
+
+# Default output directory: /main_folder/outputs/
+# (two levels up from /main_folder/src/postprocessing.py)
+_DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
 
 
 def compute_fluid_flux(mesh, mat, p):
@@ -114,8 +120,10 @@ def postprocessing(n, mesh, config, p, T):  # noqa
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
     """
     # --- Path Management
-    base_path = config["simulation"]["output_directory"]
-    io_path = os.path.join(base_path, config["config_name"])
+    base_path = config["simulation"].get("output_directory", _DEFAULT_OUTPUT_DIR)
+    config_stem = Path(config["config_name"]).stem
+    io_path = os.path.join(base_path, config_stem)
+    config["output_directory_full"] = io_path
 
     if not os.path.exists(io_path):
         os.makedirs(io_path)
@@ -159,3 +167,5 @@ def postprocessing(n, mesh, config, p, T):  # noqa
         # --- Final Export ---
         # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
         write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)
+
+    return config
