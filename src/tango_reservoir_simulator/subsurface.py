@@ -6,17 +6,16 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import yaml
-from scipy.sparse.linalg import spsolve
-
 from matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
 from parseboundaryconditions import parsebcs
 from postprocessing import postprocessing
+from scipy.sparse.linalg import spsolve
 
 
 def load_config(config_name: str) -> dict:
     """Load config file."""
     script_dir = Path(__file__).parent
-    config_path = script_dir.parent / "config" / config_name
+    config_path = script_dir.parent.parent / "config" / config_name
     with open(config_path) as f:
         config = yaml.safe_load(f)
     config["config_name"] = config_name

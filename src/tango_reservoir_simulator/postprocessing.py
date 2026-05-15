@@ -4,12 +4,11 @@ import os
 from pathlib import Path
 
 import numpy as np
-
 from writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
 # (two levels up from /main_folder/src/postprocessing.py)
-_DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent / "outputs"
+_DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
 
 
 def compute_fluid_flux(mesh, mat, p):
