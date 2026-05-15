@@ -6,10 +6,10 @@ project root.
 """
 
 
-# def test_import() -> None:
-#     """
-#     Demo test that verifies that tango_reservoir_simulator can be imported.
-#     """
-#     import tango_reservoir_simulator  # noqa: F401  # type: ignore[import]
+def test_import() -> None:
+    """
+    Demo test that verifies that tango_reservoir_simulator can be imported.
+    """
+    import tango_reservoir_simulator  # noqa: F401  # type: ignore[import]
 
-#     assert tango_reservoir_simulator.__version__ == "0.1.0"
+    assert tango_reservoir_simulator.__version__ == "0.1.0"
