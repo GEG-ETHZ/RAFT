@@ -1,58 +1,14 @@
 """Subsurface Simulator."""
 
 import argparse
-from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-import yaml
 from matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
 from parseboundaryconditions import parsebcs
 from postprocessing import postprocessing
+from preprocessing import preprocessing
 from scipy.sparse.linalg import spsolve
-
-
-def load_config(config_name: str) -> dict:
-    """Load config file."""
-    script_dir = Path(__file__).parent
-    config_path = script_dir.parent.parent / "config" / config_name
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
-    config["config_name"] = config_name
-    config["config_dir"] = str(config_path.parent)
-    return config
-
-
-def load_mesh(config_mesh):
-    """Load mesh and define mesh structures."""
-    from meshmaker import loadmesh
-
-    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
-    [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
-    mesh = {
-        "nodes": nodes,
-        "conn": conn - 1,
-    }
-
-    # Extract key values
-    mesh["nn"] = np.shape(nodes)[0]  # number of nodes
-    mesh["ne"] = np.shape(conn)[0]  # number of elements
-    mesh["nne"] = np.shape(conn)[1]  # number of nodes per element
-    mesh["nsd"] = np.shape(nodes)[1]  # number of space dimensions
-
-    # Define number of quadrature points
-    match (mesh["nsd"], mesh["nne"]):
-        case (3, 8):  # B8
-            nq = 2
-        case (3, 27):  # B27
-            nq = 3
-        case (2, 4):  # Q4
-            nq = 2
-        case (2, 9):  # Q9
-            nq = 3
-    mesh["n_quadrature"] = nq
-
-    return mesh
 
 
 def rate_coefficients(dt, order):
@@ -192,15 +148,11 @@ def main():
     print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
     print("Beginning simulation " + config_name + "\n")
 
-    # ----- Load onfig file
-    config = load_config(config_name)
+    # ----- Load config and mesh
+    config, mesh = preprocessing(config_name)
     material = config["material"]
 
     # ----- Initialize simulation parameters
-
-    ## Load Mesh
-    config["mesh"]["config_dir"] = config["config_dir"]
-    mesh = load_mesh(config["mesh"])
 
     ## Initialize vectors
     p_dofs = np.arange(0, mesh["nn"])
