@@ -2,9 +2,8 @@
 
 import numpy as np
 import numpy.typing as npt
-from quadrature import getquadrature
 from scipy.sparse import csc_matrix, lil_matrix
-from shapefunctions import getBmatrix, getNmatrix
+from shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
 def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):

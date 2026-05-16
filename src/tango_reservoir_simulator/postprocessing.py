@@ -113,7 +113,7 @@ def compute_fluid_flux(mesh, mat, p):
     return q
 
 
-def postprocessing(n, mesh, config, p, T):  # noqa
+def postprocessing(n, mesh, config, primary_variables):  # noqa
     """Postprocessing of FEM data.
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
@@ -133,8 +133,11 @@ def postprocessing(n, mesh, config, p, T):  # noqa
     # --- Output, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0:
         print("      Writing to output file...")
+        # ----- Extract primary variables
+        p = primary_variables["p"][:, 0]
+        T = primary_variables["T"][:, 0]
 
-        # --- Calculate Fluxes ---
+        # --- Calculate fluxes
         # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
         flux = compute_fluid_flux(mesh, config["material"], p)
 
@@ -148,7 +151,7 @@ def postprocessing(n, mesh, config, p, T):  # noqa
             config["material"]["fluid"]["specific_heat"] * config["material"]["fluid"]["density"] * q
         ) / config["material"]["therm_cond_eff"]
 
-        # --- Sanitize and Collect Scalar Data ---
+        # --- Sanitize and collect scalar data
         def sanitize(data, threshold=1e-9):
             data[np.abs(data) < threshold] = threshold
             return data
@@ -160,11 +163,10 @@ def postprocessing(n, mesh, config, p, T):  # noqa
             {"name": "Pe", "data": sanitize(pe)},
         ]
 
-        # --- Vector Data ---
+        # --- Vector data
         vectordata = [{"name": "flux", "data": flux.T}]
 
-        # --- Final Export ---
-        # Assumes write_mesh_to_vtk is ported from WriteMesh2VTK_v5.m
+        # ----- Export to vtk
         write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)
 
     return config

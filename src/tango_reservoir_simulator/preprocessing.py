@@ -68,19 +68,11 @@ DEFAULTS: dict = {
 def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
     """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
 
-    Parameters:
-    -----------
-    meshfile : str
-        Name/path of the mesh file.
-    nsd : int
-        Number of space dimensions to extract.
+    meshfile : name of mesh file
+    nsd : number of space dimensions of the analysis
 
-    Returns:
-    --------
-    nodes : NDArray[float64]
-        Coordinates of mesh nodes.
-    conn : NDArray[int64]
-        Element connectivity matrix.
+    nodes : nn x nsd array with coordinates of mesh nodes.
+    conn : ne x nne array with element connectivity.
     """
     try:
         with open(meshfile) as f:
@@ -193,14 +185,23 @@ def load_mesh(config_mesh):
     # Define number of quadrature points
     match (mesh["nsd"], mesh["nne"]):
         case (3, 8):  # B8
-            nq = 2
+            nq, etyp = 2, "B8"
         case (3, 27):  # B27
-            nq = 3
+            nq, etyp = 3, "B27"
         case (2, 4):  # Q4
-            nq = 2
+            nq, etyp = 2, "Q4"
         case (2, 9):  # Q9
-            nq = 3
+            nq, etyp = 3, "Q9"
     mesh["n_quadrature"] = nq
+    mesh["element_type"] = etyp
+
+    print("----- Mesh statistics")
+    print(f"  File            : {config_mesh['file']}")
+    print(f"  Element type    : {etyp}")
+    print(f"  Dimensions      : {mesh['nsd']}D")
+    print(f"  Nodes           : {mesh['nn']}")
+    print(f"  Elements        : {mesh['ne']}")
+    print(f"  Quadrature pts  : {nq}^{mesh['nsd']} = {nq ** mesh['nsd']}\n")
 
     return mesh
 
@@ -208,11 +209,8 @@ def load_mesh(config_mesh):
 def preprocessing(config_name: str) -> tuple[dict, dict]:
     """Load and validate the config and mesh.
 
-    -------
-    config : dict
-        Fully populated configuration dictionary.
-    mesh : dict
-        Mesh data
+    config : Configuration dictionary with defaults applied where parameters are missing.
+    mesh : Mesh data dictionary
     """
     config = load_config(config_name)
     config["mesh"]["config_dir"] = config["config_dir"]

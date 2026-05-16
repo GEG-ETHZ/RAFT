@@ -59,12 +59,16 @@ def _lin_extrap_time_integration(
     mesh: dict,
     material: dict,
     matrices_linear: dict,
-    p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],
+    primary_variables: dict,
     boundary_conditions: dict,
     dt: npt.NDArray[np.float64],
 ):
     """Assemble FEM matrices and vectors and solve for solution at next timestep."""
+    # extract vectors of nodal dofs
+    p = primary_variables["p"]
+    T = primary_variables["T"]
+    p_dofs = primary_variables["p_dofs"]
+    T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
     rate_order = sim_control["rate_order"]
     adv_on = sim_control["advection_on"]
@@ -85,9 +89,8 @@ def _lin_extrap_time_integration(
         p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
         p_bar = boundary_conditions["p_dirichlet"][:, 1]
         # neumann - external force vectors
-        nn = mesh["nn"]
-        F_extT = np.zeros((nn, 1))
-        F_extp = np.zeros((nn, 1))
+        F_extT = np.zeros((len(T_dofs), 1))
+        F_extp = np.zeros((len(p_dofs), 1))
         F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
             :, 1
         ].reshape(-1, 1)
@@ -115,7 +118,7 @@ def _lin_extrap_time_integration(
         b = -KM @ (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1) + F_extp + F_bT + F_pT
 
         nE = p_fix  # essential DoFs
-        nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
+        nF = np.setdiff1d(p_dofs, nE)  # free DoFs
         dE = p_bar
         KFF = A[np.ix_(nF, nF)]
         KFE = A[np.ix_(nF, nE)]
@@ -133,7 +136,7 @@ def _lin_extrap_time_integration(
         b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
 
         nE = T_fix  # essential DoFs
-        nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
+        nF = np.setdiff1d(T_dofs, nE)  # free DoFs
         dE = T_bar
         KFF = A[np.ix_(nF, nF)]
         KFE = A[np.ix_(nF, nE)]
@@ -157,7 +160,9 @@ def _lin_extrap_time_integration(
         else:
             converged = 1
 
-    return p, T, dt
+    primary_variables["p"] = p
+    primary_variables["T"] = T
+    return primary_variables, dt
 
 
 def main():
@@ -176,18 +181,21 @@ def main():
 
     # ----- Initialize simulation parameters
 
-    ## Initialize vectors
-    p_dofs = np.arange(0, mesh["nn"])
-    T_dofs = np.arange(0, mesh["nn"])
-    # Vectors of primary DoFs - ndof x 3
-    # [t_n, t_(n-1), t_(n-2)]
-    p = np.zeros((len(p_dofs), 3))
-    T = np.zeros((len(p_dofs), 3))
-
     ## Numerical controls
     t = config["simulation"]["t_start"]
     t_end = config["simulation"]["t_end"]
     dt = config["simulation"]["timestep"] * np.ones(3)
+
+    ## Initialize vectors
+    primary_variables = {}  # storage structure for all primary variables and results
+    p_dofs = np.arange(0, mesh["nn"])
+    T_dofs = np.arange(0, mesh["nn"])
+    primary_variables["p_dofs"] = p_dofs
+    primary_variables["T_dofs"] = T_dofs
+    # Vectors of primary DoFs - ndof x 3
+    # [t_n, t_(n-1), t_(n-2)]
+    p = np.zeros((len(p_dofs), 3))
+    T = np.zeros((len(T_dofs), 3))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -200,10 +208,13 @@ def main():
     p[p_dofs, :] = config["initial_conditions"]["p_surf"]
     T[T_dofs, :] = config["initial_conditions"]["T_surf"]
     material["T_0"] = T[:, 1]  # initial condition reference temperature
+    primary_variables["p"] = p
+    primary_variables["T"] = T
 
     # --- Export initial condition
+    print("Export initial condition")
     n = 0  # Time step counter
-    postprocessing(n, mesh, config, p[:, 0], T[:, 0])
+    postprocessing(n, mesh, config, primary_variables)
     n += 1
 
     # ---- Boundary Conditions
@@ -211,27 +222,28 @@ def main():
 
     # ---- Time integration
     while True:
-        print(f"Timestep n, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+        print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
         # Perform time integration
-        p, T, dt = _lin_extrap_time_integration(
-            config["simulation"], mesh, material, matrices_linear, p, T, boundary_conditions, dt
+        primary_variables, dt = _lin_extrap_time_integration(
+            config["simulation"], mesh, material, matrices_linear, primary_variables, boundary_conditions, dt
         )
 
         # Post-processing
-        postprocessing(n, mesh, config, p[:, 0], T[:, 0])
+        postprocessing(n, mesh, config, primary_variables)
 
         # Update time step
         t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
         n += 1
-        p = np.roll(p, shift=1, axis=1)
-        T = np.roll(T, shift=1, axis=1)
+        # use roll to update primary variables, column 0 gets overwritten in time integration
+        primary_variables["p"] = np.roll(primary_variables["p"], shift=1, axis=1)
+        primary_variables["T"] = np.roll(primary_variables["T"], shift=1, axis=1)
 
         # Check end condition
         if t >= t_end:
             print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
             break
 
-    return p, T
+    return primary_variables
 
 
 if __name__ == "__main__":
