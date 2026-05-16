@@ -131,7 +131,7 @@ def postprocessing(n, mesh, config, primary_variables):  # noqa
     filename = os.path.join(io_path, name)
 
     # --- Output, frequency is controlled by user user input
-    if (n % config["simulation"]["output_frequency"]) == 0:
+    if (n % config["simulation"]["output_frequency"]) == 0 and config["simulation"]["output_vtk"]:
         print("      Writing to output file...")
         # ----- Extract primary variables
         p = primary_variables["p"][:, 0]

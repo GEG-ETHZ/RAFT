@@ -243,7 +243,7 @@ def main():
             print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
             break
 
-    return primary_variables
+    return primary_variables, mesh
 
 
 if __name__ == "__main__":

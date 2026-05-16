@@ -56,6 +56,7 @@ DEFAULTS: dict = {
         "timestep_min": 1.0,
         "timestep_max": 1.0,
         "output_frequency": 1,
+        "output_vtk": 1,
         "rate_order": 1,
         "advection_on": 0,
         "pressurization_on": 0,
@@ -151,10 +152,17 @@ def _apply_defaults(config: dict, defaults: dict, path: str = "") -> dict:
     return config
 
 
-def load_config(config_name: str) -> dict:
+def load_config(config_name: str, config_dir: Path | None = None) -> dict:
     """Load config file and check for values."""
-    script_dir = Path(__file__).parent
-    config_path = script_dir.parent.parent / "config" / config_name
+    if config_dir is None:
+        # Fallback to default folder structure
+        script_dir = Path(__file__).parent
+        config_dir = script_dir.parent.parent / "config"
+    else:
+        config_dir = Path(config_dir)
+
+    config_path = config_dir / config_name
+
     with open(config_path) as f:
         config = yaml.safe_load(f)
     config["config_name"] = config_name
@@ -206,13 +214,9 @@ def load_mesh(config_mesh):
     return mesh
 
 
-def preprocessing(config_name: str) -> tuple[dict, dict]:
-    """Load and validate the config and mesh.
-
-    config : Configuration dictionary with defaults applied where parameters are missing.
-    mesh : Mesh data dictionary
-    """
-    config = load_config(config_name)
+def preprocessing(config_name: str, config_dir: Path | None = None) -> tuple[dict, dict]:
+    """Load and validate the config and mesh."""
+    config = load_config(config_name, config_dir)
     config["mesh"]["config_dir"] = config["config_dir"]
     mesh = load_mesh(config["mesh"])
     return config, mesh
