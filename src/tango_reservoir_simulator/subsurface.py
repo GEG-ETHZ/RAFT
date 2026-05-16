@@ -1,6 +1,7 @@
 """Subsurface Simulator."""
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
@@ -74,6 +75,8 @@ def _lin_extrap_time_integration(
     adv_on = sim_control["advection_on"]
     prez_on = sim_control["pressurization_on"]
     buoy_on = sim_control["buoyancy_on"]
+    steady_pres = sim_control["steady_pressure"]
+    steady_temp = sim_control["steady_temperature"]
     rel_tol_T = sim_control["rel_error_T"]
     dt_min = sim_control["timestep_min"]
 
@@ -105,7 +108,7 @@ def _lin_extrap_time_integration(
         T_extrap = cx[0] * T[:, 0] + cx[1] * T[:, 1] + cx[2] * T[:, 2]  # Extrapolated temperature
         T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
 
-        KM = matrices_linear["KM"]  # Pressure storage matrix
+        KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
         Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
         KpT = matrices_linear["KpT"]  # Pressurization matrix
         KbT = matrices_linear["KbT"]  # Buoyancy matrix
@@ -128,9 +131,10 @@ def _lin_extrap_time_integration(
 
         # Update nonlinear matrices with new pressure
         matrices_non_linear = integrate_nonlinear_matrices(mesh, material, p[:, 0], T[:, 0])
+
         KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
         KTT = matrices_linear["KTT"]  # thermal conduction matrix
-        C = matrices_linear["C"]  # thermal storage matrix
+        C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
 
         A = (cv[0] * C) + KTA + KTT
         b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
@@ -165,18 +169,19 @@ def _lin_extrap_time_integration(
     return primary_variables, dt
 
 
-def main():
+def main(config_name: str | None = None, config_dir: Path | None = None):
     """Main simulation run."""
-    parser = argparse.ArgumentParser(description="GRAFT - Geothermal Reservoir Analysis for TANGO")
-    parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
-    args = parser.parse_args()
-    config_name = args.config
+    if config_name is None:
+        parser = argparse.ArgumentParser(description="GRAFT - Geothermal Reservoir Analysis for TANGO")
+        parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
+        args = parser.parse_args()
+        config_name = args.config
 
     print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
     print("Beginning simulation " + config_name + "\n")
 
     # ----- Load config and mesh
-    config, mesh = preprocessing(config_name)
+    config, mesh = preprocessing(config_name, config_dir)
     material = config["material"]
 
     # ----- Initialize simulation parameters

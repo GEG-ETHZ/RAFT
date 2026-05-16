@@ -208,6 +208,8 @@ def integrate_nonlinear_matrices(
 
             # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
             tau = Le / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+            if np.isnan(tau):
+                tau = 0
 
             # Resdiual of the discretized form, dropping 2nd order terms
             # Rth = flux.T @ gradT
