@@ -53,14 +53,15 @@ DEFAULTS: dict = {
         "t_start": 0.0,
         "t_end": 100.0,
         "timestep": 1.0,
+        "timestep_min": 1.0,
+        "timestep_max": 1.0,
         "output_frequency": 1,
         "rate_order": 1,
         "advection_on": 0,
         "pressurization_on": 0,
         "buoyancy_on": 0,
+        "rel_error_T": 1.0e-2,
     },
-    # ---- numerical -----------------------------------------------------------
-    "numerical": {},
 }
 
 

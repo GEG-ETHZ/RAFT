@@ -40,10 +40,12 @@ def rate_coefficients(dt, order):
     return cv, cx
 
 
-def _update_time(t, dt, t_end):
+def _update_time(t, dt, t_end, dt_max):
     """Update the current time and timestep."""
     dt[2] = dt[1]
     dt[1] = dt[0]
+    if dt[0] < dt_max:
+        dt[0] *= 1.25  # Note: arbitrary timestep increasing rate. Could be made variable.
     t += dt[0]
     if t > t_end and t != t_end:
         t -= dt[0]
@@ -63,79 +65,99 @@ def _lin_extrap_time_integration(
     dt: npt.NDArray[np.float64],
 ):
     """Assemble FEM matrices and vectors and solve for solution at next timestep."""
-    # extract controls
+    # extract controls and tolerances
     rate_order = sim_control["rate_order"]
     adv_on = sim_control["advection_on"]
     prez_on = sim_control["pressurization_on"]
     buoy_on = sim_control["buoyancy_on"]
+    rel_tol_T = sim_control["rel_error_T"]
+    dt_min = sim_control["timestep_min"]
 
-    # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
+    converged = 0
+    while not converged:
+        # calculate rate coefficients
+        cv, cx = rate_coefficients(dt, rate_order)
 
-    # parse boundary conditions
-    # dirichlet - fixed
-    T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
-    T_bar = boundary_conditions["T_dirichlet"][:, 1]
-    p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-    p_bar = boundary_conditions["p_dirichlet"][:, 1]
-    # neumann - external force vectors
-    nn = mesh["nn"]
-    F_extT = np.zeros((nn, 1))
-    F_extp = np.zeros((nn, 1))
-    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
-        :, 1
-    ].reshape(-1, 1)
-    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][
-        :, 1
-    ].reshape(-1, 1)
+        # parse boundary conditions
+        # dirichlet - fixed
+        T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
+        T_bar = boundary_conditions["T_dirichlet"][:, 1]
+        p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
+        p_bar = boundary_conditions["p_dirichlet"][:, 1]
+        # neumann - external force vectors
+        nn = mesh["nn"]
+        F_extT = np.zeros((nn, 1))
+        F_extp = np.zeros((nn, 1))
+        F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
+            :, 1
+        ].reshape(-1, 1)
+        F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][
+            :, 1
+        ].reshape(-1, 1)
 
-    # Begin the one-pass extrapolated linearization by solving pressure
-    # first using an extrapolated pressure
-    # One-pass update: solve pressure, then temperature
+        # Begin the one-pass extrapolated linearization by solving pressure
+        # first using an extrapolated pressure
+        # One-pass update: solve pressure, then temperature
 
-    T_extrap = cx[0] * T[:, 0] + cx[1] * T[:, 1] + cx[2] * T[:, 2]  # Extrapolated temperature
-    T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
+        T_extrap = cx[0] * T[:, 0] + cx[1] * T[:, 1] + cx[2] * T[:, 2]  # Extrapolated temperature
+        T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
 
-    KM = matrices_linear["KM"]  # Pressure storage matrix
-    Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
-    KpT = matrices_linear["KpT"]  # Pressurization matrix
-    KbT = matrices_linear["KbT"]  # Buoyancy matrix
+        KM = matrices_linear["KM"]  # Pressure storage matrix
+        Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
+        KpT = matrices_linear["KpT"]  # Pressurization matrix
+        KbT = matrices_linear["KbT"]  # Buoyancy matrix
 
-    F_pT = prez_on * (-KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-    F_bT = buoy_on * (-KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+        F_pT = prez_on * (-KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
+        F_bT = buoy_on * (-KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
 
-    # Assemble combined matrices
-    A = (cv[0] * KM) + Kpp
-    b = -KM @ (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1) + F_extp + F_bT + F_pT
+        # Assemble combined matrices
+        A = (cv[0] * KM) + Kpp
+        b = -KM @ (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1) + F_extp + F_bT + F_pT
 
-    nE = p_fix  # essential DoFs
-    nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
-    dE = p_bar
-    KFF = A[np.ix_(nF, nF)]
-    KFE = A[np.ix_(nF, nE)]
-    pF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-    p[nE, 0] = dE
-    p[nF, 0] = pF.ravel()
+        nE = p_fix  # essential DoFs
+        nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
+        dE = p_bar
+        KFF = A[np.ix_(nF, nF)]
+        KFE = A[np.ix_(nF, nE)]
+        pF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
+        p[nE, 0] = dE
+        p[nF, 0] = pF.ravel()
 
-    # Update nonlinear matrices with new pressure
-    matrices_non_linear = integrate_nonlinear_matrices(mesh, material, p[:, 0], T[:, 0])
-    KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
-    KTT = matrices_linear["KTT"]  # thermal conduction matrix
-    C = matrices_linear["C"]  # thermal storage matrix
+        # Update nonlinear matrices with new pressure
+        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, p[:, 0], T[:, 0])
+        KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
+        KTT = matrices_linear["KTT"]  # thermal conduction matrix
+        C = matrices_linear["C"]  # thermal storage matrix
 
-    A = (cv[0] * C) + KTA + KTT
-    b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
+        A = (cv[0] * C) + KTA + KTT
+        b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
 
-    nE = T_fix  # essential DoFs
-    nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
-    dE = T_bar
-    KFF = A[np.ix_(nF, nF)]
-    KFE = A[np.ix_(nF, nE)]
-    TF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-    T[nE, 0] = dE
-    T[nF, 0] = TF.ravel()
+        nE = T_fix  # essential DoFs
+        nF = np.setdiff1d(np.arange(nn), nE)  # free DoFs
+        dE = T_bar
+        KFF = A[np.ix_(nF, nF)]
+        KFE = A[np.ix_(nF, nE)]
+        TF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
+        T[nE, 0] = dE
+        T[nF, 0] = TF.ravel()
 
-    return p, T
+        # Check for extrapolation error
+        extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
+        if extrapolation_error > rel_tol_T:
+            dt[0] = max(dt[0] / 2, dt_min)  # Note: Standard timestep cutting rate, but somewhat arbitrary.
+            if dt[0] != dt_min:
+                print(
+                    f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
+                )
+            else:
+                converged = 1
+                print(
+                    f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                )
+        else:
+            converged = 1
+
+    return p, T, dt
 
 
 def main():
@@ -189,9 +211,9 @@ def main():
 
     # ---- Time integration
     while True:
-        print(f"Timestep n, t = {t}, {100 * t / t_end} % complete")
+        print(f"Timestep n, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
         # Perform time integration
-        p, T = _lin_extrap_time_integration(
+        p, T, dt = _lin_extrap_time_integration(
             config["simulation"], mesh, material, matrices_linear, p, T, boundary_conditions, dt
         )
 
@@ -199,7 +221,7 @@ def main():
         postprocessing(n, mesh, config, p[:, 0], T[:, 0])
 
         # Update time step
-        t, dt = _update_time(t, dt, t_end)
+        t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
         n += 1
         p = np.roll(p, shift=1, axis=1)
         T = np.roll(T, shift=1, axis=1)
