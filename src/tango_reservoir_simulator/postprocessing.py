@@ -142,16 +142,6 @@ def postprocessing(n, mesh, config, primary_variables, verbose):  # noqa
         # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
         flux = compute_fluid_flux(mesh, config["material"], p)
 
-        # Calculate Peclet Number
-        if mesh["nsd"] == 3:
-            q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2 + flux[2, :] ** 2)
-        else:
-            q = np.sqrt(flux[0, :] ** 2 + flux[1, :] ** 2)
-
-        pe = (
-            config["material"]["fluid"]["specific_heat"] * config["material"]["fluid"]["density"] * q
-        ) / config["material"]["therm_cond_eff"]
-
         # --- Sanitize and collect scalar data
         def sanitize(data, threshold=1e-9):
             data[np.abs(data) < threshold] = threshold
@@ -161,7 +151,6 @@ def postprocessing(n, mesh, config, primary_variables, verbose):  # noqa
         scalardata = [
             {"name": "T", "data": sanitize(T.copy())},
             {"name": "p", "data": sanitize(p.copy())},
-            {"name": "Pe", "data": sanitize(pe)},
         ]
 
         # --- Vector data
