@@ -63,6 +63,7 @@ def _lin_extrap_time_integration(
     primary_variables: dict,
     boundary_conditions: dict,
     dt: npt.NDArray[np.float64],
+    n: int,
     verbose: bool,
 ):
     """Assemble FEM matrices and vectors and solve for solution at next timestep."""
@@ -106,7 +107,7 @@ def _lin_extrap_time_integration(
         # first using an extrapolated pressure
         # One-pass update: solve pressure, then temperature
 
-        T_extrap = cx[0] * T[:, 0] + cx[1] * T[:, 1] + cx[2] * T[:, 2]  # Extrapolated temperature
+        T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
         T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
 
         KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
@@ -114,8 +115,8 @@ def _lin_extrap_time_integration(
         KpT = matrices_linear["KpT"]  # Pressurization matrix
         KbT = matrices_linear["KbT"]  # Buoyancy matrix
 
-        F_pT = prez_on * (-KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-        F_bT = buoy_on * (-KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+        F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
+        F_bT = buoy_on * (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
 
         # Assemble combined matrices
         A = (cv[0] * KM) + Kpp
@@ -150,22 +151,24 @@ def _lin_extrap_time_integration(
         T[nF, 0] = TF.ravel()
 
         # Check for extrapolation error
-        extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
-        if extrapolation_error > rel_tol_T:
-            dt[0] = max(dt[0] / 2, dt_min)  # Note: Standard timestep cutting rate, but somewhat arbitrary.
-            if dt[0] != dt_min:
-                if verbose:
-                    print(
-                        f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
-                    )
+        if n > rate_order + 1:
+            extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
+            if extrapolation_error > rel_tol_T:
+                dt[0] = max(dt[0] / 2, dt_min)
+                # Note: Standard timestep cutting rate, but somewhat arbitrary.
+                if dt[0] != dt_min:
+                    if verbose:
+                        print(
+                            f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
+                        )
+                else:
+                    converged = 1
+                    if verbose:
+                        print(
+                            f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                        )
             else:
                 converged = 1
-                if verbose:
-                    print(
-                        f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                    )
-        else:
-            converged = 1
 
     primary_variables["p"] = p
     primary_variables["T"] = T
@@ -180,8 +183,9 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
         args = parser.parse_args()
         config_name = args.config
 
-    print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
-    print("Beginning simulation " + config_name + "\n")
+    if verbose:
+        print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
+        print("Beginning simulation " + config_name + "\n")
 
     # ----- Load config and mesh
     config, mesh = preprocessing(config_name, config_dir, verbose)
@@ -202,8 +206,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     primary_variables["T_dofs"] = T_dofs
     # Vectors of primary DoFs - ndof x 3
     # [t_n, t_(n-1), t_(n-2)]
-    p = np.zeros((len(p_dofs), 3))
-    T = np.zeros((len(T_dofs), 3))
+    p = np.zeros((len(p_dofs), 4))
+    T = np.zeros((len(T_dofs), 4))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -226,13 +230,14 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     postprocessing(n, mesh, config, primary_variables, verbose)
     n += 1
 
-    # ---- Boundary Conditions
-    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)  # noqa: F841
-
     # ---- Time integration
     while True:
         if verbose:
             print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+
+        # Update Boundary Conditions
+        boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
+
         # Perform time integration
         primary_variables, dt = _lin_extrap_time_integration(
             config["simulation"],
@@ -242,6 +247,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
             primary_variables,
             boundary_conditions,
             dt,
+            n,
             verbose,
         )
 
@@ -253,13 +259,14 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
         n += 1
         # Check end condition
         if t >= t_end:
-            print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
+            if verbose:
+                print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
             break
 
         # Initialize next timestep
         # use roll to update primary variables, column 0 gets overwritten in time integration
-        primary_variables["p"] = np.roll(primary_variables["p"], shift=1, axis=1)
-        primary_variables["T"] = np.roll(primary_variables["T"], shift=1, axis=1)
+        primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
+        primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
 
     return primary_variables, mesh
 

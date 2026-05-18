@@ -14,15 +14,25 @@ def _test_data_dir() -> Path:
 
 def _test_pass_fail(test_name, test_result):
     if test_result:
-        print("\nTest: " + test_name + " - PASS")
+        print("Test: " + test_name + " - PASS")
     else:
-        print("\nTest: " + test_name + " - FAIL")
+        print("Test: " + test_name + " - FAIL")
         sys.exit()
 
 
 def _run_tests():
     case_dir = _test_data_dir()
-    # Test 5: Check advection against analytical solutions
+    # Test 6: Check pressurization against analytical solutions
+    test_name = "Pressurization Test"
+    config_filename = "config_test_pressurization.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    test_pass = test_checks.check_pressurization(
+        config_filename, case_dir, primary_variables, mesh, test_name
+    )
+    _test_pass_fail(test_name, test_pass)
+
+    # Test 5: Check buoyancy against analytical solutions
     test_name = "Buoyancy Test"
     config_filename = "config_test_buoyancy.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)

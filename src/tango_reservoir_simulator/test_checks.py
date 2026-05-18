@@ -196,3 +196,61 @@ def check_buoyancy(config_name, config_dir, results, mesh, test_name) -> bool:
     test_pass = 1 if err_ex < tol else 0
 
     return test_pass
+
+
+def check_pressurization(config_name, config_dir, results, mesh, test_name) -> bool:
+    """Check pressurization against analytical solution."""
+    # Set tolerance
+    tol = 1.0e-6
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    line_1 = np.where((nodes[:, 0] == 0) & (nodes[:, 1] == 0))[0]
+
+    L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+
+    # ----- material properties
+    kf = mat["permeability"]
+    mu = mat["fluid"]["viscosity"]
+    alpha_s = mat["solid"]["therm_expansion"]
+    alpha_f = mat["fluid"]["therm_expansion"]
+    phi = mat["porosity"]
+    biot = mat["biot_coeff"]
+
+    # effective expansion modulus
+    alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
+
+    dT = -config["boundary_conditions"]["temperature_fixed"][1]["param_1"]
+
+    beta = alpha_e * dT * mu * L**2 / 6 / kf
+
+    # analytical solution
+    x = np.linspace(0, 1, 100)
+    p_exact = beta * (x**3 - x)
+
+    # extract T and normalize
+    p = results["p"][:, 0]
+
+    plt.figure()
+    plt.plot(1 - x, p_exact, "r-")
+    plt.plot(d_1 / L, p[line_1], "ko")
+    plt.ylabel("p")
+    plt.title(test_name)
+
+    # calculate error
+    x = 1 - (d_1 / L)
+    p_exact = beta * (x**3 - x)
+    err_ex = sum((p_exact - p[line_1]) ** 2)
+    # The error here is calculated pased on the nodal solutions.
+
+    test_pass = 1 if err_ex < tol else 0
+
+    return test_pass
