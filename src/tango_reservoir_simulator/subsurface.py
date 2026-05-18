@@ -223,11 +223,11 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     if verbose:
         print("Export initial condition")
     n = 0  # Time step counter
-    postprocessing(n, mesh, config, primary_variables)
+    postprocessing(n, mesh, config, primary_variables, verbose)
     n += 1
 
     # ---- Boundary Conditions
-    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, p, T, t)  # noqa: F841
+    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)  # noqa: F841
 
     # ---- Time integration
     while True:
@@ -246,7 +246,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
         )
 
         # Post-processing
-        postprocessing(n, mesh, config, primary_variables)
+        postprocessing(n, mesh, config, primary_variables, verbose)
 
         # Update time step
         t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])

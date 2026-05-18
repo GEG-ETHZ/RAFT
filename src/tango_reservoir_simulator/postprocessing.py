@@ -113,7 +113,7 @@ def compute_fluid_flux(mesh, mat, p):
     return q
 
 
-def postprocessing(n, mesh, config, primary_variables):  # noqa
+def postprocessing(n, mesh, config, primary_variables, verbose):  # noqa
     """Postprocessing of FEM data.
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
@@ -132,7 +132,8 @@ def postprocessing(n, mesh, config, primary_variables):  # noqa
 
     # --- Output, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0 and config["simulation"]["output_vtk"]:
-        print("      Writing to output file...")
+        if verbose:
+            print("      Writing to output file...")
         # ----- Extract primary variables
         p = primary_variables["p"][:, 0]
         T = primary_variables["T"][:, 0]

@@ -81,3 +81,66 @@ def check_patch_test(config_name, config_dir, results, mesh, test_name) -> bool:
     test_pass = 1 if err_ex < tol else 0
 
     return test_pass
+
+
+def check_advection(config_name, config_dir, results, mesh, test_name) -> bool:
+    """Check advection against analytical solution."""
+    # Set tolerance
+    tol = 1.0e-4
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    line_1 = np.where((nodes[:, 0] == 0) & (nodes[:, 1] == 0))[0]
+
+    L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+    # flux
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][4]
+    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    kf = mat["permeability"]
+    mu = mat["fluid"]["viscosity"]
+    q = kf / mu * (p1 - p0) / L
+
+    # conductivity
+    phi = mat["porosity"]
+    lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
+    cp = mat["fluid"]["specific_heat"]
+    rho_f = mat["fluid"]["density"]
+
+    # peclet number per length
+    Pe = L * (q * cp * rho_f) / lambda_e
+
+    # analytical solution
+    x = np.linspace(0, L, 100) / L
+    T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
+
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][0]["values"][4]
+
+    # extract T and normalize
+    T = (results["T"][:, 0] - T0) / (T1 - T0)
+
+    plt.figure()
+    plt.plot(x, T_exact, "r-")
+    plt.plot(d_1 / L, T[line_1], "ko")
+    plt.ylabel("T")
+    plt.title(test_name)
+    plt.text(0.05, 0.9, f"Pe = {Pe * L:.2f}")
+
+    # calculate error
+    T_exact = (np.exp(Pe * d_1 / L) - 1) / (np.exp(Pe) - 1)
+    err_ex = sum((T_exact - T[line_1]) ** 2)
+    # The error here is calculated pased on the nodal solutions, which with SUPG
+    # stabilization should be close to exact at the nodes. The full error
+    # includes the linear interpolation between the nodes, which is much higher.
+
+    test_pass = 1 if err_ex < tol else 0
+
+    return test_pass

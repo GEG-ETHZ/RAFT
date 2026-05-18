@@ -69,7 +69,8 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
     C = lil_matrix((nn, nn))  # Thermal capacity matrix
     KTT = lil_matrix((nn, nn))  # Thermal conductance matrix
     KbT = lil_matrix((nn, nn))  # Pressure buoyancy matrix - body
-    L_char = np.zeros((nn, 1))  # Characteristic element lengths
+    L_char = np.zeros((ne, 1))  # Characteristic element lengths
+    V = 0.0  # Total volume
 
     # ----- Quadrature points
     nq = mesh["n_quadrature"]
@@ -114,6 +115,7 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
         _add_block(KbT, enodes, enodes, KbTe)
         _add_block(C, enodes, enodes, Ce)
         _add_block(KTT, enodes, enodes, KTTe)
+        V += Ve
         L_char[i] = Ve ** (1 / 3)
 
     # ----- Convert to CSC for efficient arithmetic
@@ -156,7 +158,6 @@ def integrate_nonlinear_matrices(
     nsd = mesh["nsd"]
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    L_char = mesh["L_char"]
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     KATT = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt temperature
@@ -178,9 +179,10 @@ def integrate_nonlinear_matrices(
     # ----- Matrix integration element loop
     for i in range(ne):
         enodes = conn[i, :]  # local element nodes
-        Le = L_char[i]  # characteristic area
         pe = p[enodes].reshape(-1, 1)  # element nodal pressures
         # Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
+        enodes_coords = nodes[enodes, :]
+        L_vec = (enodes_coords.max(axis=0) - enodes_coords.min(axis=0)).reshape(-1, 1)  # element lengths
 
         # Element matrices
         KATTe = np.zeros((nne, nne))
@@ -200,16 +202,19 @@ def integrate_nonlinear_matrices(
             # gradT = B @ Te
 
             # fluxes
-            flux = advec_conduct * gradp
+            flux = -advec_conduct * gradp
             flux_mag = np.linalg.norm(flux)
 
-            # Peclet number
-            Pe = flux_mag / lambda_e
-
-            # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
-            tau = Le / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
-            if np.isnan(tau):
+            # SUPG Stabilization
+            if flux_mag == 0:
                 tau = 0
+            else:
+                # Effective length weighted by fluxes
+                h_eff = flux_mag / np.linalg.norm(flux / L_vec)
+                # Pecelt number
+                Pe = h_eff * flux_mag / lambda_e
+                # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
+                tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
 
             # Resdiual of the discretized form, dropping 2nd order terms
             # Rth = flux.T @ gradT
@@ -221,7 +226,7 @@ def integrate_nonlinear_matrices(
             # Integrate
             wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
             KATTe += N.T @ (flux.T @ B) * wJe
-            K_stab_TTe += B.T * tau * advec_conduct @ gradp @ (flux.T @ B) * wJe
+            K_stab_TTe += B.T * tau @ flux @ (flux.T @ B) * wJe
             # with 2nd order terms
             # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
 

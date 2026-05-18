@@ -14,8 +14,7 @@ def _listprescribednodes(incoming: dict) -> npt.NDArray[np.float64]:
 def parsebcs(
     bc_config: dict,
     mesh: dict,  # noqa
-    p: npt.NDArray[np.float64],  # noqa
-    T: npt.NDArray[np.float64],  # noqa
+    primary_variables: dict,  # noqa
     t: float,  # noqa
 ) -> dict:
     """Parse input boundary conditions and return a dictionary containing the following.
