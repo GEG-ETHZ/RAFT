@@ -138,23 +138,25 @@ def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDAr
     return nodes, conn
 
 
-def _apply_defaults(config: dict, defaults: dict, path: str = "") -> dict:
+def _apply_defaults(config: dict, defaults: dict, path: str = "", verbose: bool = True) -> dict:
     """Check for missing values in the config file. Apply and report default values."""
     for key, default_val in defaults.items():
         full_key = f"{path}.{key}" if path else key
 
         if key not in config or config[key] is None:
             config[key] = default_val
-            print(f"  [DEFAULT]  {full_key} = {default_val}")
+            if verbose:
+                print(f"  [DEFAULT]  {full_key} = {default_val}")
         elif isinstance(default_val, dict) and isinstance(config[key], dict):
-            _apply_defaults(config[key], default_val, full_key)
+            _apply_defaults(config[key], default_val, full_key, verbose)
         else:
-            print(f"  [CONFIG]   {full_key} = {config[key]}")
+            if verbose:
+                print(f"  [CONFIG]   {full_key} = {config[key]}")
 
     return config
 
 
-def load_config(config_name: str, config_dir: Path | None = None) -> dict:
+def load_config(config_name: str, config_dir: Path | None = None, verbose: bool = True) -> dict:
     """Load config file and check for values."""
     if config_dir is None:
         # Fallback to default folder structure
@@ -170,14 +172,18 @@ def load_config(config_name: str, config_dir: Path | None = None) -> dict:
     config["config_name"] = config_name
     config["config_dir"] = str(config_path.parent)
 
-    print(f"\n ----- Configuration parameters for {config_name}")
-    _apply_defaults(config, DEFAULTS)
-    print()
+    if verbose:
+        print(f"\n ----- Configuration parameters for {config_name}")
+
+    _apply_defaults(config, DEFAULTS, verbose=verbose)
+
+    if verbose:
+        print()
 
     return config
 
 
-def load_mesh(config_mesh):
+def load_mesh(config_mesh, verbose):
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
@@ -205,20 +211,23 @@ def load_mesh(config_mesh):
     mesh["n_quadrature"] = nq
     mesh["element_type"] = etyp
 
-    print("----- Mesh statistics")
-    print(f"  File            : {config_mesh['file']}")
-    print(f"  Element type    : {etyp}")
-    print(f"  Dimensions      : {mesh['nsd']}D")
-    print(f"  Nodes           : {mesh['nn']}")
-    print(f"  Elements        : {mesh['ne']}")
-    print(f"  Quadrature pts  : {nq}^{mesh['nsd']} = {nq ** mesh['nsd']}\n")
+    if verbose:
+        print("----- Mesh statistics")
+        print(f"  File            : {config_mesh['file']}")
+        print(f"  Element type    : {etyp}")
+        print(f"  Dimensions      : {mesh['nsd']}D")
+        print(f"  Nodes           : {mesh['nn']}")
+        print(f"  Elements        : {mesh['ne']}")
+        print(f"  Quadrature pts  : {nq}^{mesh['nsd']} = {nq ** mesh['nsd']}\n")
 
     return mesh
 
 
-def preprocessing(config_name: str, config_dir: Path | None = None) -> tuple[dict, dict]:
+def preprocessing(
+    config_name: str, config_dir: Path | None = None, verbose: bool = True
+) -> tuple[dict, dict]:
     """Load and validate the config and mesh."""
-    config = load_config(config_name, config_dir)
+    config = load_config(config_name, config_dir, verbose)
     config["mesh"]["config_dir"] = config["config_dir"]
-    mesh = load_mesh(config["mesh"])
+    mesh = load_mesh(config["mesh"], verbose)
     return config, mesh

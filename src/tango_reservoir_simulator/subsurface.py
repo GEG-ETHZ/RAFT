@@ -63,6 +63,7 @@ def _lin_extrap_time_integration(
     primary_variables: dict,
     boundary_conditions: dict,
     dt: npt.NDArray[np.float64],
+    verbose: bool,
 ):
     """Assemble FEM matrices and vectors and solve for solution at next timestep."""
     # extract vectors of nodal dofs
@@ -153,14 +154,16 @@ def _lin_extrap_time_integration(
         if extrapolation_error > rel_tol_T:
             dt[0] = max(dt[0] / 2, dt_min)  # Note: Standard timestep cutting rate, but somewhat arbitrary.
             if dt[0] != dt_min:
-                print(
-                    f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
-                )
+                if verbose:
+                    print(
+                        f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
+                    )
             else:
                 converged = 1
-                print(
-                    f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                )
+                if verbose:
+                    print(
+                        f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                    )
         else:
             converged = 1
 
@@ -169,7 +172,7 @@ def _lin_extrap_time_integration(
     return primary_variables, dt
 
 
-def main(config_name: str | None = None, config_dir: Path | None = None):
+def main(config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True):
     """Main simulation run."""
     if config_name is None:
         parser = argparse.ArgumentParser(description="GRAFT - Geothermal Reservoir Analysis for TANGO")
@@ -181,7 +184,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None):
     print("Beginning simulation " + config_name + "\n")
 
     # ----- Load config and mesh
-    config, mesh = preprocessing(config_name, config_dir)
+    config, mesh = preprocessing(config_name, config_dir, verbose)
     material = config["material"]
 
     # ----- Initialize simulation parameters
@@ -217,7 +220,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None):
     primary_variables["T"] = T
 
     # --- Export initial condition
-    print("Export initial condition")
+    if verbose:
+        print("Export initial condition")
     n = 0  # Time step counter
     postprocessing(n, mesh, config, primary_variables)
     n += 1
@@ -227,10 +231,18 @@ def main(config_name: str | None = None, config_dir: Path | None = None):
 
     # ---- Time integration
     while True:
-        print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+        if verbose:
+            print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
         # Perform time integration
         primary_variables, dt = _lin_extrap_time_integration(
-            config["simulation"], mesh, material, matrices_linear, primary_variables, boundary_conditions, dt
+            config["simulation"],
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            dt,
+            verbose,
         )
 
         # Post-processing
@@ -239,14 +251,15 @@ def main(config_name: str | None = None, config_dir: Path | None = None):
         # Update time step
         t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
         n += 1
-        # use roll to update primary variables, column 0 gets overwritten in time integration
-        primary_variables["p"] = np.roll(primary_variables["p"], shift=1, axis=1)
-        primary_variables["T"] = np.roll(primary_variables["T"], shift=1, axis=1)
-
         # Check end condition
         if t >= t_end:
             print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
             break
+
+        # Initialize next timestep
+        # use roll to update primary variables, column 0 gets overwritten in time integration
+        primary_variables["p"] = np.roll(primary_variables["p"], shift=1, axis=1)
+        primary_variables["T"] = np.roll(primary_variables["T"], shift=1, axis=1)
 
     return primary_variables, mesh
 
