@@ -133,7 +133,7 @@ def postprocessing(n, mesh, config, primary_variables, verbose):  # noqa
     # --- Output, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0 and config["simulation"]["output_vtk"]:
         if verbose:
-            print("      Writing to output file...")
+            print("     Writing to output file...")
         # ----- Extract primary variables
         p = primary_variables["p"][:, 0]
         T = primary_variables["T"][:, 0]

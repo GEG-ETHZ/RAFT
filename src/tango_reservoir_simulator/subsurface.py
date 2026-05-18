@@ -106,6 +106,8 @@ def _lin_extrap_time_integration(
         # Begin the one-pass extrapolated linearization by solving pressure
         # first using an extrapolated pressure
         # One-pass update: solve pressure, then temperature
+        if verbose:
+            print("     Solving pressure equations...")
 
         T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
         T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
@@ -132,12 +134,16 @@ def _lin_extrap_time_integration(
         p[nF, 0] = pF.ravel()
 
         # Update nonlinear matrices with new pressure
+        if verbose:
+            print("     Assembling non-linear matrices...")
         matrices_non_linear = integrate_nonlinear_matrices(mesh, material, p[:, 0], T[:, 0])
 
         KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
         KTT = matrices_linear["KTT"]  # thermal conduction matrix
         C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
 
+        if verbose:
+            print("     Solving temperature equations...")
         A = (cv[0] * C) + KTA + KTT
         b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
 
@@ -151,24 +157,23 @@ def _lin_extrap_time_integration(
         T[nF, 0] = TF.ravel()
 
         # Check for extrapolation error
+        converged = 1  # default to converged, and only break if not converged
         if n > rate_order + 1:
             extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
             if extrapolation_error > rel_tol_T:
                 dt[0] = max(dt[0] / 2, dt_min)
                 # Note: Standard timestep cutting rate, but somewhat arbitrary.
                 if dt[0] != dt_min:
+                    converged = 0
                     if verbose:
                         print(
-                            f"Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
+                            f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
                         )
                 else:
-                    converged = 1
                     if verbose:
                         print(
-                            f"Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                            f"     Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
                         )
-            else:
-                converged = 1
 
     primary_variables["p"] = p
     primary_variables["T"] = T
@@ -213,6 +218,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
     #                        there should be an edge integral perform to remove its contribution
     #                        along the upper surfaces.
+    if verbose:
+        print("     Assembling linear matrices...")
     matrices_linear, material, mesh = integrate_linear_matrices(mesh, material)
 
     # --- Initial Conditions
@@ -252,6 +259,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
         )
 
         # Post-processing
+        if verbose:
+            print("     Postprocessing...")
         postprocessing(n, mesh, config, primary_variables, verbose)
 
         # Update time step
