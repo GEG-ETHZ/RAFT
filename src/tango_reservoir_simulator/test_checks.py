@@ -144,3 +144,55 @@ def check_advection(config_name, config_dir, results, mesh, test_name) -> bool:
     test_pass = 1 if err_ex < tol else 0
 
     return test_pass
+
+
+def check_buoyancy(config_name, config_dir, results, mesh, test_name) -> bool:
+    """Check buoyancy against analytical solution."""
+    # Set tolerance
+    tol = 1.0e-6
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    line_1 = np.where((nodes[:, 0] == 0) & (nodes[:, 1] == 0))[0]
+
+    L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+
+    g = -9.81
+    rho_f = mat["fluid"]["density"]
+    alpha_f = mat["fluid"]["therm_expansion"]
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][0]["values"][4]
+    dT = T0 - T1
+
+    beta = rho_f * alpha_f * g * dT * L / 2
+
+    # analytical solution
+    x = np.linspace(0, L, 100) / L
+    p_exact = beta * (x**2 - x)
+
+    # extract T and normalize
+    p = results["p"][:, 0]
+
+    plt.figure()
+    plt.plot(x, p_exact, "r-")
+    plt.plot(d_1 / L, p[line_1], "ko")
+    plt.ylabel("p")
+    plt.title(test_name)
+
+    # calculate error
+    x = d_1 / L
+    p_exact = beta * (x**2 - x)
+    err_ex = sum((p_exact - p[line_1]) ** 2)
+    # The error here is calculated pased on the nodal solutions.
+
+    test_pass = 1 if err_ex < tol else 0
+
+    return test_pass

@@ -27,10 +27,8 @@ def _run_tests():
     config_filename = "config_test_buoyancy.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    # test_pass = test_checks.check_advection(config_filename, case_dir, primary_variables, mesh, test_name)
-    # _test_pass_fail(test_name, test_pass)
-
-    sys.exit()
+    test_pass = test_checks.check_buoyancy(config_filename, case_dir, primary_variables, mesh, test_name)
+    _test_pass_fail(test_name, test_pass)
 
     # Test 4: Check advection against analytical solutions
     test_name = "Advection Test"
