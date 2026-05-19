@@ -11,7 +11,7 @@ from shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 def _add_block(
     A: lil_matrix, rows: Iterable[Never], cols: Iterable[Never], block: npt.NDArray[np.float64]
-) -> npt.NDArray[np.float64]:
+) -> lil_matrix:
     """Scatter dense element matrix into sparse global matrix."""
     rows = np.asarray(rows).ravel()
     cols = np.asarray(cols).ravel()
