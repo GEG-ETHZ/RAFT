@@ -1,25 +1,34 @@
 """Assembles global linear FEM matrices."""
 
-from collections.abc import Iterable
-from typing import Any, Never
+import math
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from scipy.sparse import csc_matrix, lil_matrix
+from scipy.sparse import csc_matrix
 
 from .shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
-def _add_block(
-    A: lil_matrix, rows: Iterable[Never], cols: Iterable[Never], block: npt.NDArray[np.float64]
-) -> lil_matrix:
-    """Scatter dense element matrix into sparse global matrix."""
-    rows = np.asarray(rows).ravel()
-    cols = np.asarray(cols).ravel()
-    for li, gi in enumerate(rows):
-        for lj, gj in enumerate(cols):
-            A[gi, gj] += block[li, lj]
-    return A
+def _calc_detJe(Je: npt.NDArray[np.float64], nsd: int):
+    # set Jacobian formula based on space dimensions
+    if nsd == 2:
+        return Je[0, 0] * Je[1, 1] - Je[0, 1] * Je[1, 0]
+    else:
+        return (
+            Je[0, 0] * (Je[1, 1] * Je[2, 2] - Je[1, 2] * Je[2, 1])
+            - Je[0, 1] * (Je[1, 0] * Je[2, 2] - Je[1, 2] * Je[2, 0])
+            + Je[0, 2] * (Je[1, 0] * Je[2, 1] - Je[1, 1] * Je[2, 0])
+        )
+
+
+def _make_sparse(
+    vals: npt.NDArray[np.float64],
+    row_vec: npt.NDArray[np.int32],
+    col_vec: npt.NDArray[np.int32],
+    nn: int,
+) -> csc_matrix:
+    return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
 
 
 def integrate_linear_matrices(
@@ -71,13 +80,24 @@ def integrate_linear_matrices(
     g = np.zeros((nsd, 1))
     g[nsd - 1] = -9.81
 
-    # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
-    Kpp = lil_matrix((nn, nn))  # Pressure conductance matrix
-    KM = lil_matrix((nn, nn))  # Pressure storage matrix
-    KpT = lil_matrix((nn, nn))  # Pressurization matrix
-    C = lil_matrix((nn, nn))  # Thermal capacity matrix
-    KTT = lil_matrix((nn, nn))  # Thermal conductance matrix
-    KbT = lil_matrix((nn, nn))  # Pressure buoyancy matrix - body
+    # ----- Vectorized matrix assembly
+    # Assemble lists of rows, columns, and entries and then assemble the sparse
+    # matrix all at once.
+    # For the scalar pressure and temperature, there are nne * nne entries
+    # per element.
+    total_entries = ne * nne * nne
+    vec = {name: np.zeros(total_entries) for name in ("Kpp", "KM", "KpT", "KbT", "C", "KTT")}
+    row_vec = np.empty(total_entries, dtype=np.int32)
+    col_vec = np.empty(total_entries, dtype=np.int32)
+
+    # Matrices to assemble:
+    # Kpp = Pressure conductance matrix
+    # KM =  Pressure storage matrix
+    # KpT =  Pressurization matrix
+    # C = Thermal capacity matrix
+    # KTT =  Thermal conductance matrix
+    # KbT = Pressure buoyancy matrix - body
+
     L_char = np.zeros((ne, 1))  # Characteristic element lengths
     V = 0.0  # Total volume
 
@@ -106,7 +126,7 @@ def integrate_linear_matrices(
             B, Je = getBmatrix(xi, nodes[enodes, :])
             N = getNmatrix(xi)
 
-            wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
+            wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
 
             KMe += N.T @ (comp_f * N) * wJe
             Kppe += B.T @ (kf / mu * B) * wJe
@@ -117,27 +137,26 @@ def integrate_linear_matrices(
             Ve += wJe
 
         # ----- Assemble element contributions into global matrices
-        # Using index arrays for lil_matrix:
-        Kpp = _add_block(Kpp, enodes, enodes, Kppe)
-        KM = _add_block(KM, enodes, enodes, KMe)
-        KpT = _add_block(KpT, enodes, enodes, KpTe)
-        KbT = _add_block(KbT, enodes, enodes, KbTe)
-        C = _add_block(C, enodes, enodes, Ce)
-        KTT = _add_block(KTT, enodes, enodes, KTTe)
+        # Build global (row, col) index pairs for this element block once
+        sl = slice(i * nne * nne, (i + 1) * nne * nne)
+        # enodes repeated/tiled gives all (row,col) combos in row-major order
+        row_vec[sl] = np.repeat(enodes, nne)  # [e0,e0,..,e1,e1,..]
+        col_vec[sl] = np.tile(enodes, nne)  # [e0,e1,..,e0,e1,..]
+
+        vec["Kpp"][sl] = Kppe.ravel()
+        vec["KM"][sl] = KMe.ravel()
+        vec["KpT"][sl] = KpTe.ravel()
+        vec["KbT"][sl] = KbTe.ravel()
+        vec["C"][sl] = Ce.ravel()
+        vec["KTT"][sl] = KTTe.ravel()
+
         V += Ve
         L_char[i] = Ve ** (1 / 3)
 
     # ----- Convert to CSC for efficient arithmetic
     mesh["L_char"] = L_char
     return (
-        {
-            "Kpp": csc_matrix(Kpp),
-            "KM": csc_matrix(KM),
-            "KpT": csc_matrix(KpT),
-            "C": csc_matrix(C),
-            "KTT": csc_matrix(KTT),
-            "KbT": csc_matrix(KbT),
-        },
+        {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec},
         mat,
         mesh,
     )
@@ -171,16 +190,20 @@ def integrate_nonlinear_matrices(
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
-    KATT = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt temperature
-    K_stab_TT = lil_matrix((nn, nn))  # Advection stabilization wrt temperature
+    total_entries = ne * nne * nne
+    vec = {name: np.zeros(total_entries) for name in ("KATT", "K_stab_TT")}
+    row_vec = np.empty(total_entries, dtype=np.int32)
+    col_vec = np.empty(total_entries, dtype=np.int32)
+    # KATT = Temperature advection tangent matrix wrt temperature
+    # K_stab_TT = l Advection stabilization wrt temperature
 
     # These following two matrices are not used in the linearized extrapolation.
     # They are the derivatives w.r.t pressure.
     # They are commented out as they are only needed in a fully-coupled solver.
     # potential fully-coupled version in the future.
 
-    # K_stab_TP = lil_matrix((nn, nn))  # Advection stabilization wrt pressure
-    # KATP = lil_matrix((nn, nn))  # Temperature advection tangent matrix wrt pressure
+    # K_stab_TP = Advection stabilization wrt pressure
+    # KATP = Temperature advection tangent matrix wrt pressure
 
     # ----- Quadrature points
     nq = mesh["n_quadrature"]
@@ -214,14 +237,18 @@ def integrate_nonlinear_matrices(
 
             # fluxes
             flux = -advec_conduct * gradp
-            flux_mag = np.linalg.norm(flux)
+            flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
 
             # SUPG Stabilization
             if flux_mag == 0:
                 tau = 0
             else:
                 # Effective length weighted by fluxes
-                h_eff = flux_mag / np.linalg.norm(flux / L_vec)
+                h_eff = flux_mag / math.sqrt(
+                    (flux[0, 0] / L_vec[0, 0]) ** 2
+                    + (flux[1, 0] / L_vec[1, 0]) ** 2
+                    + (flux[2, 0] / L_vec[2, 0]) ** 2
+                )
                 # Pecelt number
                 Pe = h_eff * flux_mag / lambda_e
                 # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
@@ -235,7 +262,7 @@ def integrate_nonlinear_matrices(
             # G = d^2/dx^2 ( N )
 
             # Integrate
-            wJe = Wi * np.linalg.det(Je)  # Weight * Jacobian, used in every integrand
+            wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
             KATTe += N.T @ (flux.T @ B) * wJe
             K_stab_TTe += B.T * tau @ flux @ (flux.T @ B) * wJe
             # with 2nd order terms
@@ -247,15 +274,14 @@ def integrate_nonlinear_matrices(
 
         # ----- Assemble element contributions into global matrices
         # Using index arrays for lil_matrix:
-        KATT = _add_block(KATT, enodes, enodes, KATTe)
-        K_stab_TT = _add_block(K_stab_TT, enodes, enodes, K_stab_TTe)
-        # _add_block(KATP, enodes, enodes, KATPe)
-        # _add_block(K_stab_TP, enodes, enodes, K_stab_TPe)
+        sl = slice(i * nne * nne, (i + 1) * nne * nne)
+        row_vec[sl] = np.repeat(enodes, nne)
+        col_vec[sl] = np.tile(enodes, nne)
 
-    # ----- Convert to CSC for efficient arithmetic
-    return {
-        "KATT": csc_matrix(KATT),
-        "K_stab_TT": csc_matrix(K_stab_TT),
-        # "KATP": csc_matrix(KATP),
-        # "K_stab_TP": csc_matrix(K_stab_TP),
-    }
+        vec["KATT"][sl] = KATTe.ravel()
+        vec["K_stab_TT"][sl] = K_stab_TTe.ravel()
+        # vec["KATP"][sl]      = KATPe.ravel()
+        # vec["K_stab_TP"][sl] = K_stab_TPe.ravel()
+
+    # ----- Return and convert to sparse matrix
+    return {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec}

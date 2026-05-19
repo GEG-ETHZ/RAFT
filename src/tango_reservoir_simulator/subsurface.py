@@ -170,7 +170,7 @@ def _lin_extrap_time_integration(
                     converged = 0
                     if verbose:
                         print(
-                            f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep to dt = {dt[0]:.2e}"  # noqa: E501
+                            f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
                         )
                 else:
                     if verbose:
