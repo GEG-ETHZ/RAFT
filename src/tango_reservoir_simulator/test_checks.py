@@ -78,7 +78,7 @@ def check_patch_test(config_name: str, config_dir: str, results: dict, mesh: dic
     err_ex += sum((_lin_exact(p0, p1, d_3, L) - p[line_3]) ** 2)
     err_ex += sum((_lin_exact(p0, p1, d_4, L) - p[line_4]) ** 2)
 
-    test_pass = 1 if err_ex < tol else 0
+    test_pass = bool(err_ex < tol)
 
     return test_pass
 
@@ -141,7 +141,7 @@ def check_advection(config_name: str, config_dir: str, results: dict, mesh: dict
     # stabilization should be close to exact at the nodes. The full error
     # includes the linear interpolation between the nodes, which is much higher.
 
-    test_pass = 1 if err_ex < tol else 0
+    test_pass = bool(err_ex < tol)
 
     return test_pass
 
@@ -193,7 +193,7 @@ def check_buoyancy(config_name: str, config_dir: str, results: dict, mesh: dict,
     err_ex = sum((p_exact - p[line_1]) ** 2)
     # The error here is calculated pased on the nodal solutions.
 
-    test_pass = 1 if err_ex < tol else 0
+    test_pass = bool(err_ex < tol)
 
     return test_pass
 
@@ -253,6 +253,6 @@ def check_pressurization(
     err_ex = sum((p_exact - p[line_1]) ** 2)
     # The error here is calculated pased on the nodal solutions.
 
-    test_pass = 1 if err_ex < tol else 0
+    test_pass = bool(err_ex < tol)
 
     return test_pass

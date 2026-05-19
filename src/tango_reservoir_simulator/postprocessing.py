@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 from writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
@@ -11,7 +12,7 @@ from writevtk import write_mesh2vtk
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
 
 
-def compute_fluid_flux(mesh, mat, p):
+def compute_fluid_flux(mesh: dict, mat: dict, p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
     Returns nsd x nn array of fluxes at each node.
