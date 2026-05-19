@@ -1,6 +1,7 @@
 """Assembles global linear FEM matrices."""
 
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Never
 
 import numpy as np
 import numpy.typing as npt
@@ -9,7 +10,7 @@ from shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
 def _add_block(
-    A: lil_matrix, rows: int, cols: int, block: npt.NDArray[np.float64]
+    A: lil_matrix, rows: Iterable[Never], cols: Iterable[Never], block: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Scatter dense element matrix into sparse global matrix."""
     rows = np.asarray(rows).ravel()

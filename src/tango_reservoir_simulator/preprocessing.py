@@ -8,7 +8,7 @@ import numpy.typing as npt
 import yaml
 
 # ----- Default values for config file
-DEFAULTS: dict = {
+DEFAULTS: dict[str, Any] = {
     # ---- mesh ----------------------------------------------------------------
     "mesh": {
         "file": "box3D.msh",

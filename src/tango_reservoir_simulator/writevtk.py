@@ -1,5 +1,7 @@
 """Write mesh data to vtk file."""
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 
@@ -9,8 +11,8 @@ def write_mesh2vtk(  # noqa: C901
     description: str,
     nodes: npt.NDArray[np.float64],
     conn: npt.NDArray[np.float64],
-    scalar_data: dict = None,
-    vector_data: dict = None,
+    scalar_data: dict[str, Any] | None = None,
+    vector_data: dict[str, Any] | None = None,
 ):
     """Write FEM mesh data to a file in VTK format.
 
@@ -39,9 +41,9 @@ def write_mesh2vtk(  # noqa: C901
         3D: B8, B27, B20
     """
     if scalar_data is None:
-        scalar_data = []
+        scalar_data = {}
     if vector_data is None:
-        vector_data = []
+        vector_data = {}
 
     nodes = np.array(nodes, dtype=float)
     conn = np.array(conn, dtype=int)
@@ -145,8 +147,6 @@ def write_mesh2vtk(  # noqa: C901
 
 
 # Helper
-
-
 def _strip_nodes(nodes_out, conn0, scalar_data, vector_data, nne):
     """ParaView cannot render Q9/27 elements. Remove higher order nodes to render as Q8/B20."""
     keep_cols = 8 if nne == 9 else 20
