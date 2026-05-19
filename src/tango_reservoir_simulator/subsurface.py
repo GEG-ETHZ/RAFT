@@ -55,6 +55,7 @@ def _update_time(t, dt, t_end, dt_max):
     return t, dt
 
 
+# ------------------------ Primary time integration function --------
 def _lin_extrap_time_integration(
     sim_control: dict,
     mesh: dict,
@@ -136,7 +137,7 @@ def _lin_extrap_time_integration(
         # Update nonlinear matrices with new pressure
         if verbose:
             print("     Assembling non-linear matrices...")
-        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, p[:, 0], T[:, 0])
+        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables)
 
         KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
         KTT = matrices_linear["KTT"]  # thermal conduction matrix
@@ -180,6 +181,7 @@ def _lin_extrap_time_integration(
     return primary_variables, dt
 
 
+# -------------------------------- Main simulation run function -------------
 def main(config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True):
     """Main simulation run."""
     if config_name is None:

@@ -1,9 +1,17 @@
 """Write mesh data to vtk file."""
 
 import numpy as np
+import numpy.typing as npt
 
 
-def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_data=None):  # noqa: C901
+def write_mesh2vtk(  # noqa: C901
+    filename: str,
+    description: str,
+    nodes: npt.NDArray[np.float64],
+    conn: npt.NDArray[np.float64],
+    scalar_data: dict = None,
+    vector_data: dict = None,
+):
     """Write FEM mesh data to a file in VTK format.
 
     Parameters:
@@ -15,7 +23,7 @@ def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_
     nodes : np.ndarray
         Nodal coordinates, shape (n, nsd)
     conn : np.ndarray
-        Connectivity matrix, shape (ne, nne), 1-indexed (converted internally)
+        Connectivity matrix, shape (ne, nne)
     scalar_data : list of dict, optional
         Each entry is {'name': str, 'data': np.ndarray of shape (nn,)}
         Example: [{'name': 'd0x', 'data': array}, {'name': 'd0y', 'data': array}]
@@ -136,9 +144,7 @@ def write_mesh2vtk(filename, description, nodes, conn, scalar_data=None, vector_
                 fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {data[j, 2]:.4e} \n")
 
 
-# ---------------------------------------------------------------------------
 # Helper
-# ---------------------------------------------------------------------------
 
 
 def _strip_nodes(nodes_out, conn0, scalar_data, vector_data, nne):

@@ -113,7 +113,13 @@ def compute_fluid_flux(mesh, mat, p):
     return q
 
 
-def postprocessing(n, mesh, config, primary_variables, verbose):  # noqa
+def postprocessing(
+    n: int,
+    mesh: dict,
+    config: dict,
+    primary_variables: dict,
+    verbose: bool,
+):
     """Postprocessing of FEM data.
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.

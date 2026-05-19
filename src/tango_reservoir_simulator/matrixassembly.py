@@ -1,7 +1,6 @@
 """Assembles global linear FEM matrices."""
 
 import numpy as np
-import numpy.typing as npt
 from scipy.sparse import csc_matrix, lil_matrix
 from shapefunctions import getBmatrix, getNmatrix, getquadrature
 
@@ -137,10 +136,12 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
 def integrate_nonlinear_matrices(
     mesh: dict,
     mat: dict,
-    p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],  # noqa: ARG001, N803
+    primary_variables: dict,
 ) -> dict:
     """Integrate non-linear matrices inside time integration loop."""
+    p = primary_variables["p"][:, 0]
+    T = primary_variables["T"][:, 0]  # noqa: F841
+
     # ----- material properties
     kf = mat["permeability"]
     mu = mat["fluid"]["viscosity"]

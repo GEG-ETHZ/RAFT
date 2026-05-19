@@ -183,7 +183,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
-def load_mesh(config_mesh, verbose):
+def load_mesh(config_mesh: dict, verbose: bool):
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
