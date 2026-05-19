@@ -90,7 +90,7 @@ def check_patch_test(
 
 
 def check_advection(
-    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
 ) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
@@ -155,7 +155,7 @@ def check_advection(
 
 
 def check_buoyancy(
-    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
 ) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
@@ -209,7 +209,7 @@ def check_buoyancy(
 
 
 def check_pressurization(
-    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
 ) -> bool:
     """Check pressurization against analytical solution."""
     # Set tolerance
