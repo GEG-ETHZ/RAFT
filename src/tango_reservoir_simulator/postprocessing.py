@@ -165,7 +165,7 @@ def postprocessing(
         ]
 
         # --- Vector data
-        vectordata = [{"name": "flux", "data": flux.T}]
+        vectordata = [{"name": "flux", "data": sanitize(flux.T)}]
 
         # ----- Export to vtk
         write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)

@@ -164,8 +164,8 @@ def _lin_extrap_time_integration(
         if n > rate_order + 1:
             extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
             if extrapolation_error > rel_tol_T:
-                dt[0] = max(dt[0] / 2, dt_min)
-                # Note: Standard timestep cutting rate, but somewhat arbitrary.
+                cut_factor = 4 / (1 + 3 * extrapolation_error / rel_tol_T)
+                dt[0] = max(cut_factor * dt[0], dt_min)
                 if dt[0] != dt_min:
                     converged = 0
                     if verbose:
