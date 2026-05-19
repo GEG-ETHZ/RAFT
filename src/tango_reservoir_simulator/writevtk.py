@@ -11,8 +11,8 @@ def write_mesh2vtk(  # noqa: C901
     description: str,
     nodes: npt.NDArray[np.float64],
     conn: npt.NDArray[np.float64],
-    scalar_data: dict[str, Any] | None = None,
-    vector_data: dict[str, Any] | None = None,
+    scalar_data: list[dict[str, Any]] | None = None,
+    vector_data: list[dict[str, Any]] | None = None,
 ):
     """Write FEM mesh data to a file in VTK format.
 
@@ -41,9 +41,9 @@ def write_mesh2vtk(  # noqa: C901
         3D: B8, B27, B20
     """
     if scalar_data is None:
-        scalar_data = {}
+        scalar_data = []
     if vector_data is None:
-        vector_data = {}
+        vector_data = []
 
     nodes = np.array(nodes, dtype=float)
     conn = np.array(conn, dtype=int)

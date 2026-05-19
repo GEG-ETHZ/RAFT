@@ -69,7 +69,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
-def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
+def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.int64] | None]:
     """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
 
     meshfile : name of mesh file
@@ -171,7 +171,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     config_path = config_dir / config_name
 
     with open(config_path) as f:
-        config = yaml.safe_load(f)
+        config: dict[str, Any] = yaml.safe_load(f)
     config["config_name"] = config_name
     config["config_dir"] = str(config_path.parent)
 
@@ -190,7 +190,7 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool):
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
-    mesh = {
+    mesh: dict[str, Any] = {
         "nodes": nodes,
         "conn": conn - 1,
     }

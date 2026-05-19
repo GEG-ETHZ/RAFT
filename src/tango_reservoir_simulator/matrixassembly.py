@@ -18,6 +18,7 @@ def _add_block(
     for li, gi in enumerate(rows):
         for lj, gj in enumerate(cols):
             A[gi, gj] += block[li, lj]
+    return A
 
 
 def integrate_linear_matrices(
@@ -116,12 +117,12 @@ def integrate_linear_matrices(
 
         # ----- Assemble element contributions into global matrices
         # Using index arrays for lil_matrix:
-        _add_block(Kpp, enodes, enodes, Kppe)
-        _add_block(KM, enodes, enodes, KMe)
-        _add_block(KpT, enodes, enodes, KpTe)
-        _add_block(KbT, enodes, enodes, KbTe)
-        _add_block(C, enodes, enodes, Ce)
-        _add_block(KTT, enodes, enodes, KTTe)
+        Kpp = _add_block(Kpp, enodes, enodes, Kppe)
+        KM = _add_block(KM, enodes, enodes, KMe)
+        KpT = _add_block(KpT, enodes, enodes, KpTe)
+        KbT = _add_block(KbT, enodes, enodes, KbTe)
+        C = _add_block(C, enodes, enodes, Ce)
+        KTT = _add_block(KTT, enodes, enodes, KTTe)
         V += Ve
         L_char[i] = Ve ** (1 / 3)
 
@@ -245,8 +246,8 @@ def integrate_nonlinear_matrices(
 
         # ----- Assemble element contributions into global matrices
         # Using index arrays for lil_matrix:
-        _add_block(KATT, enodes, enodes, KATTe)
-        _add_block(K_stab_TT, enodes, enodes, K_stab_TTe)
+        KATT = _add_block(KATT, enodes, enodes, KATTe)
+        K_stab_TT = _add_block(K_stab_TT, enodes, enodes, K_stab_TTe)
         # _add_block(KATP, enodes, enodes, KATPe)
         # _add_block(K_stab_TP, enodes, enodes, K_stab_TPe)
 
