@@ -34,13 +34,13 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [70000], values: [100]}
+      - {nodes: [1000,2000, 3000], values: [1e5, 1e5, 1e5]}
 
   temperature_fixed:
-      - {nodes: [60000], values: [70]}
+      - {nodes: [500, 1000, 2000, 3000], values: [70, 200, 200, 200]}
 
   fluid_flux:
-      - {nodes: [60000], values: [10]}
+      - {nodes: [500], values: [10]}
 
   temperature_flux:
       - {nodes: [], values: []}

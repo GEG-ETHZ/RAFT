@@ -5,7 +5,11 @@ description = "THM simulator for native coupling with TANGO"
 authors = [{name = "ETHZ/EAPS/GEG Group"}]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",]
 
 
 [dependency-groups]   # e.g. uv add --group dev ruff

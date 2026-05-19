@@ -127,8 +127,8 @@ def _lin_extrap_time_integration(
         A = (cv[0] * KM) + Kpp
         b = -KM @ (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1) + F_extp + F_bT + F_pT
 
-        nE = p_fix  # essential DoFs
-        nF = np.setdiff1d(p_dofs, nE)  # free DoFs
+        nE = p_fix.astype(int)  # essential DoFs
+        nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
         dE = p_bar
         KFF = A[np.ix_(nF, nF)]
         KFE = A[np.ix_(nF, nE)]
