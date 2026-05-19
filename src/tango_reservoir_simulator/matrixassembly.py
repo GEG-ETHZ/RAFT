@@ -1,5 +1,7 @@
 """Assembles global linear FEM matrices."""
 
+from typing import Any
+
 import numpy as np
 from scipy.sparse import csc_matrix, lil_matrix
 from shapefunctions import getBmatrix, getNmatrix, getquadrature
@@ -14,7 +16,7 @@ def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):
             A[gi, gj] += block[li, lj]
 
 
-def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
+def integrate_linear_matrices(mesh: dict[str, Any], mat: dict[str, Any]) -> dict[str, Any]:
     """Integrate linear matrices outside of time integration loop."""
     # ----- material properties
     kf = mat["permeability"]
@@ -134,10 +136,10 @@ def integrate_linear_matrices(mesh: dict, mat: dict) -> dict:
 
 
 def integrate_nonlinear_matrices(
-    mesh: dict,
-    mat: dict,
-    primary_variables: dict,
-) -> dict:
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    primary_variables: dict[str, Any],
+) -> dict[str, Any]:
     """Integrate non-linear matrices inside time integration loop."""
     p = primary_variables["p"][:, 0]
     T = primary_variables["T"][:, 0]  # noqa: F841

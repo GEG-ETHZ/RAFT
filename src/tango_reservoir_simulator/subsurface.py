@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -57,12 +58,12 @@ def _update_time(t, dt, t_end, dt_max):
 
 # ------------------------ Primary time integration function --------
 def _lin_extrap_time_integration(
-    sim_control: dict,
-    mesh: dict,
-    material: dict,
-    matrices_linear: dict,
-    primary_variables: dict,
-    boundary_conditions: dict,
+    sim_control: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    matrices_linear: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
     dt: npt.NDArray[np.float64],
     n: int,
     verbose: bool,

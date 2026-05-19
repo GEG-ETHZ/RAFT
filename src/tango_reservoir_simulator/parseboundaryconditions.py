@@ -1,17 +1,19 @@
 """Parse the input boundary conditions and translate them into FEM input."""
 
+from typing import Any
+
 import numpy as np
 import numpy.typing as npt
 
 
-def _listprescribednodes(incoming: dict) -> npt.NDArray[np.float64]:
+def _listprescribednodes(incoming: dict[str, Any]) -> npt.NDArray[np.float64]:
     pairs = list(zip(incoming["nodes"], incoming["values"]))
     if pairs:
         return np.array(pairs, dtype=np.float64)
     return np.empty((0, 2), dtype=np.float64)
 
 
-def _listtimedependentnodes(incoming: dict, t: float) -> npt.NDArray[np.float64]:
+def _listtimedependentnodes(incoming: dict[str, Any], t: float) -> npt.NDArray[np.float64]:
 
     match incoming["function"]:
         case "linear":
@@ -21,11 +23,11 @@ def _listtimedependentnodes(incoming: dict, t: float) -> npt.NDArray[np.float64]
 
 
 def parsebcs(
-    bc_config: dict,
-    mesh: dict,  # noqa
-    primary_variables: dict,  # noqa
+    bc_config: dict[str, Any],
+    mesh: dict[str, Any],  # noqa
+    primary_variables: dict[str, Any],  # noqa
     t: float,  # noqa
-) -> dict:
+) -> dict[str, Any]:
     """Parse input boundary conditions and return a dictionary containing the following.
 
     T_dirichlet:      n x 2 vector containing a list of fixed temperature nodes and values

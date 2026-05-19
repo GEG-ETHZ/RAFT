@@ -1,6 +1,7 @@
 """Import mesh and create mesh objects."""
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -138,7 +139,9 @@ def loadmesh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDAr
     return nodes, conn
 
 
-def _apply_defaults(config: dict, defaults: dict, path: str = "", verbose: bool = True) -> dict:
+def _apply_defaults(
+    config: dict[str, Any], defaults: dict[str, Any], path: str = "", verbose: bool = True
+) -> dict[str, Any]:
     """Check for missing values in the config file. Apply and report default values."""
     for key, default_val in defaults.items():
         full_key = f"{path}.{key}" if path else key
@@ -156,7 +159,7 @@ def _apply_defaults(config: dict, defaults: dict, path: str = "", verbose: bool 
     return config
 
 
-def load_config(config_name: str, config_dir: Path | None = None, verbose: bool = True) -> dict:
+def load_config(config_name: str, config_dir: Path | None = None, verbose: bool = True) -> dict[str, Any]:
     """Load config file and check for values."""
     if config_dir is None:
         # Fallback to default folder structure
@@ -183,7 +186,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
-def load_mesh(config_mesh: dict, verbose: bool):
+def load_mesh(config_mesh: dict[str, Any], verbose: bool):
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = loadmesh(str(config_path), config_mesh["dimensions"])
@@ -225,7 +228,7 @@ def load_mesh(config_mesh: dict, verbose: bool):
 
 def preprocessing(
     config_name: str, config_dir: Path | None = None, verbose: bool = True
-) -> tuple[dict, dict]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load and validate the config and mesh."""
     config = load_config(config_name, config_dir, verbose)
     config["mesh"]["config_dir"] = config["config_dir"]

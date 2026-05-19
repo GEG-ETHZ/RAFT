@@ -1,11 +1,15 @@
 """Check FEM cases."""
 
+from typing import Any
+
 import matplotlib.pyplot as plt
 import numpy as np
 from preprocessing import load_config
 
 
-def check_patch_test(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
+def check_patch_test(
+    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
     tol = 1.0e-9
@@ -83,7 +87,9 @@ def check_patch_test(config_name: str, config_dir: str, results: dict, mesh: dic
     return test_pass
 
 
-def check_advection(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
+def check_advection(
+    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
     tol = 1.0e-4
@@ -146,7 +152,9 @@ def check_advection(config_name: str, config_dir: str, results: dict, mesh: dict
     return test_pass
 
 
-def check_buoyancy(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
+def check_buoyancy(
+    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
     tol = 1.0e-6
@@ -199,7 +207,7 @@ def check_buoyancy(config_name: str, config_dir: str, results: dict, mesh: dict,
 
 
 def check_pressurization(
-    config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str
+    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
 ) -> bool:
     """Check pressurization against analytical solution."""
     # Set tolerance

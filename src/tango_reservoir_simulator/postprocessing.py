@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -12,7 +13,9 @@ from writevtk import write_mesh2vtk
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
 
 
-def compute_fluid_flux(mesh: dict, mat: dict, p: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def compute_fluid_flux(
+    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
     Returns nsd x nn array of fluxes at each node.
@@ -116,9 +119,9 @@ def compute_fluid_flux(mesh: dict, mat: dict, p: npt.NDArray[np.float64]) -> npt
 
 def postprocessing(
     n: int,
-    mesh: dict,
-    config: dict,
-    primary_variables: dict,
+    mesh: dict[str, Any],
+    config: dict[str, Any],
+    primary_variables: dict[str, Any],
     verbose: bool,
 ):
     """Postprocessing of FEM data.
