@@ -1,5 +1,6 @@
-"""Check FEM cases."""
+"""Check FEM test cases."""
 
+from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -9,7 +10,7 @@ from .preprocessing import load_config
 
 
 def check_patch_test(
-    config_name: str, config_dir: str, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
