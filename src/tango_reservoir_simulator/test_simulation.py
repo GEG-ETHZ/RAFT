@@ -12,7 +12,7 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
-def _test_pass_fail(test_name, test_result):
+def _test_pass_fail(test_name: str, test_result: bool):
     if test_result:
         print("Test: " + test_name + " - PASS")
     else:

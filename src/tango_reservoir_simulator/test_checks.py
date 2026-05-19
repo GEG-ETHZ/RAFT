@@ -5,7 +5,7 @@ import numpy as np
 from preprocessing import load_config
 
 
-def check_patch_test(config_name, config_dir, results, mesh, test_name) -> bool:
+def check_patch_test(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
     tol = 1.0e-9
@@ -47,7 +47,7 @@ def check_patch_test(config_name, config_dir, results, mesh, test_name) -> bool:
     plt.title(test_name)
 
     # define exact solution - linear
-    def _lin_exact(y0, y1, x, X):
+    def _lin_exact(y0: float, y1: float, x: float, X: float) -> float:
         y = y0 + (y1 - y0) * x / X
         return y
 
@@ -83,7 +83,7 @@ def check_patch_test(config_name, config_dir, results, mesh, test_name) -> bool:
     return test_pass
 
 
-def check_advection(config_name, config_dir, results, mesh, test_name) -> bool:
+def check_advection(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
     tol = 1.0e-4
@@ -146,7 +146,7 @@ def check_advection(config_name, config_dir, results, mesh, test_name) -> bool:
     return test_pass
 
 
-def check_buoyancy(config_name, config_dir, results, mesh, test_name) -> bool:
+def check_buoyancy(config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
     tol = 1.0e-6
@@ -198,7 +198,9 @@ def check_buoyancy(config_name, config_dir, results, mesh, test_name) -> bool:
     return test_pass
 
 
-def check_pressurization(config_name, config_dir, results, mesh, test_name) -> bool:
+def check_pressurization(
+    config_name: str, config_dir: str, results: dict, mesh: dict, test_name: str
+) -> bool:
     """Check pressurization against analytical solution."""
     # Set tolerance
     tol = 1.0e-6
