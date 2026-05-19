@@ -6,7 +6,8 @@ from typing import Any, Never
 import numpy as np
 import numpy.typing as npt
 from scipy.sparse import csc_matrix, lil_matrix
-from shapefunctions import getBmatrix, getNmatrix, getquadrature
+
+from .shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
 def _add_block(

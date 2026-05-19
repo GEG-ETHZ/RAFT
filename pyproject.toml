@@ -79,3 +79,6 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[project.scripts]
+run-tests = "tango_reservoir_simulator.test_simulation:_run_tests"

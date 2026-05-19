@@ -6,11 +6,12 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
-from parseboundaryconditions import parsebcs
-from postprocessing import postprocessing
-from preprocessing import preprocessing
 from scipy.sparse.linalg import spsolve
+
+from .matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
+from .parseboundaryconditions import parsebcs
+from .postprocessing import postprocessing
+from .preprocessing import preprocessing
 
 
 def rate_coefficients(dt, order):

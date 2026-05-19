@@ -3,8 +3,8 @@
 import sys
 from pathlib import Path
 
-import test_checks
-from subsurface import main
+from . import test_checks
+from .subsurface import main
 
 
 def _test_data_dir() -> Path:

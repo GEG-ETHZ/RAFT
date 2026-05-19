@@ -6,7 +6,8 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from writevtk import write_mesh2vtk
+
+from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
 # (two levels up from /main_folder/src/postprocessing.py)
@@ -20,7 +21,7 @@ def compute_fluid_flux(
 
     Returns nsd x nn array of fluxes at each node.
     """
-    from shapefunctions import getBmatrix
+    from .shapefunctions import getBmatrix
 
     nn = mesh["nn"]
     nsd = mesh["nsd"]
