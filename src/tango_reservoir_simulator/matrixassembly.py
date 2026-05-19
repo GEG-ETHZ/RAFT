@@ -3,11 +3,14 @@
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 from scipy.sparse import csc_matrix, lil_matrix
 from shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
-def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):
+def _add_block(
+    A: lil_matrix, rows: int, cols: int, block: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
     """Scatter dense element matrix into sparse global matrix."""
     rows = np.asarray(rows).ravel()
     cols = np.asarray(cols).ravel()
@@ -16,7 +19,9 @@ def _add_block(A: lil_matrix, rows, cols, block: np.ndarray):
             A[gi, gj] += block[li, lj]
 
 
-def integrate_linear_matrices(mesh: dict[str, Any], mat: dict[str, Any]) -> dict[str, Any]:
+def integrate_linear_matrices(
+    mesh: dict[str, Any], mat: dict[str, Any]
+) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
     """Integrate linear matrices outside of time integration loop."""
     # ----- material properties
     kf = mat["permeability"]
