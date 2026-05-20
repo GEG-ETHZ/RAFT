@@ -4,87 +4,63 @@ SetFactory("OpenCASCADE");
 L = 100;
 W = 100;
 H = 100;
+R = 10;
 
-nL = 25;
-nW = 25;
-nH = 25;
+nL = 10;
+nW = 10;
+nH = 10;
+nR = 15;
 
 Point(1) = {0,  0,  0, 1};
 Point(2) = {L,  0,  0, 1};
 Point(3) = {L,  W,  0, 1};
 Point(4) = {0,  W,  0, 1};
-Point(5) = {0,  0,  H, 1};
-Point(6) = {L,  0,  H, 1};
-Point(7) = {L,  W,  H, 1};
-Point(8) = {0,  W,  H, 1};//+
-Line(1) = {1, 4};
+Point(5) = {L/2,  W/2,  0, 0.5};
+Point(6) = {L/2+R,  W/2,  0, 5};
+Point(7) = {L/2-R,  W/2,  0, 5};
+
+
+
+
 //+
-Line(2) = {4, 3};
+Line(1) = {1, 2};
 //+
-Line(3) = {3, 2};
+Line(2) = {2, 3};
 //+
-Line(4) = {2, 1};
+Line(3) = {3, 4};
 //+
-Line(5) = {5, 8};
+Line(4) = {4, 1};
 //+
-Line(6) = {8, 7};
+Circle(5) = {7, 5, 6};
 //+
-Line(7) = {7, 6};
+Circle(6) = {6, 5, 7};
 //+
-Line(8) = {1, 5};
+Line(7) = {7, 5};
 //+
-Line(9) = {4, 8};
+Line(8) = {5, 6};
 //+
-Line(10) = {2, 6};
+Curve Loop(1) = {2, 3, 4, 1};
 //+
-Line(11) = {3, 7};
+Curve Loop(2) = {5, 6};
 //+
-Line(12) = {6, 5};
+Plane Surface(1) = {1, 2};
 //+
-Curve Loop(1) = {6, -11, -2, 9};
+Curve Loop(3) = {6, 7, 8};
 //+
-Plane Surface(1) = {1};
+Plane Surface(2) = {3};
 //+
-Curve Loop(2) = {1, 2, 3, 4};
+Curve Loop(4) = {5, -8, -7};
 //+
-Plane Surface(2) = {2};
+Plane Surface(3) = {4};
 //+
-Curve Loop(3) = {7, -10, -3, 11};
+Transfinite Curve {4, 3, 2, 1} = 2*Floor(nW/2)+1 Using Progression 1;
 //+
-Plane Surface(3) = {3};
+Transfinite Curve {-8, 7} = 2*Floor(nR/2)+1 Using Progression 1/1.4;
 //+
-Curve Loop(4) = {12, 5, 6, 7};
 //+
-Plane Surface(4) = {4};
-//+
-Curve Loop(5) = {8, -12, -10, 4};
-//+
-Plane Surface(5) = {5};
-//+
-Curve Loop(6) = {5, -9, -1, 8};
-//+
-Plane Surface(6) = {6};
-//+
-Surface Loop(1) = {3, 4, 5, 6, 1, 2};
-//+
-Volume(1) = {1};
-//+
-Transfinite Curve {1, 5, 7, 3} = nL+1 Using Progression 1;
-//+
-Transfinite Curve {8, 9, 11, 10} = nH+1 Using Progression 1;
-//+
-Transfinite Curve {12, 6, 2, 4} = nW+1 Using Progression 1;
-//+
-Transfinite Surface {6};
-//+
-Transfinite Surface {3};
-//+
-Transfinite Surface {2};
-//+
-Transfinite Surface {4};
-//+
-Transfinite Surface {5};
-//+
-Transfinite Surface {1};
-//+
-Transfinite Volume{1};
+Extrude {0, 0, H/2} {
+  Surface{1}; Surface{3}; Surface{2}; Layers {{8,16,8},{0.05,0.95, 1}}; Recombine;
+}
+Extrude {0, 0, -H/2} {
+  Surface{1}; Surface{3}; Surface{2}; Layers {{8,16,8},{0.05,0.95, 1}}; Recombine;
+}

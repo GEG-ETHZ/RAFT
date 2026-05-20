@@ -164,15 +164,16 @@ def _lin_extrap_time_integration(
         if n > rate_order + 1:
             extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
             if extrapolation_error > rel_tol_T:
-                cut_factor = 4 / (1 + 3 * extrapolation_error / rel_tol_T)
-                dt[0] = max(cut_factor * dt[0], dt_min)
                 if dt[0] != dt_min:
+                    cut_factor = 0.85 * 4 / (1 + 3 * extrapolation_error / rel_tol_T)
+                    dt[0] = max(cut_factor * dt[0], dt_min)
                     converged = 0
                     if verbose:
                         print(
                             f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
                         )
                 else:
+                    converged = 1
                     if verbose:
                         print(
                             f"     Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501

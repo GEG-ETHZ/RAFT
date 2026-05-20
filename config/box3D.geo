@@ -86,5 +86,3 @@ Transfinite Surface {4};
 Transfinite Surface {5};
 //+
 Transfinite Surface {1};
-//+
-Transfinite Volume{1};

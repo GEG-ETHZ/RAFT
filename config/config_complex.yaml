@@ -16,7 +16,7 @@ material:
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
       therm_cond:   0.6         # W/mK
-      therm_expansion: 200.0e-6 # 1/K
+      therm_expansion: 200.0e-4 # 1/K
       specific_heat: 4200       # J/kgK
       viscosity: 0.7e-3         # m^2 (permeability)
 
@@ -27,20 +27,20 @@ material:
 
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
-  T_surf: 200                   # deg C
+  T_surf: 200                  # deg C
   pressure_gradient: 0.0        # Pa/m
   p_surf: 1.0e+5
 
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [2000, 3000], values: [ 1e5, 1e5]}
+      - {nodes: [0, 1, 2, 3, 7, 8, 9, 10, 14, 15, 16, 17], values: [ 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5]}
 
   temperature_fixed:
-      - {nodes: [500, 2040, 2000, 3000], values: [70, 130, 200, 200]}
+      - {nodes: [4, 13], values: [10, 100]}
 
   fluid_flux:
-      - {nodes: [500, 2040], values: [10, 5]}
+      - {nodes: [4, 13], values: [0.5, 0.5]}
 
   temperature_flux:
       - {nodes: [], values: []}
@@ -48,9 +48,9 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 1.0e+6
-  timestep: 1.0e+2
-  timestep_min: 1.0
+  t_end: 1.0e+7
+  timestep: 1.0e+3
+  timestep_min: 1.0e+3
   timestep_max: 1.0e+4
 
   # Output
@@ -65,4 +65,4 @@ simulation:
   buoyancy_on: 1
 
   # Numerical controls
-  rel_error_T: 1.0e-2 # Relative error for extrapolation
+  rel_error_T: 5.0e-1 # Relative error for extrapolation
