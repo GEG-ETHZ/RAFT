@@ -154,7 +154,7 @@ def postprocessing(
         flux = compute_fluid_flux(mesh, config["material"], p)
 
         # --- Sanitize and collect scalar data
-        def sanitize(data, threshold=1e-9):
+        def sanitize(data, threshold=1e-15):
             data[np.abs(data) < threshold] = 0
             return data
 
