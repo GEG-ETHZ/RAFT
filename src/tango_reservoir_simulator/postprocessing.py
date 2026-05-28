@@ -155,7 +155,7 @@ def postprocessing(
 
         # --- Sanitize and collect scalar data
         def sanitize(data, threshold=1e-9):
-            data[np.abs(data) < threshold] = threshold
+            data[np.abs(data) < threshold] = 0
             return data
 
         # Collect scalar data in an dictionary for export
