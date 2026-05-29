@@ -188,13 +188,13 @@ def _lin_extrap_time_integration(
 def main(config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True):
     """Main simulation run."""
     if config_name is None:
-        parser = argparse.ArgumentParser(description="GRAFT - Geothermal Reservoir Analysis for TANGO")
+        parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
         parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
         args = parser.parse_args()
         config_name = args.config
 
     if verbose:
-        print("GRAFT - GEOTHERMAL RESERVOIR ANALYSIS FOR TANGO \n")
+        print("RAFT - RESERVOIR ANALYSIS FOR TANGO \n")
         print("Beginning simulation " + config_name + "\n")
 
     # ----- Load config and mesh
