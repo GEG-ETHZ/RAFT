@@ -30,11 +30,12 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
 
 @njit
 def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
+    Jinv = np.empty((nsd, nsd), dtype=np.float64)
     if nsd == 2:
         Jinv = (
-            1
+            1.0
             / (J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0])
-            * np.array([[J[1, 1], -J[0, 1]], [-J[1, 0], J[0, 0]]], dtype=np.float64)
+            * np.array([[J[1, 1], -J[0, 1]], [-J[1, 0], J[0, 0]]])
         )
     else:
         # Unpack the matrix elements
@@ -65,8 +66,7 @@ def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
                     (m01 * m20 - m00 * m21) * inv_det,
                     (m00 * m11 - m01 * m10) * inv_det,
                 ],
-            ],
-            dtype=np.float64,
+            ]
         )
 
     return Jinv
