@@ -2,8 +2,10 @@
 
 import numpy as np
 import numpy.typing as npt
+from numba import njit
 
 
+@njit
 def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Get the shape function matrix from parent coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
@@ -11,7 +13,7 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
     # parent_coords: [1x3] parent coordinates at which the shape function is computed
     # N            : [1x n dof e] Shape function matrix
 
-    N = np.zeros((1, 8))
+    N = np.empty((1, 8))
     n1 = 0.5 - 0.5 * parent_coords
     n2 = 0.5 + 0.5 * parent_coords
     N[0, 0] = n1[0] * n1[1] * n1[2]
@@ -26,68 +28,103 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
     return N
 
 
+@njit
+def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
+    if nsd == 2:
+        Jinv = (
+            1 / (J[0, 0] * J[1, 1] - J[0, 1] * J[1, 1]) * np.array([[J[1, 1], -J[0, 1]], [-J[1, 0], J[0, 0]]])
+        )
+    else:
+        # Unpack the matrix elements
+        m00, m01, m02 = J[0]
+        m10, m11, m12 = J[1]
+        m20, m21, m22 = J[2]
+
+        # Compute the determinant
+        det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) + m02 * (m10 * m21 - m11 * m20)
+
+        inv_det = 1.0 / det
+
+        # Compute the adjugate matrix elements multiplied by 1/det
+        Jinv = np.array(
+            [
+                [
+                    (m11 * m22 - m12 * m21) * inv_det,
+                    (m02 * m21 - m01 * m22) * inv_det,
+                    (m01 * m12 - m02 * m11) * inv_det,
+                ],
+                [
+                    (m12 * m20 - m10 * m22) * inv_det,
+                    (m00 * m22 - m02 * m20) * inv_det,
+                    (m02 * m10 - m00 * m12) * inv_det,
+                ],
+                [
+                    (m10 * m21 - m11 * m20) * inv_det,
+                    (m01 * m20 - m00 * m21) * inv_det,
+                    (m00 * m11 - m01 * m10) * inv_det,
+                ],
+            ]
+        )
+
+    return Jinv
+
+
+@njit
 def getBmatrix(
     parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the gradient and Jacobian matrices from parent and physical coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
     #
-    # parent_coords : [1 x 3] parent coordinates at which the shape function is computed
-    # phys_coords   : [ndofe x 3] physical coordinates of the element nodes
+    # parent_coords : [1 x nsd] parent coordinates at which the shape function is computed
+    # phys_coords   : [ndofe x nsd] physical coordinates of the element nodes
     # B             : [nsd x ndofe] Gradient matrix
     # J             : [nsd x nsd] Jacobian matrix
 
+    nsd = len(parents_coords)
+
     xi = parents_coords[0]
     eta = parents_coords[1]
-    zeta = parents_coords[2]
+    if nsd == 3:
+        zeta = parents_coords[2]
 
     # Derivatives of shape functions in parent coordinates
-    dNdxi = (
-        1
-        / 8.0
-        * np.array(
-            [
-                [
-                    -1 + eta + zeta - eta * zeta,
-                    1 - eta - zeta + eta * zeta,
-                    1 + eta - zeta - eta * zeta,
-                    -1 - eta + zeta + eta * zeta,
-                    -1 + eta - zeta + eta * zeta,
-                    1 - eta + zeta - eta * zeta,
-                    1 + eta + zeta + eta * zeta,
-                    -1 - eta - zeta - eta * zeta,
-                ],
-                [
-                    -1 + xi + zeta - xi * zeta,
-                    -1 - xi + zeta + xi * zeta,
-                    1 + xi - zeta - xi * zeta,
-                    1 - xi - zeta + xi * zeta,
-                    -1 + xi - zeta + xi * zeta,
-                    -1 - xi - zeta - xi * zeta,
-                    1 + xi + zeta + xi * zeta,
-                    1 - xi + zeta - xi * zeta,
-                ],
-                [
-                    -1 + xi + eta - xi * eta,
-                    -1 - xi + eta + xi * eta,
-                    -1 - xi - eta - xi * eta,
-                    -1 + xi - eta + xi * eta,
-                    1 - xi - eta + xi * eta,
-                    1 + xi - eta - xi * eta,
-                    1 + xi + eta + xi * eta,
-                    1 - xi + eta - xi * eta,
-                ],
-            ],
-            dtype=np.float64,
-        )
-    )
+    ez = eta * zeta
+    xz = xi * zeta
+    xe = xi * eta
+    dNdxi = np.empty((3, 8))
+
+    dNdxi[0, 0] = 0.125 * (-1 + eta + zeta - ez)
+    dNdxi[0, 1] = 0.125 * (1 - eta - zeta + ez)
+    dNdxi[0, 2] = 0.125 * (1 + eta - zeta - ez)
+    dNdxi[0, 3] = 0.125 * (-1 - eta + zeta + ez)
+    dNdxi[0, 4] = 0.125 * (-1 + eta - zeta + ez)
+    dNdxi[0, 5] = 0.125 * (1 - eta + zeta - ez)
+    dNdxi[0, 6] = 0.125 * (1 + eta + zeta + ez)
+    dNdxi[0, 7] = 0.125 * (-1 - eta - zeta - ez)
+
+    dNdxi[1, 0] = 0.125 * (-1 + xi + zeta - xz)
+    dNdxi[1, 1] = 0.125 * (-1 - xi + zeta + xz)
+    dNdxi[1, 2] = 0.125 * (1 + xi - zeta - xz)
+    dNdxi[1, 3] = 0.125 * (1 - xi - zeta + xz)
+    dNdxi[1, 4] = 0.125 * (-1 + xi - zeta + xz)
+    dNdxi[1, 5] = 0.125 * (-1 - xi - zeta - xz)
+    dNdxi[1, 6] = 0.125 * (1 + xi + zeta + xz)
+    dNdxi[1, 7] = 0.125 * (1 - xi + zeta - xz)
+
+    dNdxi[2, 0] = 0.125 * (-1 + xi + eta - xe)
+    dNdxi[2, 1] = 0.125 * (-1 - xi + eta + xe)
+    dNdxi[2, 2] = 0.125 * (-1 - xi - eta - xe)
+    dNdxi[2, 3] = 0.125 * (-1 + xi - eta + xe)
+    dNdxi[2, 4] = 0.125 * (1 - xi - eta + xe)
+    dNdxi[2, 5] = 0.125 * (1 + xi - eta - xe)
+    dNdxi[2, 6] = 0.125 * (1 + xi + eta + xe)
+    dNdxi[2, 7] = 0.125 * (1 - xi + eta - xe)
 
     J = dNdxi @ phys_coords
 
-    # Jinv = 1/(J[1,1]*J[2,2] - J[1,2]*J[2,2])*np.array([ [J[2,2], -J[1,2]], [-J[2,1], J[1,1]]  ])
-    # B = Jinv @ dNdxi
-
-    B = np.linalg.solve(J, dNdxi).astype(np.float64)
+    Jinv = _inverseJ(J, nsd)
+    B = Jinv @ dNdxi
 
     return B, J
 

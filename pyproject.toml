@@ -9,7 +9,9 @@ dependencies = [
     "numpy",
     "scipy",
     "matplotlib",
-    "pyyaml",]
+    "pyyaml",
+    "numba",
+    ]
 
 
 [dependency-groups]   # e.g. uv add --group dev ruff
