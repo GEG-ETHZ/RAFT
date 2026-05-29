@@ -2,7 +2,7 @@
 
 import numpy as np
 import numpy.typing as npt
-from numba import njit
+from numba import njit  # type: ignore[import-untyped]
 
 
 @njit
@@ -32,7 +32,7 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
 def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
     if nsd == 2:
         Jinv = (
-            1 / (J[0, 0] * J[1, 1] - J[0, 1] * J[1, 1]) * np.array([[J[1, 1], -J[0, 1]], [-J[1, 0], J[0, 0]]])
+            1 / (J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0]) * np.array([[J[1, 1], -J[0, 1]], [-J[1, 0], J[0, 0]]])
         )
     else:
         # Unpack the matrix elements
@@ -63,13 +63,14 @@ def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
                     (m01 * m20 - m00 * m21) * inv_det,
                     (m00 * m11 - m01 * m10) * inv_det,
                 ],
-            ]
+            ],
+            dtype=np.float64,
         )
 
     return Jinv
 
 
-@njit
+@njit(cache=True)
 def getBmatrix(
     parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
