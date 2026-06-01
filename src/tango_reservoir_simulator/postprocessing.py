@@ -179,9 +179,16 @@ def postprocessing(
         name = "outflow.log"
         filename = os.path.join(io_path, name)
 
+        # ---- Clear file on first pass
+        if n == 0:
+            open(filename, "w").close()
+
         # ----- Extract primary variables
-        q = primary_variables["q_out"].flatten()
+        q_out = primary_variables["q_out"].flatten()
+        T_out = primary_variables["T_out"].flatten()
         with open(filename, "a") as fid:
-            fid.write(f"{t:.6e}\t" + "\t".join(f"{val:.6e}" for val in q) + "\n")
+            fid.write(f"{t:.6e}\t")
+            fid.write("\t".join(f"{val:.6e}" for val in q_out) + "\t")
+            fid.write("\t".join(f"{val:.6e}" for val in T_out) + "\n")
 
     return config

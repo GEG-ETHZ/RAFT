@@ -197,7 +197,8 @@ def _lin_extrap_time_integration(
 
     primary_variables["p"] = p
     primary_variables["T"] = T
-    primary_variables["q_out"] = qE
+    primary_variables["q_out"] = qE  # outlet flow rates
+    primary_variables["T_out"] = T[p_fix, 0]  # outlet temperatures
     return primary_variables, dt
 
 
@@ -235,7 +236,6 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     # [t_n, t_(n-1), t_(n-2)]
     p = np.zeros((len(p_dofs), 4))
     T = np.zeros((len(T_dofs), 4))
-    q_out = np.zeros((len(config["boundary_conditions"]["pressure_fixed"][0]["nodes"]), 1))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -252,7 +252,11 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     material["T_0"] = T[:, 1]  # initial condition reference temperature
     primary_variables["p"] = p
     primary_variables["T"] = T
+
+    outlet_nodes = config["boundary_conditions"]["pressure_fixed"][0]["nodes"]
+    q_out = np.zeros((len(outlet_nodes), 1))
     primary_variables["q_out"] = q_out
+    primary_variables["T_out"] = T[outlet_nodes, 0]
 
     # --- Export initial condition
     if verbose:
