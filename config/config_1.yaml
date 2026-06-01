@@ -18,7 +18,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0.7e-3         # m^2 (permeability)
+      viscosity: 0.7e-3         # Pa-s
 
   # Coupled parameters
   porosity: 0.01                # -
