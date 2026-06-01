@@ -123,6 +123,7 @@ def postprocessing(
     mesh: dict[str, Any],
     config: dict[str, Any],
     primary_variables: dict[str, Any],
+    t: float,
     verbose: bool,
 ):
     """Postprocessing of FEM data.
@@ -138,13 +139,15 @@ def postprocessing(
     if not os.path.exists(io_path):
         os.makedirs(io_path)
 
-    name = f"Solution.vtk.{n}"
-    filename = os.path.join(io_path, name)
-
-    # --- Output, frequency is controlled by user user input
+    # --- Output vtk, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0 and config["simulation"]["output_vtk"]:
         if verbose:
             print("     Writing to output file...")
+
+        # ---- File name
+        name = f"Solution.vtk.{n}"
+        filename = os.path.join(io_path, name)
+
         # ----- Extract primary variables
         p = primary_variables["p"][:, 0]
         T = primary_variables["T"][:, 0]
@@ -169,5 +172,16 @@ def postprocessing(
 
         # ----- Export to vtk
         write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)
+
+    # --- Output text files, frequency is controlled by user user input
+    if (n % config["simulation"]["output_frequency"]) == 0:
+        # ---- File name
+        name = "outflow.log"
+        filename = os.path.join(io_path, name)
+
+        # ----- Extract primary variables
+        q = primary_variables["q_out"].flatten()
+        with open(filename, "a") as fid:
+            fid.write(f"{t:.6e}\t" + "\t".join(f"{val:.6e}" for val in q) + "\n")
 
     return config

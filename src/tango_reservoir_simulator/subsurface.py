@@ -164,6 +164,11 @@ def _lin_extrap_time_integration(
         p[nE, 0] = dE
         p[nF, 0] = pF.ravel()
 
+        # Calculate reaction flow rates at prescribed DoFs
+        KEE = A[np.ix_(nE, nE)]
+        KEF = A[np.ix_(nE, nF)]
+        qE = KEE @ dE.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
+
         # Update nonlinear matrices with new pressure
         if verbose:
             print("     Assembling non-linear matrices...")
@@ -192,6 +197,7 @@ def _lin_extrap_time_integration(
 
     primary_variables["p"] = p
     primary_variables["T"] = T
+    primary_variables["q_out"] = qE
     return primary_variables, dt
 
 
@@ -229,6 +235,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     # [t_n, t_(n-1), t_(n-2)]
     p = np.zeros((len(p_dofs), 4))
     T = np.zeros((len(T_dofs), 4))
+    q_out = np.zeros((len(config["boundary_conditions"]["pressure_fixed"][0]["nodes"]), 1))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -245,12 +252,13 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     material["T_0"] = T[:, 1]  # initial condition reference temperature
     primary_variables["p"] = p
     primary_variables["T"] = T
+    primary_variables["q_out"] = q_out
 
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
     n = 0  # Time step counter
-    postprocessing(n, mesh, config, primary_variables, verbose)
+    postprocessing(n, mesh, config, primary_variables, t, verbose)
     n += 1
 
     # ---- Time integration
@@ -277,7 +285,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
         # Post-processing
         if verbose:
             print("     Postprocessing...")
-        postprocessing(n, mesh, config, primary_variables, verbose)
+        postprocessing(n, mesh, config, primary_variables, t, verbose)
 
         # Update time step
         t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
