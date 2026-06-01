@@ -57,6 +57,36 @@ def _update_time(t, dt, t_end, dt_max):
     return t, dt
 
 
+def _check_convergence(T, T_extrap, dt, sim_control, n, verbose):
+    rel_tol_T = sim_control["rel_error_T"]
+    dt_min = sim_control["timestep_min"]
+    rate_order = sim_control["rate_order"]
+    converged = 1  # default to converged, and only break if not converged
+
+    # First few timesteps affected by initial conditions, do not check
+    if n < rate_order + 1:
+        return converged
+
+    # Calculate error
+    extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
+    if extrapolation_error > rel_tol_T:
+        if dt[0] != dt_min:
+            cut_factor = 0.85 * 4 / (1 + 3 * extrapolation_error / rel_tol_T)
+            dt[0] = max(cut_factor * dt[0], dt_min)
+            converged = 0
+            if verbose:
+                print(
+                    f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
+                )
+        else:
+            converged = 1
+            if verbose:
+                print(
+                    f"     Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                )
+    return converged
+
+
 # ------------------------ Primary time integration function --------
 def _lin_extrap_time_integration(
     sim_control: dict[str, Any],
@@ -82,8 +112,6 @@ def _lin_extrap_time_integration(
     buoy_on = sim_control["buoyancy_on"]
     steady_pres = sim_control["steady_pressure"]
     steady_temp = sim_control["steady_temperature"]
-    rel_tol_T = sim_control["rel_error_T"]
-    dt_min = sim_control["timestep_min"]
 
     converged = 0
     while not converged:
@@ -160,24 +188,7 @@ def _lin_extrap_time_integration(
         T[nF, 0] = TF.ravel()
 
         # Check for extrapolation error
-        converged = 1  # default to converged, and only break if not converged
-        if n > rate_order + 1:
-            extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
-            if extrapolation_error > rel_tol_T:
-                if dt[0] != dt_min:
-                    cut_factor = 0.85 * 4 / (1 + 3 * extrapolation_error / rel_tol_T)
-                    dt[0] = max(cut_factor * dt[0], dt_min)
-                    converged = 0
-                    if verbose:
-                        print(
-                            f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
-                        )
-                else:
-                    converged = 1
-                    if verbose:
-                        print(
-                            f"     Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                        )
+        converged = _check_convergence(T, T_extrap, dt, sim_control, n, verbose)
 
     primary_variables["p"] = p
     primary_variables["T"] = T
