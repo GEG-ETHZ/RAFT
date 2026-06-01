@@ -1,5 +1,5 @@
 mesh:
-  file: box_complex.msh
+  file: box_profiling.msh
   dimensions: 3
 
 material:
@@ -34,13 +34,13 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [0, 1, 2, 3, 7, 8, 9, 10, 14, 15, 16, 17], values: [ 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5]}
+      - {nodes: [0, 1, 2, 3, 7, 8, 9, 10], values: [ 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5, 1e5]}
 
   temperature_fixed:
       - {nodes: [4, 13], values: [10, 100]}
 
   fluid_flux:
-      - {nodes: [4, 13], values: [0.5, 0.5]}
+      - {nodes: [4, 13], values: [0.1, 0.5]}
 
   temperature_flux:
       - {nodes: [], values: []}
@@ -48,7 +48,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 1.0e+7
+  t_end: 3.0e+5
   timestep: 1.0e+3
   timestep_min: 1.0e+3
   timestep_max: 1.0e+4

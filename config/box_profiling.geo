@@ -58,7 +58,7 @@ Transfinite Curve {4, 3, 2, 1} = 2*Floor(nW/2)+1 Using Progression 1;
 Transfinite Curve {-8, 7} = 2*Floor(nR/2)+1 Using Progression 1/1.4;
 //+
 //+
-Extrude {0, 0, H/2} {
+Extrude {0, 20, H/2} {
   Surface{1}; Surface{3}; Surface{2}; Layers {{8,16,8},{0.05,0.95, 1}}; Recombine;
 }
 Extrude {0, 0, -H/2} {

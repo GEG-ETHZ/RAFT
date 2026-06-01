@@ -21,3 +21,12 @@ outputs/*
 # Ignore Jupyter notebooks and checkpoints if users create them anyway
 *.ipynb
 .ipynb_checkpoints/
+
+# Ignore config files except for example and profiling files
+config/*
+!config/config_example.yaml
+!config/box3D.geo
+!config/box3D.msh
+!config/config_profiling.yaml
+!config/box_profiling.geo
+!config/box_profiling.msh
