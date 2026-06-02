@@ -153,7 +153,6 @@ def integrate_linear_matrices(
         V += Ve
         L_char[i] = Ve ** (1 / 3)
 
-    # ----- Convert to CSC for efficient arithmetic
     mesh["L_char"] = L_char
     return (
         {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec},
@@ -273,7 +272,6 @@ def integrate_nonlinear_matrices(
             # K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
 
         # ----- Assemble element contributions into global matrices
-        # Using index arrays for lil_matrix:
         sl = slice(i * nne * nne, (i + 1) * nne * nne)
         row_vec[sl] = np.repeat(enodes, nne)
         col_vec[sl] = np.tile(enodes, nne)
