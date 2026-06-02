@@ -22,7 +22,8 @@ dev = [
     "pylsp-mypy~=0.7", # provides connection from python LSP to mypy
     "pylsp-rope~=0.1", # provides linting tools
     "pre-commit~=4.1",    # git hook management
-
+    "types-pyyaml>=6.0.12.20260518",
+    "scipy-stubs>=1.17.1.5",
 ]
 
 [build-system]
