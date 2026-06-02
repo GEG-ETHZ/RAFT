@@ -21,7 +21,7 @@ Run a simulation:
     uv run -m raft config.yaml
 
 Run the test suite:
-    uv run -m raft --test
+    uv run pytest
 
 ## Prerequisites
 - Python version specified in `.python-version`
@@ -40,22 +40,25 @@ This section should be deleted when creating a specific project from this templa
     ├── pyproject.toml
     ├── .gitignore
     ├── .python-version
-    ├── config/                         # YAML configuration files
-    ├── outputs/                        # VTK output files (auto-created)
+    ├── config/
+    ├── outputs/
     ├── src/
     │   └── raft/
     │       ├── __init__.py
-    │       ├── __main__.py             # Entry point for `python -m` or Spyder
-    │       ├── subsurface.py           # Main simulation loop
-    │       ├── preprocessing.py        # Config and mesh loading
-    │       ├── matrixassembly.py       # FEM matrix integration
-    │       ├── shapefunctions.py       # Shape functions and quadrature
-    │       ├── parseboundaryconditions.py  # BC parsing
-    │       ├── postprocessing.py       # Flux computation and VTK export
-    │       ├── writevtk.py             # VTK file writer
-    │       ├── test_simulation.py      # Integration test runner
-    │       └── test_checks.py          # Analytical solution checks
-
+    │       ├── __main__.py
+    │       ├── subsurface.py
+    │       ├── preprocessing.py
+    │       ├── matrixassembly.py
+    │       ├── shapefunctions.py
+    │       ├── parseboundaryconditions.py
+    │       ├── postprocessing.py
+    │       └── writevtk.py
+    ├── tests/
+    │   ├── __init__.py
+    │   ├── test_simulation.py
+    │   ├── test_checks.py
+    │   ├── test_configs/
+    │   └── test_demo.py
     └── uv.lock
 ```
 
@@ -69,8 +72,8 @@ This section should be deleted when creating a specific project from this templa
 Explained [here](./CONTRIBUTING.md#branching-strategy).
 
 ### Running Checks
-- **Tests:** `uv run run-tests`
+- **Tests:** `uv run pytest`
 
 - **Linting:** `uv run ruff check .`
 - **Formatting:** `uv run ruff format .` (use `--check` to verify without modifying)
-- **Type checking:** `uv run mypy src/`
+- **Type checking:** `uv run mypy .`

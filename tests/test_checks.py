@@ -6,7 +6,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .preprocessing import load_config
+from raft.preprocessing import load_config
 
 
 def check_patch_test(

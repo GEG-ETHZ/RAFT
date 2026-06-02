@@ -42,9 +42,11 @@ def main():
     args = parser.parse_args()
 
     if args.test:
-        from raft.test_simulation import _run_tests
+        import sys
 
-        _run_tests()
+        import pytest
+
+        sys.exit(pytest.main(["tests"]))
     elif args.config:
         from raft.subsurface import main as run_sim
 
