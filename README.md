@@ -18,10 +18,10 @@ it to the current timestep.
 
 ## Running the simulation
 Run a simulation:
-    uv run -m tango_reservoir_simulator config.yaml
+    uv run -m raft config.yaml
 
 Run the test suite:
-    uv run -m tango_reservoir_simulator --test
+    uv run -m raft --test
 
 ## Prerequisites
 - Python version specified in `.python-version`
@@ -43,7 +43,7 @@ This section should be deleted when creating a specific project from this templa
     ├── config/                         # YAML configuration files
     ├── outputs/                        # VTK output files (auto-created)
     ├── src/
-    │   └── tango_reservoir_simulator/
+    │   └── raft/
     │       ├── __init__.py
     │       ├── __main__.py             # Entry point for `python -m` or Spyder
     │       ├── subsurface.py           # Main simulation loop

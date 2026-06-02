@@ -2,6 +2,6 @@
 
 from importlib.metadata import version
 
-import tango_reservoir_simulator
+import raft
 
-__version__ = version("tango_reservoir_simulator")
+__version__ = version("raft")
