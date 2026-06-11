@@ -186,6 +186,86 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
+def _extract_exterior(mesh: dict[str, Any]):
+    """Find the nodes along the exterior for applying boundary conditions.
+    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
+    """
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+
+    # Define element faces
+    if nne == 8:  # B8 elements
+        faces = {
+            "face0": [0, 1, 2, 3],
+            "face1": [4, 5, 6, 7],
+            "face2": [0, 1, 5, 4],
+            "face3": [0, 3, 7, 4],
+            "face4": [1, 2, 6, 5],
+            "face5": [2, 3, 7, 6],
+        }
+    else:
+        raise NotImplementedError(f"Boundary extraction for {nne}-node elements")
+
+    # Loop through all elements, collect a list of faces in global coordinates,
+    # then find unique faces
+    face_tracker = {}  # sorted_face: [count, original face]
+
+    for elem in range(ne):
+        for face_name, face_local in faces.items():
+            original_face = tuple(conn[elem, face_local])  # for normals later
+            sorted_face = tuple(sorted(original_face))  # for uniqueness
+            if sorted_face in face_tracker:
+                face_tracker[sorted_face][0] += 1  # Increment count
+            else:
+                face_tracker[sorted_face] = [1, original_face]  # Store count and original
+
+    boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
+
+    # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
+    x_min = set()
+    x_max = set()
+    y_min = set()
+    y_max = set()
+    z_min = set()
+    z_max = set()
+
+    for face in boundary_faces:
+        # calculate plane normal
+        xI = nodes[face, :]
+        v1 = [xI[1, 0] - xI[0, 0], xI[1, 1] - xI[0, 1], xI[1, 2] - xI[0, 2]]
+        v2 = [xI[2, 0] - xI[0, 0], xI[2, 1] - xI[0, 1], xI[2, 2] - xI[0, 2]]
+        n = np.cross(v1, v2)
+
+        # project n onto axis normals
+        ex = n @ [1, 0, 0]
+        ey = n @ [0, 1, 0]
+        ez = n @ [0, 0, 1]
+
+        # Find which component has the largest magnitude
+        components = {"x": ex, "y": ey, "z": ez}
+        max_component = max(components, key=lambda k: abs(components[k]))
+
+        # Append to appropriate list based on sign
+        if max_component == "x":
+            (x_max if ex > 0 else x_min).update(face)
+        elif max_component == "y":
+            (y_max if ey > 0 else y_min).update(face)
+        else:  # max_component == 'z'
+            (z_max if ez > 0 else z_min).update(face)
+
+    mesh["boundaries"] = {}
+    mesh["boundaries"]["x_max"] = x_max
+    mesh["boundaries"]["x_min"] = x_min
+    mesh["boundaries"]["y_max"] = y_max
+    mesh["boundaries"]["y_min"] = y_min
+    mesh["boundaries"]["z_max"] = z_max
+    mesh["boundaries"]["z_min"] = z_min
+
+    return mesh
+
+
 def load_mesh(config_mesh: dict[str, Any], verbose: bool):
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
@@ -217,6 +297,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool):
             nq, etyp = 3, "Q9"
     mesh["n_quadrature"] = nq
     mesh["element_type"] = etyp
+
+    # Extract sets of exterior nodes
+    mesh = _extract_exterior(mesh)
 
     if verbose:
         print("----- Mesh statistics")
