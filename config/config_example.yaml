@@ -63,6 +63,8 @@ simulation:
   advection_on: 1
   pressurization_on: 0
   buoyancy_on: 0
+  steady_pressure: 0
+  steady_temperature: 0
 
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
