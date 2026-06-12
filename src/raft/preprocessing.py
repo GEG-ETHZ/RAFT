@@ -195,13 +195,13 @@ def _extract_exterior(mesh: dict[str, Any]):
     nne = mesh["nne"]
     ne = mesh["ne"]
 
-    # Define element faces
+    # Define element faces. Node numberings should have outwards pointing normals.
     if nne == 8:  # B8 elements
         faces = {
-            "face0": [0, 1, 2, 3],
+            "face0": [0, 3, 2, 1],
             "face1": [4, 5, 6, 7],
             "face2": [0, 1, 5, 4],
-            "face3": [0, 3, 7, 4],
+            "face3": [0, 4, 7, 3],
             "face4": [1, 2, 6, 5],
             "face5": [2, 3, 7, 6],
         }
@@ -209,7 +209,7 @@ def _extract_exterior(mesh: dict[str, Any]):
         raise NotImplementedError(f"Boundary extraction for {nne}-node elements")
 
     # Loop through all elements, collect a list of faces in global coordinates,
-    # then find unique faces
+    # then find unique faces.
 
     # use dictionary to track faces and keep original order for calculating normals.
     # dictionary structure: sorted_face: [count, original face]
@@ -267,6 +267,16 @@ def _extract_exterior(mesh: dict[str, Any]):
     mesh["boundaries"]["y_min"] = y_min
     mesh["boundaries"]["z_max"] = z_max
     mesh["boundaries"]["z_min"] = z_min
+
+    x_all = x_max | x_min
+    y_all = y_max | y_min
+    z_all = z_max | z_min
+    n_all = x_all | y_all | z_all
+
+    mesh["boundaries"]["x_all"] = x_all
+    mesh["boundaries"]["y_all"] = y_all
+    mesh["boundaries"]["z_all"] = z_all
+    mesh["boundaries"]["n_all"] = n_all
 
     return mesh
 
