@@ -210,26 +210,31 @@ def _extract_exterior(mesh: dict[str, Any]):
 
     # Loop through all elements, collect a list of faces in global coordinates,
     # then find unique faces
-    face_tracker = {}  # sorted_face: [count, original face]
+
+    # use dictionary to track faces and keep original order for calculating normals.
+    # dictionary structure: sorted_face: [count, original face]
+    face_tracker: dict[tuple[int, ...], list[int | tuple[int, ...]]] = {}
 
     for elem in range(ne):
         for face_name, face_local in faces.items():
             original_face = tuple(conn[elem, face_local])  # for normals later
             sorted_face = tuple(sorted(original_face))  # for uniqueness
             if sorted_face in face_tracker:
-                face_tracker[sorted_face][0] += 1  # Increment count
+                # Increment count
+                face_tracker[sorted_face][0] += 1  # type: ignore[operator]
             else:
-                face_tracker[sorted_face] = [1, original_face]  # Store count and original
+                # Store count and original
+                face_tracker[sorted_face] = [1, original_face]
 
     boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
-    x_min = set()
-    x_max = set()
-    y_min = set()
-    y_max = set()
-    z_min = set()
-    z_max = set()
+    x_min: set[int] = set()
+    x_max: set[int] = set()
+    y_min: set[int] = set()
+    y_max: set[int] = set()
+    z_min: set[int] = set()
+    z_max: set[int] = set()
 
     for face in boundary_faces:
         # calculate plane normal
@@ -249,11 +254,11 @@ def _extract_exterior(mesh: dict[str, Any]):
 
         # Append to appropriate list based on sign
         if max_component == "x":
-            (x_max if ex > 0 else x_min).update(face)
+            (x_max if ex > 0 else x_min).update(face)  # type: ignore[arg-type]
         elif max_component == "y":
-            (y_max if ey > 0 else y_min).update(face)
+            (y_max if ey > 0 else y_min).update(face)  # type: ignore[arg-type]
         else:  # max_component == 'z'
-            (z_max if ez > 0 else z_min).update(face)
+            (z_max if ez > 0 else z_min).update(face)  # type: ignore[arg-type]
 
     mesh["boundaries"] = {}
     mesh["boundaries"]["x_max"] = x_max
