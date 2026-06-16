@@ -36,8 +36,7 @@ Run the test suite:
 1. execute a script via: `uv run some_script.py`
 
 ## Project Structure
-This section should be deleted when creating a specific project from this template.
-```text
+```
 └── tango-reservoir-simulator
     ├── README.md
     ├── pyproject.toml

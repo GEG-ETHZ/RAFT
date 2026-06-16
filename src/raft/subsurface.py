@@ -207,7 +207,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     """Main simulation run."""
     if config_name is None:
         parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
-        parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
+        parser.add_argument("config", help="Name of the config file (e.g. config_example.yaml) in CONFIG_DIR")
         args = parser.parse_args()
         config_name = args.config
 
