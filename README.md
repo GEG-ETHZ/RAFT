@@ -18,7 +18,10 @@ it to the current timestep.
 
 ## Running the simulation
 Run a simulation:
-    uv run -m raft config.yaml
+    uv run -m raft **some-config-file.yaml**
+
+replace the config file with a specific config file name, such as:
+    uv run -m raft config_example.yaml
 
 Run the test suite:
     uv run pytest
