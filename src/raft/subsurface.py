@@ -224,6 +224,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     ## Numerical controls
     t = config["simulation"]["t_start"]
     t_end = config["simulation"]["t_end"]
+    # initialize timesteps and store 3 timesteps (necessary for higher order)
+    # dt = [dt_n, dt_(n-1), dt_(n-2)]
     dt = config["simulation"]["timestep"] * np.ones(3)
 
     ## Initialize vectors
