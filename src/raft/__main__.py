@@ -1,7 +1,7 @@
 """Entry point for running the simulator as a module.
 
 Run a simulation:
-    uv run -m raft config.yaml
+    uv run -m raft some-config-name.yaml
 
 Run the test suite:
     uv run -m raft --test
@@ -20,7 +20,7 @@ def main():
     parser.add_argument(
         "config",
         nargs="?",
-        help="Name of the config file (e.g. config_1.yaml)",
+        help="Name of the config file (e.g. config_example.yaml) in CONFIG_DIR",
     )
     parser.add_argument(
         "--config-dir",

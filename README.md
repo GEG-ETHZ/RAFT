@@ -18,7 +18,10 @@ it to the current timestep.
 
 ## Running the simulation
 Run a simulation:
-    uv run -m raft config.yaml
+    uv run -m raft **some-config-file.yaml**
+
+replace the config file with a specific config file name, such as:
+    uv run -m raft config_example.yaml
 
 Run the test suite:
     uv run pytest
@@ -33,8 +36,7 @@ Run the test suite:
 1. execute a script via: `uv run some_script.py`
 
 ## Project Structure
-This section should be deleted when creating a specific project from this template.
-```text
+```
 └── tango-reservoir-simulator
     ├── README.md
     ├── pyproject.toml

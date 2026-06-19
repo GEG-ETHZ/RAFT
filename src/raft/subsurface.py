@@ -207,7 +207,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     """Main simulation run."""
     if config_name is None:
         parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
-        parser.add_argument("config", help="Name of the config file (e.g. config_1.yaml)")
+        parser.add_argument("config", help="Name of the config file (e.g. config_example.yaml) in CONFIG_DIR")
         args = parser.parse_args()
         config_name = args.config
 
@@ -224,6 +224,8 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     ## Numerical controls
     t = config["simulation"]["t_start"]
     t_end = config["simulation"]["t_end"]
+    # initialize timesteps and store 3 timesteps (necessary for higher order)
+    # dt = [dt_n, dt_(n-1), dt_(n-2)]
     dt = config["simulation"]["timestep"] * np.ones(3)
 
     ## Initialize vectors
