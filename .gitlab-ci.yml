@@ -3,6 +3,10 @@ default:
     - gcp-runner
   image: ghcr.io/astral-sh/uv:python3.11-bookworm
 
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+
 stages:
   - lint
   - typecheck
@@ -15,19 +19,34 @@ before_script:
 
 lint_code:
   stage: lint
+  interruptible: true
   script:
     - uv run ruff format --check .
     - uv run ruff check .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 mypy_check:
   stage: typecheck
+  interruptible: true
   script:
     - uv run mypy .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 pytest:
   stage: test
+  interruptible: true
   script:
     - uv run pytest -v
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 # Automatically tag the source branch tip before it is deleted by the squash
 # merge. This preserves CHANGELOG.md comparison links (see CONTRIBUTING.md §
@@ -60,6 +79,4 @@ tag_branch:
     - git tag --force "bak/$BRANCH"
     - git push --force origin "refs/tags/bak/$BRANCH"
   rules:
-    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^(main|develop)$/'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME !~ /^(main|develop)$/'
