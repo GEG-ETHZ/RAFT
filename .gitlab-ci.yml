@@ -1,6 +1,7 @@
 default:
   tags:
-    - laptop
+    - gcp-runner
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm
 
 stages:
   - lint
@@ -34,7 +35,9 @@ pytest:
 # for topic branches (not develop / main).
 tag_branch:
   stage: tag
-  before_script: []  # skip uv sync — git is all we need
+  image: alpine:latest
+  before_script:
+    - apk add -q --no-cache git
   script:
     - BRANCH="$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
     # Rewrite the remote URL to authenticate with a Project Access Token.
@@ -57,4 +60,6 @@ tag_branch:
     - git tag --force "bak/$BRANCH"
     - git push --force origin "refs/tags/bak/$BRANCH"
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME !~ /^(main|develop)$/'
+    - if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^(main|develop)$/'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
