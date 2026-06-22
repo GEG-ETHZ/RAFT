@@ -1,6 +1,11 @@
 default:
   tags:
-    - laptop
+    - gcp-runner
+  image: ghcr.io/astral-sh/uv:python3.11-bookworm
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
 
 stages:
   - lint
@@ -14,19 +19,34 @@ before_script:
 
 lint_code:
   stage: lint
+  interruptible: true
   script:
     - uv run ruff format --check .
     - uv run ruff check .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 mypy_check:
   stage: typecheck
+  interruptible: true
   script:
     - uv run mypy .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 pytest:
   stage: test
+  interruptible: true
   script:
     - uv run pytest -v
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 # Automatically tag the source branch tip before it is deleted by the squash
 # merge. This preserves CHANGELOG.md comparison links (see CONTRIBUTING.md §
@@ -34,7 +54,9 @@ pytest:
 # for topic branches (not develop / main).
 tag_branch:
   stage: tag
-  before_script: []  # skip uv sync — git is all we need
+  image: alpine:latest
+  before_script:
+    - apk add -q --no-cache git
   script:
     - BRANCH="$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
     # Rewrite the remote URL to authenticate with a Project Access Token.

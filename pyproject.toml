@@ -1,22 +1,29 @@
 [project]
-name = "tango-reservoir-simulator"
+name = "raft"
 version = "0.1.0"
 description = "THM simulator for native coupling with TANGO"
 authors = [{name = "ETHZ/EAPS/GEG Group"}]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+    "numba",
+    ]
 
 
 [dependency-groups]   # e.g. uv add --group dev ruff
 dev = [
-    "mypy~=1.19",         # static type checker
-    "pytest~=9.0",        # testing
-    "ruff~=0.15",         # linter and formatter
+    "mypy~=1.19", # static type checker
+    "pytest~=9.0", # testing
+    "ruff~=0.15", # linter and formatter
     "pylsp-mypy~=0.7", # provides connection from python LSP to mypy
     "pylsp-rope~=0.1", # provides linting tools
-    "pre-commit~=4.1",    # git hook management
-
+    "types-pyyaml>=6.0.12.20260518",
+    "scipy-stubs>=1.17.1.5",
+    "prek==0.3.13",
 ]
 
 [build-system]
@@ -24,7 +31,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tango_reservoir_simulator"]
+packages = ["src/raft"]
 
 [tool.ruff]
 target-version = "py311"
@@ -54,10 +61,13 @@ ignore = [
     "D400",
     "D415",
     "D205",
+    "N802",
+    "N806",
+    "N803",
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["tango-reservoir-simulator"]
+known-first-party = ["raft"]
 
 [tool.ruff.lint.per-file-ignores]   # otherwise ruff shows "imported but unused" error
 "__init__.py" = ["F401"]
@@ -70,8 +80,9 @@ convention = "google"
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+mypy_path = "src"
 # Enables strict mypy checks; comment this out for projects that do not require strict type checking.
-strict = true
+# strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

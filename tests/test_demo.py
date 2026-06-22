@@ -8,8 +8,8 @@ project root.
 
 def test_import() -> None:
     """
-    Demo test that verifies that tango_reservoir_simulator can be imported.
+    Demo test that verifies that raft can be imported.
     """
-    import tango_reservoir_simulator  # noqa: F401  # type: ignore[import]
+    import raft  # noqa: F401  # type: ignore[import]
 
-    assert tango_reservoir_simulator.__version__ == "0.1.0"
+    assert raft.__version__ == "0.1.0"

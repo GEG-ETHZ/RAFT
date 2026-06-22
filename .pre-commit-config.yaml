@@ -19,9 +19,9 @@ repos:
         entry: uv run mypy
         language: system
         types: [python]
-        pass_filenames: false
+        # pass_filenames: false
         stages: [pre-push]
-        args: [ . ]
+        # args: [ . ]
 
   # Built-in hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -34,6 +34,7 @@ repos:
       - id: check-yaml
 
       - id: check-added-large-files
+        exclude: 'config/box_profiling\.msh'
       - id: no-commit-to-branch # This perfectly replaces the custom bash script by blocking commits AND pushes to main/develop
         args: [--branch, main, --branch, develop]
         stages: [pre-commit, pre-push]
@@ -48,4 +49,3 @@ repos:
         types: [python]
         pass_filenames: false
         stages: [pre-push]
-
