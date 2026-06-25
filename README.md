@@ -26,6 +26,77 @@ replace the config file with a specific config file name, such as:
 Run the test suite:
     uv run pytest
 
+## Configuration Parameters
+
+The simulator uses a YAML configuration file to define simulation options, material properties, initial conditions, boundary conditions, and numerical controls. Below is the list of parameters and their options.
+
+### `mesh`
+* **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format).
+* **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`).
+
+### `material`
+* **`solid`**: Rock mass properties.
+  * **`bulk_mod`** *(float, default: `20.0e9`)*: Solid bulk modulus in Pascals ($\text{Pa}$).
+  * **`density`** *(float, default: `2600.0`)*: Rock density in $\text{kg/m}^3$.
+  * **`therm_cond`** *(float or list, default: `3.0`)*: Rock thermal conductivity in $\text{W/m}\cdot\text{K}$. Can be a scalar for isotropic conductivity, or a list of length equal to the dimensions for anisotropic conductivity (e.g. `[3.0, 2.0, 0.1]`).
+  * **`specific_heat`** *(float, default: `800.0`)*: Rock specific heat capacity in $\text{J/kg}\cdot\text{K}$.
+  * **`therm_expansion`** *(float, default: `12.0e-6`)*: Rock volumetric linear thermal expansion coefficient in $1/\text{K}$.
+* **`fluid`**: Fluid phase properties.
+  * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
+  * **`density`** *(float, default: `1000.0`)*: Fluid density in $\text{kg/m}^3$.
+  * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
+  * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
+  * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
+  * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
+* **`porosity`** *(float, default: `0.01`)*: Reservoir porosity (dimensionless fraction).
+* **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless).
+* **`permeability`** *(float or list, default: `1.0e-16`)*: Permeability in $\text{m}^2$. Can be a scalar for isotropic permeability, or a list of length equal to the dimensions for anisotropic permeability (e.g. `[1.0e-13, 1.0e-11, 1.0e-12]`).
+* **`rotation_x`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the x-axis in degrees.
+* **`rotation_y`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the y-axis in degrees.
+* **`rotation_z`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the z-axis in degrees.
+
+These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R_z$ to rotate the local coordinate system along which the rock mass anisotropy is defined. The rotation is applied to both anisotropic permeability ($K = R \operatorname{diag}(k) R^T$) and anisotropic solid thermal conductivity ($\Lambda_s = R \operatorname{diag}(\lambda_s) R^T$).
+
+### `initial_conditions`
+* **`geothermal_gradient`** *(float, default: `0.0`)*: Geothermal temperature gradient with depth in $^\circ\text{C/m}$.
+* **`T_surf`** *(float, default: `20.0`)*: Reference/surface temperature in $^\circ\text{C}$.
+* **`pressure_gradient`** *(float, default: `0.0`)*: Fluid pressure gradient with depth in $\text{Pa/m}$.
+* **`p_surf`** *(float, default: `1.0e5`)*: Reference/surface pressure in $\text{Pa}$.
+
+### `boundary_conditions`
+Boundary conditions are lists applied to specific nodes. The first list element (index 0) defines boundary conditions that are constant in time, while the optional second element (index 1) defines time-dependent conditions.
+* **`pressure_fixed`**: Dirichlet boundary conditions for fluid pressure.
+* **`temperature_fixed`**: Dirichlet boundary conditions for temperature.
+* **`fluid_flux`**: Neumann boundary conditions for fluid flow flux.
+* **`temperature_flux`**: Neumann boundary conditions for heat flux.
+
+**Boundary Condition Representation Options:**
+* **Constant values (index 0)**:
+  * `nodes` *(list of integers)*: Node IDs where the boundary condition is applied.
+  * `values` *(list of floats)*: The prescribed values corresponding to the node IDs list.
+* **Time-dependent values (index 1)**:
+  * `nodes` *(list of integers)*: Node IDs.
+  * `function` *(string)*: Function type (supported: `"linear"`).
+  * `param_1` *(float)*: The function's first parameter (e.g., slope $m$ for linear function $y(t) = m \cdot t + c$).
+  * `param_2` *(float)*: The function's second parameter (e.g., intercept $c$ for linear function $y(t) = m \cdot t + c$).
+
+### `simulation`
+* **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
+* **`t_end`** *(float, default: `100.0`)*: End time of the simulation.
+* **`timestep`** *(float, default: `1.0`)*: Simulation timestep.
+* **`timestep_min`** *(float, default: `1.0`)*: Minimum allowed timestep.
+* **`timestep_max`** *(float, default: `1.0`)*: Maximum allowed timestep.
+* **`output_frequency`** *(integer, default: `1`)*: Controls how often outputs are written (every $N$ timesteps).
+* **`output_vtk`** *(integer/boolean, default: `0`)*: If set to `1`, enables writing mesh and solution fields to `.vtk` files for visualization.
+* **`output_directory`** *(string, optional)*: Custom output directory path. Defaults to `outputs/` under the repository root.
+* **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change (typically `1`).
+* **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
+* **`pressurization_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable thermal pressurization coupling; `0` to disable.
+* **`buoyancy_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable density buoyancy effects; `0` to disable.
+* **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
+* **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
+* **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks.
+
 ## Prerequisites
 - Python version specified in `.python-version`
 - uv (if not installed - see below)

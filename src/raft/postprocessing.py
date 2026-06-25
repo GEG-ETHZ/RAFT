@@ -36,7 +36,7 @@ def compute_fluid_flux(
     count = np.zeros(nn)
 
     # Material properties
-    kf = mat["permeability"]
+    kf = np.diag(mat["permeability"])
     mu = mat["fluid"]["viscosity"]
 
     # Local coordinates (xi) based on element type
@@ -103,7 +103,7 @@ def compute_fluid_flux(
             B, _ = getBmatrix(xi[n, :], xI)
 
             # Fluid flux calculation
-            flux_val = -kf / mu * (B @ pe)
+            flux_val = -kf / mu @ (B @ pe)
             q[:, enodes[n]] += flux_val
 
             count[enodes[n]] += 1

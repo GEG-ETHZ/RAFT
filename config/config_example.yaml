@@ -7,7 +7,7 @@ material:
   solid:
       bulk_mod:  20.0e+9        # Pa
       density: 2.0             # kg/m^3
-      therm_cond: 3.0e+6          # W/mK
+      therm_cond: 3.0          # W/mK
       specific_heat: 0        # J/kgK
       therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
 
@@ -23,7 +23,10 @@ material:
   # Coupled parameters
   porosity: 0.01                # -
   biot_coeff: 0.5               # -
-  permeability: 1.0e-13         # m^2
+  permeability: [1.0e-13, 1.0e-16, 1.0e-16]         # m^2
+  rotation_x: 0.0  # rotation of local coordinates around x-axis (degrees)
+  rotation_y: 45.0 # rotation of local coordinates around y-axis (degrees)
+  rotation_z: 0.0  # rotation of local coordinates around z-axis (degrees)
 
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
@@ -35,12 +38,12 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - faces: [x_min]
-        values: [13.1, 22.2]
+        values: [1e5]
+      - faces: [x_max]
+        values: [2e6]
 
   temperature_fixed:
-      - nodes: [10, 0]
-        values: [7]
-      - faces: [y_min]
+      - faces: [z_min]
         values: [14.2]
       - faces: [z_max]
         values: [70.1]
@@ -58,8 +61,8 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 5000.0
-  timestep: 1000.0
+  t_end: 50000.0
+  timestep: 10.0
   timestep_min: 1.0
   timestep_max: 1000.0
 

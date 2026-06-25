@@ -27,27 +27,38 @@ def check_patch_test(
     # Extract nodes along lines
     nodes = mesh["nodes"]
     dims = [0, 1, 2]
-    dims.remove(dimension)
-    line_1 = np.nonzero(
-        np.logical_and(
-            nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
-        )
-    )[0]
-    line_2 = np.nonzero(
-        np.logical_and(
-            nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
-        )
-    )[0]
-    line_3 = np.nonzero(
-        np.logical_and(
-            nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
-        )
-    )[0]
-    line_4 = np.nonzero(
-        np.logical_and(
-            nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
-        )
-    )[0]
+
+    if dimension in dims:  # Cases aligned with cartesian axis
+        dims.remove(dimension)
+        line_1 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+            )
+        )[0]
+        line_2 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+            )
+        )[0]
+        line_3 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+            )
+        )[0]
+        line_4 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+            )
+        )[0]
+    else:
+        # Cases not aligned with cartesian axis. Only works if only 1 element
+        # specified across the other axes.
+        n = 8
+        indx = list(range(n, n + n + 1))
+        line_1 = np.array([0] + indx + [4])
+        line_2 = np.array([3] + [i + n + 1 for i in indx] + [7])
+        line_3 = np.array([1] + [i + 2 * (n + 1) for i in indx] + [5])
+        line_4 = np.array([2] + [i + 3 * (n + 1) for i in indx] + [6])
 
     L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
 

@@ -14,6 +14,20 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_patch_anisotropy():
+    """Check exact linear approximation in anisotropy."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Anisotropy"
+    config_filename = "config_test_anisotropic.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+    )
+    assert test_pass
+
+
 def test_pressurization():
     """Test pressurization against analytical solutions."""
     case_dir = _test_data_dir()
