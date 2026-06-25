@@ -10,7 +10,12 @@ from raft.preprocessing import load_config
 
 
 def check_patch_test(
-    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    dimension: int,
+    test_name: str,
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
@@ -21,24 +26,40 @@ def check_patch_test(
 
     # Extract nodes along lines
     nodes = mesh["nodes"]
-    n = 8
-    indx = list(range(n, n + n + 1))
-    line_1 = np.array([0] + indx + [4])
-    line_2 = np.array([3] + [i + n + 1 for i in indx] + [7])
-    line_3 = np.array([1] + [i + 2 * (n + 1) for i in indx] + [5])
-    line_4 = np.array([2] + [i + 3 * (n + 1) for i in indx] + [6])
+    dims = [0, 1, 2]
+    dims.remove(dimension)
+    line_1 = np.nonzero(
+        np.logical_and(
+            nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+        )
+    )[0]
+    line_2 = np.nonzero(
+        np.logical_and(
+            nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+        )
+    )[0]
+    line_3 = np.nonzero(
+        np.logical_and(
+            nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+        )
+    )[0]
+    line_4 = np.nonzero(
+        np.logical_and(
+            nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+        )
+    )[0]
 
     L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
 
-    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
-    d_2 = np.sqrt(np.sum((nodes[line_2, :] - nodes[3, :]) ** 2, 1))
-    d_3 = np.sqrt(np.sum((nodes[line_3, :] - nodes[1, :]) ** 2, 1))
-    d_4 = np.sqrt(np.sum((nodes[line_4, :] - nodes[2, :]) ** 2, 1))
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1))
+    d_2 = np.sqrt(np.sum((nodes[line_2, :] - nodes[line_2[0], :]) ** 2, 1))
+    d_3 = np.sqrt(np.sum((nodes[line_3, :] - nodes[line_3[0], :]) ** 2, 1))
+    d_4 = np.sqrt(np.sum((nodes[line_4, :] - nodes[line_4[0], :]) ** 2, 1))
 
     # check temperature
 
     T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][0]["values"][4]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     T = results["T"][:, 0]
 
@@ -65,7 +86,7 @@ def check_patch_test(
 
     # check pressure
     p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][4]
+    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
 
     p = results["p"][:, 0]
 
@@ -110,7 +131,7 @@ def check_advection(
     # Define analytical solution
     mat = config["material"]
     # flux
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][4]
+    p0 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
     p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
     kf = mat["permeability"]
     mu = mat["fluid"]["viscosity"]
@@ -130,7 +151,7 @@ def check_advection(
     T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
 
     T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][0]["values"][4]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     # extract T and normalize
     T = (results["T"][:, 0] - T0) / (T1 - T0)
@@ -179,7 +200,7 @@ def check_buoyancy(
     rho_f = mat["fluid"]["density"]
     alpha_f = mat["fluid"]["therm_expansion"]
     T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][0]["values"][4]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
     dT = T0 - T1
 
     beta = rho_f * alpha_f * g * dT * L / 2
@@ -240,7 +261,7 @@ def check_pressurization(
     # effective expansion modulus
     alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
 
-    dT = -config["boundary_conditions"]["temperature_fixed"][1]["param_1"]
+    dT = -config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     beta = alpha_e * dT * mu * L**2 / 6 / kf
 
