@@ -34,26 +34,16 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-      - faces: [x_min]
-        values: [13.1, 22.2]
+      - {nodes: [7], values: [0]}
 
   temperature_fixed:
-      - nodes: [10, 0]
-        values: [7]
-      - faces: [y_min]
-        values: [14.2]
-      - faces: [z_max]
-        values: [70.1]
+      - {nodes: [0, 6], values: [70, 200]}
 
   fluid_flux:
-      # Fluid flux and temperature flux currently only support nodal values.
-      - coords: [[33, 24, 30]]
-        values: [10]
+      - {nodes: [0], values: [10]}
 
   temperature_flux:
-      # Fluid flux and temperature flux currently only support nodal values.
-      - nodes: []
-        values: []
+      - {nodes: [], values: []}
 
 simulation:
   # Time

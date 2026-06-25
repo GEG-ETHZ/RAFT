@@ -56,10 +56,7 @@ def test_patch_y():
     config_filename = "config_test_patchY.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    dimension = 1
-    test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
-    )
+    test_pass = test_checks.check_patch_test(config_filename, case_dir, primary_variables, mesh, test_name)
     assert test_pass
 
 
@@ -70,10 +67,7 @@ def test_patch_x():
     config_filename = "config_test_patchX.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    dimension = 0
-    test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
-    )
+    test_pass = test_checks.check_patch_test(config_filename, case_dir, primary_variables, mesh, test_name)
     assert test_pass
 
 
@@ -84,10 +78,7 @@ def test_patch_z():
     config_filename = "config_test_patchZ.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    dimension = 2
-    test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
-    )
+    test_pass = test_checks.check_patch_test(config_filename, case_dir, primary_variables, mesh, test_name)
     assert test_pass
 
 

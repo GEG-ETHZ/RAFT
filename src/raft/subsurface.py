@@ -255,9 +255,7 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     primary_variables["p"] = p
     primary_variables["T"] = T
 
-    # Update Boundary Conditions for initial step
-    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
-    outlet_nodes = boundary_conditions["p_dirichlet"][:, 0].astype(int)
+    outlet_nodes = config["boundary_conditions"]["pressure_fixed"][0]["nodes"]
     q_out = np.zeros((len(outlet_nodes), 1))
     primary_variables["q_out"] = q_out
     primary_variables["T_out"] = T[outlet_nodes, 0]
