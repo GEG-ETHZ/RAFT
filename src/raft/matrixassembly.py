@@ -31,12 +31,31 @@ def _make_sparse(
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
 
 
+def rotation_matrices(rot_x, rot_y, rot_z):
+    """Return individual rotation matrices (angles in degrees)."""
+    rot_x = np.radians(rot_x)
+    rot_y = np.radians(rot_y)
+    rot_z = np.radians(rot_z)
+
+    cx, sx = np.cos(rot_x), np.sin(rot_x)
+    cy, sy = np.cos(rot_y), np.sin(rot_y)
+    cz, sz = np.cos(rot_z), np.sin(rot_z)
+
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+
+    return Rx, Ry, Rz
+
+
+# Combined rotation (if needed)
+
+
 def integrate_linear_matrices(
     mesh: dict[str, Any], mat: dict[str, Any]
 ) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
     """Integrate linear matrices outside of time integration loop."""
     # ----- material properties
-    kf = mat["permeability"]
     mu = mat["fluid"]["viscosity"]
     alpha_s = mat["solid"]["therm_expansion"]
     alpha_f = mat["fluid"]["therm_expansion"]
@@ -46,6 +65,16 @@ def integrate_linear_matrices(
     Kf = mat["fluid"]["bulk_mod"]
     Ks = mat["solid"]["bulk_mod"]
 
+    # physical properties
+    nsd = mesh["nsd"]
+    Rx, Ry, Rz = rotation_matrices(mat["rotation_x"], mat["rotation_y"], mat["rotation_z"])
+    R = Rx @ Ry @ Rz  # general rotation matrix
+
+    # turn permeability into list if homogeneous
+    kf = mat["permeability"]
+    kf_list = [kf] * nsd if not isinstance(kf, list) else kf
+    kf = R @ np.diag(kf_list) @ R.T
+
     # Derived properties (computed here, not stored in YAML)
     M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
     comp_f = 1 / M  # compressibility
@@ -54,7 +83,9 @@ def integrate_linear_matrices(
     alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
 
     # effective conductivity
-    lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
+    ks = mat["solid"]["therm_cond"]
+    ks_list = [ks] * nsd if not isinstance(ks, list) else ks
+    lambda_e = phi * mat["fluid"]["therm_cond"] * np.eye(nsd) + (1 - phi) * R @ np.diag(ks_list) @ R.T
 
     # effective volumetric heat capacity
     m_e = (
@@ -63,8 +94,9 @@ def integrate_linear_matrices(
     )
 
     # store derived properties for future use
+    mat["permeability"] = kf_list  # list of kf_x,y,z
     mat["storage_mod"] = M
-    mat["therm_cond_eff"] = lambda_e
+    mat["therm_cond_eff"] = np.diag(lambda_e)  # list lambda_x,y,z
     mat["therm_expansion_eff"] = alpha_e
     mat["volumetric_heat_capacity_eff"] = m_e
 
@@ -77,8 +109,10 @@ def integrate_linear_matrices(
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
 
     # ----- gravity vector
-    g = np.zeros((nsd, 1))
-    g[nsd - 1] = -9.81
+    ng = np.zeros((nsd, 1))
+    ng[nsd - 1] = 1.0  # gravity normal
+    g = -9.81 * ng
+    kf_b = ng.T @ kf @ ng  # kf component in gravity direction
 
     # ----- Vectorized matrix assembly
     # Assemble lists of rows, columns, and entries and then assemble the sparse
@@ -129,11 +163,11 @@ def integrate_linear_matrices(
             wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
 
             KMe += N.T @ (comp_f * N) * wJe
-            Kppe += B.T @ (kf / mu * B) * wJe
+            Kppe += B.T @ (kf / mu @ B) * wJe
             KpTe += N.T @ (alpha_e * N) * wJe
-            KbTe += N.T @ (kf / mu * alpha_f * rho_f * g.T) @ B * wJe
+            KbTe += N.T @ (kf_b / mu * alpha_f * rho_f @ g.T) @ B * wJe
             Ce += N.T @ (m_e * N) * wJe
-            KTTe += B.T @ (lambda_e * B) * wJe
+            KTTe += B.T @ (lambda_e @ B) * wJe
             Ve += wJe
 
         # ----- Assemble element contributions into global matrices
@@ -171,7 +205,7 @@ def integrate_nonlinear_matrices(
     T = primary_variables["T"][:, 0]  # noqa: F841
 
     # ----- material properties
-    kf = mat["permeability"]
+    kf = np.diag(mat["permeability"])
     mu = mat["fluid"]["viscosity"]
     cp_f = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
@@ -235,7 +269,7 @@ def integrate_nonlinear_matrices(
             # gradT = B @ Te
 
             # fluxes
-            flux = -advec_conduct * gradp
+            flux = -np.diag(advec_conduct * gradp).reshape(-1, 1)
             flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
 
             # SUPG Stabilization
