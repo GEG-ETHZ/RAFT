@@ -64,21 +64,32 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 * **`p_surf`** *(float, default: `1.0e5`)*: Reference/surface pressure in $\text{Pa}$.
 
 ### `boundary_conditions`
-Boundary conditions are lists applied to specific nodes. The first list element (index 0) defines boundary conditions that are constant in time, while the optional second element (index 1) defines time-dependent conditions.
+Boundary conditions are specified in groups. Each group can be applied using one of three geometric specification methods: node indices, coordinate proximity, or named faces. Each group can also specify either constant or time-dependent values.
+
+**Boundary Condition Types:**
 * **`pressure_fixed`**: Dirichlet boundary conditions for fluid pressure.
 * **`temperature_fixed`**: Dirichlet boundary conditions for temperature.
 * **`fluid_flux`**: Neumann boundary conditions for fluid flow flux.
 * **`temperature_flux`**: Neumann boundary conditions for heat flux.
 
-**Boundary Condition Representation Options:**
-* **Constant values (index 0)**:
-  * `nodes` *(list of integers)*: Node IDs where the boundary condition is applied.
-  * `values` *(list of floats)*: The prescribed values corresponding to the node IDs list.
-* **Time-dependent values (index 1)**:
-  * `nodes` *(list of integers)*: Node IDs.
-  * `function` *(string)*: Function type (supported: `"linear"`).
-  * `param_1` *(float)*: The function's first parameter (e.g., slope $m$ for linear function $y(t) = m \cdot t + c$).
-  * `param_2` *(float)*: The function's second parameter (e.g., intercept $c$ for linear function $y(t) = m \cdot t + c$).
+**Geometry Specification Methods:**
+Each boundary condition group must specify nodes using exactly one of the following methods:
+
+* **`nodes`** *(list of integers)*: Direct node IDs where the boundary condition is applied.
+* **`coords`** *(list of coordinates)*: List of coordinate points; the node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
+* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Use caution when applying Neumann conditions to a face, as surface integrals over the face for a specified flux are not yet implemented. Instead, the values are applied directly into the forcing vector.
+
+**Value Specification:**
+ The function applied to the nodes is determined by the field `function`. Each group should contain a field named `"values"` which depends on the type of function being applied.
+* `function`: `"constant"`
+  * Constant value. Default if function not specified.
+  * `values`: `[specified value]` Single value float applied to all nodes in the group.
+* `function`: `"linear"`
+  * Linearly increasing with time.
+  * `values` : `[slope, intercept]` defines $y(t) = \text{slope} \cdot t + \text{intercept}$.
+
+
+
 
 ### `simulation`
 * **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
