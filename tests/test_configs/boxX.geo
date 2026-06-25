@@ -5,8 +5,8 @@ L = 51;
 W = 73;
 H = 43;
 
-nL = 1;
-nW = 1;
+nL = 3;
+nW = 3;
 nH = 10;
 
 Point(1) = {0,  0,  0, 1};
@@ -69,9 +69,10 @@ Surface Loop(1) = {3, 4, 5, 6, 1, 2};
 //+
 Volume(1) = {1};
 //+
+Transfinite Curve {8, -9, 11, -10} = nH+1 Using Progression 1.1;
+//
 Transfinite Curve {1, 5, 7, 3} = nL+1 Using Progression 1;
 //+
-Transfinite Curve {8, -9, 11, -10} = nH+1 Using Progression 1.1;
 //+
 Transfinite Curve {12, 6, 2, 4} = nW+1 Using Progression 1;
 //+
