@@ -82,7 +82,7 @@ warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"
 # Enables strict mypy checks; comment this out for projects that do not require strict type checking.
-# strict = true
+strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

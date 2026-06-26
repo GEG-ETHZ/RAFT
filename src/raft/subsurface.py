@@ -14,36 +14,40 @@ from .postprocessing import postprocessing
 from .preprocessing import preprocessing
 
 
-def rate_coefficients(dt, order):
+def rate_coefficients(
+    dt: npt.NDArray[np.float64], order: int
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Calculate the rate of change coefficients."""
-    # dt1 = t_n - t_(n-1)
-    # dt2 = t_(n-1) - t_(n-2)
-    # dt3 = t_(n-2) - t_(n-3)
-    dt1 = dt[0]
-    dt2 = dt[1]
-    dt3 = dt[2]
+    # dt_nm0 = t_n - t_(n-1)
+    # dt_nm1 = t_(n-1) - t_(n-2)
+    # dt_nm2 = t_(n-2) - t_(n-3)
+    dt_nm0 = dt[0]
+    dt_nm1 = dt[1]
+    dt_nm2 = dt[2]
     cv = np.ones(3)  # rate of change coefficients
     cx = np.ones(3)  # extrapolation coefficients
     if order > 1:
-        cv[0] = (2 * dt1 + dt2) / dt1 / (dt1 + dt2)
-        cv[1] = -(dt1 + dt2) / dt1 / dt2
-        cv[2] = dt1 / dt2 / (dt1 + dt2)
+        cv[0] = (2 * dt_nm0 + dt_nm1) / dt_nm0 / (dt_nm0 + dt_nm1)
+        cv[1] = -(dt_nm0 + dt_nm1) / dt_nm0 / dt_nm1
+        cv[2] = dt_nm0 / dt_nm1 / (dt_nm0 + dt_nm1)
 
-        cx[0] = (dt1 + dt2 + dt3) * (dt1 + dt2) / (dt2 + dt3) / dt2
-        cx[1] = -dt1 * (dt1 + dt2 + dt3) / dt2 / dt3
-        cx[2] = dt1 * (dt1 + dt2) / (dt2 + dt3) / dt3
+        cx[0] = (dt_nm0 + dt_nm1 + dt_nm2) * (dt_nm0 + dt_nm1) / (dt_nm1 + dt_nm2) / dt_nm1
+        cx[1] = -dt_nm0 * (dt_nm0 + dt_nm1 + dt_nm2) / dt_nm1 / dt_nm2
+        cx[2] = dt_nm0 * (dt_nm0 + dt_nm1) / (dt_nm1 + dt_nm2) / dt_nm2
     else:
-        cv[0] = 1 / dt1
-        cv[1] = -1 / dt1
+        cv[0] = 1 / dt_nm0
+        cv[1] = -1 / dt_nm0
         cv[2] = 0
 
-        cx[0] = 1 + dt1 / dt2
-        cx[1] = -dt1 / dt2
+        cx[0] = 1 + dt_nm0 / dt_nm1
+        cx[1] = -dt_nm0 / dt_nm1
         cx[2] = 0
     return cv, cx
 
 
-def _update_time(t, dt, t_end, dt_max):
+def _update_time(
+    t: float, dt: npt.NDArray[np.float64], t_end: float, dt_max: float
+) -> tuple[float, npt.NDArray[np.float64]]:
     """Update the current time and timestep."""
     dt[2] = dt[1]
     dt[1] = dt[0]
@@ -57,7 +61,14 @@ def _update_time(t, dt, t_end, dt_max):
     return t, dt
 
 
-def _check_convergence(T, T_extrap, dt, sim_control, n, verbose):
+def _check_convergence(
+    T: npt.NDArray[np.float64],
+    T_extrap: npt.NDArray[np.float64],
+    dt: npt.NDArray[np.float64],
+    sim_control: dict[str, Any],
+    n: int,
+    verbose: bool,
+) -> int:
     rel_tol_T = sim_control["rel_error_T"]
     dt_min = sim_control["timestep_min"]
     rate_order = sim_control["rate_order"]
@@ -203,7 +214,9 @@ def _lin_extrap_time_integration(
 
 
 # -------------------------------- Main simulation run function -------------
-def main(config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True):
+def main(
+    config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Main simulation run."""
     if config_name is None:
         parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
