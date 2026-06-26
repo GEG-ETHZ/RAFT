@@ -25,7 +25,9 @@ def _evaluateBCfunctions(incoming: dict[str, Any], t: float) -> dict[str, Any]:
     return incoming
 
 
-def _gatherBCs(mesh, t, incoming: list[dict[str, Any]], bctype: int) -> npt.NDArray[np.float64]:  # noqa: C901
+def _gatherBCs(  # noqa: C901
+    mesh: dict[str, Any], t: float, incoming: list[dict[str, Any]], bctype: int
+) -> npt.NDArray[np.float64]:
     """bctype: 1 - Dirichlet, 2 - Neumann
     Boundary condition type necessary for flux integrals, not yet implemented.
     """

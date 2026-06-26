@@ -125,7 +125,7 @@ def postprocessing(
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,
-):
+) -> dict[str, Any]:
     """Postprocessing of FEM data.
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
@@ -157,7 +157,7 @@ def postprocessing(
         flux = compute_fluid_flux(mesh, config["material"], p)
 
         # --- Sanitize and collect scalar data
-        def sanitize(data, threshold=1e-15):
+        def sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.NDArray[np.float64]:
             data[np.abs(data) < threshold] = 0
             return data
 

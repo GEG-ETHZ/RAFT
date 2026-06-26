@@ -5,7 +5,7 @@ import numpy.typing as npt
 from numba import njit  # type: ignore[import-untyped]
 
 
-@njit
+@njit  # type: ignore[untyped-decorator]
 def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Get the shape function matrix from parent coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
@@ -28,7 +28,7 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
     return N
 
 
-@njit
+@njit  # type: ignore[untyped-decorator]
 def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
     Jinv = np.empty((nsd, nsd), dtype=np.float64)
     if nsd == 2:
@@ -72,7 +72,7 @@ def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
     return Jinv
 
 
-@njit(cache=True)
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def getBmatrix(
     parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:

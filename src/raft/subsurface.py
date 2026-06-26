@@ -14,9 +14,7 @@ from .postprocessing import postprocessing
 from .preprocessing import preprocessing
 
 
-def rate_coefficients(
-    dt: npt.NDArray[np.float64], order: int
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Calculate the rate of change coefficients."""
     # dt_nm0 = t_n - t_(n-1)
     # dt_nm1 = t_(n-1) - t_(n-2)
@@ -45,9 +43,7 @@ def rate_coefficients(
     return cv, cx
 
 
-def _update_time(
-    t: float, dt: npt.NDArray[np.float64], t_end: float, dt_max: float
-) -> tuple[float, npt.NDArray[np.float64]]:
+def _update_time(t: float, dt: list[float], t_end: float, dt_max: float) -> tuple[float, list[float]]:
     """Update the current time and timestep."""
     dt[2] = dt[1]
     dt[1] = dt[0]
@@ -64,7 +60,7 @@ def _update_time(
 def _check_convergence(
     T: npt.NDArray[np.float64],
     T_extrap: npt.NDArray[np.float64],
-    dt: npt.NDArray[np.float64],
+    dt: list[float],
     sim_control: dict[str, Any],
     n: int,
     verbose: bool,
@@ -106,10 +102,10 @@ def _lin_extrap_time_integration(
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    dt: npt.NDArray[np.float64],
+    dt: list[float],
     n: int,
     verbose: bool,
-):
+) -> tuple[dict[str, Any], list[float]]:
     """Assemble FEM matrices and vectors and solve for solution at next timestep."""
     # extract vectors of nodal dofs
     p = primary_variables["p"]

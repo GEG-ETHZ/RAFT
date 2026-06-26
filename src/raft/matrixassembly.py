@@ -10,7 +10,7 @@ from scipy.sparse import csc_matrix
 from .shapefunctions import getBmatrix, getNmatrix, getquadrature
 
 
-def _calc_detJe(Je: npt.NDArray[np.float64], nsd: int):
+def _calc_detJe(Je: npt.NDArray[np.float64], nsd: int) -> Any:
     # set Jacobian formula based on space dimensions
     if nsd == 2:
         return Je[0, 0] * Je[1, 1] - Je[0, 1] * Je[1, 0]
@@ -31,7 +31,9 @@ def _make_sparse(
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
 
 
-def rotation_matrices(rot_x, rot_y, rot_z):
+def rotation_matrices(
+    rot_x: float, rot_y: float, rot_z: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return individual rotation matrices (angles in degrees)."""
     rot_x = np.radians(rot_x)
     rot_y = np.radians(rot_y)

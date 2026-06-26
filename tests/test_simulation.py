@@ -14,7 +14,7 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
-def test_patch_anisotropy():
+def test_patch_anisotropy() -> None:
     """Check exact linear approximation in anisotropy."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - Anisotropy"
@@ -28,7 +28,7 @@ def test_patch_anisotropy():
     assert test_pass
 
 
-def test_pressurization():
+def test_pressurization() -> None:
     """Test pressurization against analytical solutions."""
     case_dir = _test_data_dir()
     test_name = "Pressurization Test"
@@ -41,7 +41,7 @@ def test_pressurization():
     assert test_pass
 
 
-def test_buoyancy():
+def test_buoyancy() -> None:
     """Test buoyancy against analytical solutions."""
     case_dir = _test_data_dir()
     test_name = "Buoyancy Test"
@@ -52,7 +52,7 @@ def test_buoyancy():
     assert test_pass
 
 
-def test_advection():
+def test_advection() -> None:
     """Test advection against analytical solutions."""
     case_dir = _test_data_dir()
     test_name = "Advection Test"
@@ -63,7 +63,7 @@ def test_advection():
     assert test_pass
 
 
-def test_patch_y():
+def test_patch_y() -> None:
     """Check exact linear approximation in Y."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - Y"
@@ -77,7 +77,7 @@ def test_patch_y():
     assert test_pass
 
 
-def test_patch_x():
+def test_patch_x() -> None:
     """Check exact linear approximation in X."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - X"
@@ -91,7 +91,7 @@ def test_patch_x():
     assert test_pass
 
 
-def test_patch_z():
+def test_patch_z() -> None:
     """Check exact linear approximation in Z."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z"

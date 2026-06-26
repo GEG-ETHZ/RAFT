@@ -13,7 +13,7 @@ def write_mesh2vtk(  # noqa: C901
     conn: npt.NDArray[np.float64],
     scalar_data: list[dict[str, Any]] | None = None,
     vector_data: list[dict[str, Any]] | None = None,
-):
+) -> None:
     """Write FEM mesh data to a file in VTK format.
 
     Parameters:
@@ -46,12 +46,12 @@ def write_mesh2vtk(  # noqa: C901
         vector_data = []
 
     nodes = np.array(nodes, dtype=float)
-    conn = np.array(conn, dtype=int)
+    conn_int: npt.NDArray[np.int_] = np.asarray(conn, dtype=np.int_)
 
     nn = nodes.shape[0]  # number of nodes
     nsd = nodes.shape[1]  # number of spatial dimensions
-    ne = conn.shape[0]  # number of elements
-    nne = conn.shape[1]  # nodes per element
+    ne = conn_int.shape[0]  # number of elements
+    nne = conn_int.shape[1]  # nodes per element
     nd = len(scalar_data)  # number of scalar fields
 
     # Pad 2D nodes with a zero z-column for VTK output
@@ -106,13 +106,13 @@ def write_mesh2vtk(  # noqa: C901
             raise ValueError(f"WriteMesh2VTK: Element not supported (nsd={nsd}, nne={nne})")
 
         if nne == 9 or nne == 27:
-            nodes_out, conn0, scalar_data, vector_data = _strip_nodes(
-                nodes_out, conn, scalar_data, vector_data, nne
+            nodes_out, conn_int, scalar_data, vector_data = _strip_nodes(
+                nodes_out, conn_int, scalar_data, vector_data, nne
             )
             nn = nodes_out.shape[0]
 
         # Prepend node-count column to connectivity
-        conn_vtk = np.hstack([np.full((ne, 1), nne, dtype=int), conn])
+        conn_vtk = np.hstack([np.full((ne, 1), nne, dtype=int), conn_int])
 
         fid.write("DATASET UNSTRUCTURED_GRID\n")
         fid.write(f"POINTS {nn} float\n")
@@ -147,7 +147,13 @@ def write_mesh2vtk(  # noqa: C901
 
 
 # Helper
-def _strip_nodes(nodes_out, conn0, scalar_data, vector_data, nne):
+def _strip_nodes(
+    nodes_out: npt.NDArray[np.float64],
+    conn0: npt.NDArray[np.int_],
+    scalar_data: list[dict[str, Any]],
+    vector_data: list[dict[str, Any]],
+    nne: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int_], list[dict[str, Any]], list[dict[str, Any]]]:
     """ParaView cannot render Q9/27 elements. Remove higher order nodes to render as Q8/B20."""
     keep_cols = 8 if nne == 9 else 20
 

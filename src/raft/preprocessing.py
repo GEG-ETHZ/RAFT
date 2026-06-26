@@ -189,7 +189,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
-def _extract_exterior(mesh: dict[str, Any]):
+def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     """Find the nodes along the exterior for applying boundary conditions.
     Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
     """
@@ -284,7 +284,7 @@ def _extract_exterior(mesh: dict[str, Any]):
     return mesh
 
 
-def load_mesh(config_mesh: dict[str, Any], verbose: bool):
+def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
     [nodes, conn] = load_Gmsh(str(config_path), config_mesh["dimensions"])
