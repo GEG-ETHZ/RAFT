@@ -31,25 +31,6 @@ def _make_sparse(
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
 
 
-def rotation_matrices(
-    rot_x: float, rot_y: float, rot_z: float
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Return individual rotation matrices (angles in degrees)."""
-    rot_x = np.radians(rot_x)
-    rot_y = np.radians(rot_y)
-    rot_z = np.radians(rot_z)
-
-    cx, sx = np.cos(rot_x), np.sin(rot_x)
-    cy, sy = np.cos(rot_y), np.sin(rot_y)
-    cz, sz = np.cos(rot_z), np.sin(rot_z)
-
-    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
-    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
-    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-
-    return Rx, Ry, Rz
-
-
 # Combined rotation (if needed)
 
 
@@ -57,50 +38,10 @@ def integrate_linear_matrices(
     mesh: dict[str, Any], mat: dict[str, Any]
 ) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
     """Integrate linear matrices outside of time integration loop."""
-    # ----- material properties
+    # ----- fluid properties, universal
     mu = mat["fluid"]["viscosity"]
-    alpha_s = mat["solid"]["therm_expansion"]
     alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
-    phi = mat["porosity"]
-    biot = mat["biot_coeff"]
-    Kf = mat["fluid"]["bulk_mod"]
-    Ks = mat["solid"]["bulk_mod"]
-
-    # physical properties
-    nsd = mesh["nsd"]
-    Rx, Ry, Rz = rotation_matrices(mat["rotation_x"], mat["rotation_y"], mat["rotation_z"])
-    R = Rx @ Ry @ Rz  # general rotation matrix
-
-    # turn permeability into list if homogeneous
-    kf = mat["permeability"]
-    kf_list = [kf] * nsd if not isinstance(kf, list) else kf
-    kf = R @ np.diag(kf_list) @ R.T
-
-    # Derived properties (computed here, not stored in YAML)
-    M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
-    comp_f = 1 / M  # compressibility
-
-    # effective expansion modulus
-    alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
-
-    # effective conductivity
-    ks = mat["solid"]["therm_cond"]
-    ks_list = [ks] * nsd if not isinstance(ks, list) else ks
-    lambda_e = phi * mat["fluid"]["therm_cond"] * np.eye(nsd) + (1 - phi) * R @ np.diag(ks_list) @ R.T
-
-    # effective volumetric heat capacity
-    m_e = (
-        phi * mat["fluid"]["specific_heat"] * mat["fluid"]["density"]
-        + (1 - phi) * mat["solid"]["specific_heat"] * mat["solid"]["density"]
-    )
-
-    # store derived properties for future use
-    mat["permeability"] = kf_list  # list of kf_x,y,z
-    mat["storage_mod"] = M
-    mat["therm_cond_eff"] = np.diag(lambda_e)  # list lambda_x,y,z
-    mat["therm_expansion_eff"] = alpha_e
-    mat["volumetric_heat_capacity_eff"] = m_e
 
     # ----- mesh data
     nn = mesh["nn"]
@@ -109,12 +50,12 @@ def integrate_linear_matrices(
     nsd = mesh["nsd"]
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    regions = mesh["regions"]
 
     # ----- gravity vector
     ng = np.zeros((nsd, 1))
     ng[nsd - 1] = 1.0  # gravity normal
     g = -9.81 * ng
-    kf_b = ng.T @ kf @ ng  # kf component in gravity direction
 
     # ----- Vectorized matrix assembly
     # Assemble lists of rows, columns, and entries and then assemble the sparse
@@ -145,6 +86,14 @@ def integrate_linear_matrices(
     # ----- Matrix integration element loop
     for i in range(ne):
         enodes = conn[i, :]  # local element nodes
+        # solid properties - by region
+        alpha_e = mat["solid"]["therm_expansion_eff"][regions[i]]
+        comp_f = 1 / mat["solid"]["storage_mod"][regions[i]]
+        kf = mat["solid"]["permeability_eff"][regions[i]]
+        m_e = mat["solid"]["volumetric_heat_capacity_eff"][regions[i]]
+        lambda_e = mat["solid"]["therm_cond_eff"][regions[i]]
+
+        kf_b = ng.T @ kf @ ng  # kf component in gravity direction
 
         # Element matrices
         Kppe = np.zeros((nne, nne))
@@ -206,15 +155,10 @@ def integrate_nonlinear_matrices(
     p = primary_variables["p"][:, 0]
     T = primary_variables["T"][:, 0]  # noqa: F841
 
-    # ----- material properties
-    kf = np.diag(mat["permeability"])
+    # ----- fluid properties
     mu = mat["fluid"]["viscosity"]
     cp_f = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
-    lambda_e = mat["therm_cond_eff"]
-
-    advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
-    # advection velocity = advection_conduct * pressure gradient
 
     # ----- mesh data
     nn = mesh["nn"]
@@ -223,6 +167,7 @@ def integrate_nonlinear_matrices(
     nsd = mesh["nsd"]
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    regions = mesh["regions"]
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     total_entries = ne * nne * nne
@@ -248,6 +193,13 @@ def integrate_nonlinear_matrices(
     # ----- Matrix integration element loop
     for i in range(ne):
         enodes = conn[i, :]  # local element nodes
+        # solid properties - by region
+        kf = mat["solid"]["permeability_eff"][regions[i]]
+        lambda_e = mat["solid"]["therm_cond_eff"][regions[i]]
+
+        # advection velocity = advection_conduct * pressure gradient
+        advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
+
         pe = p[enodes].reshape(-1, 1)  # element nodal pressures
         # Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
         enodes_coords = nodes[enodes, :]
@@ -271,7 +223,7 @@ def integrate_nonlinear_matrices(
             # gradT = B @ Te
 
             # fluxes
-            flux = -np.diag(advec_conduct * gradp).reshape(-1, 1)
+            flux = -advec_conduct @ gradp
             flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
 
             # SUPG Stabilization
@@ -284,8 +236,14 @@ def integrate_nonlinear_matrices(
                     + (flux[1, 0] / L_vec[1, 0]) ** 2
                     + (flux[2, 0] / L_vec[2, 0]) ** 2
                 )
+
+                # Steamline vector
+                n_stream = flux / flux_mag
+                # Project conductivity along the vector
+                lambda_e_projected = n_stream.T @ lambda_e @ n_stream
+
                 # Pecelt number
-                Pe = h_eff * flux_mag / lambda_e
+                Pe = h_eff * flux_mag / lambda_e_projected
                 # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
                 tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
 

@@ -1,17 +1,42 @@
 mesh:
-  file: box3D.msh
+  file: box_regions.msh
+  regions:
+    - shape: "polyhedron"
+      values: [[0, 0, 45],
+             [50, 0, 45],
+             [50, 73, 45],
+             [0, 73, 45],
+             [0, 0, 35],
+             [50, 0, 35],
+             [50, 73, 10],
+             [0, 73, 10]]
+      region_number: 1
+    - shape: "sphere"
+      values: [[25, 37.5, -10],
+       20]
+      region_number: 2
+    - shape: "cylinder"
+      values: [[25, 37.5, 0],
+       5, [0,0.2,1]]
+      region_number: 2
   dimensions: 3
 
 material:
-  # Rock mass parameters
+  # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  20.0e+9        # Pa
-      density: 2.0             # kg/m^3
-      therm_cond: 3.0          # W/mK
-      specific_heat: 0        # J/kgK
-      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
+      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
+      density: [20, 20, 20]             # kg/m^3
+      therm_cond: [[2.0,1.0,1.0], 2.0, 1.0]          # W/mK
+      specific_heat: [85, 90, 10]        # J/kgK
+      therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
+      porosity: [0.01, 0.05, 0.01]                # -
+      biot_coeff: [0.5, 0.9, 0.5]               # -
+      permeability: [[1.0e-11, 1.0e-11, 1.0e-16],   [1.0e-12, 1.0e-12, 1.0e-17],   1.0e-19]       # m^2
+      rotation_x: [-45.0, -30.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
+      rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
-  # Fluid parameters
+  # Fluid parameters - single phase flow is assumed
   fluid:
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
@@ -20,38 +45,30 @@ material:
       specific_heat: 4250       # J/kgK
       viscosity: 0.7e-3         # Pa-s
 
-  # Coupled parameters
-  porosity: 0.01                # -
-  biot_coeff: 0.5               # -
-  permeability: [1.0e-13, 1.0e-16, 1.0e-16]         # m^2
-  rotation_x: 0.0  # rotation of local coordinates around x-axis (degrees)
-  rotation_y: 45.0 # rotation of local coordinates around y-axis (degrees)
-  rotation_z: 0.0  # rotation of local coordinates around z-axis (degrees)
-
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
-  T_surf: 200                   # deg C
+  T_surf: 70                   # deg C
   pressure_gradient: 0.0        # Pa/m
   p_surf: 1.0e+5
 
 
 boundary_conditions:
   pressure_fixed:
-      - faces: [x_min]
+      - faces: [z_max]
+        values: [3e6]
+      - faces: [z_min]
         values: [1e5]
-      - faces: [x_max]
-        values: [2e6]
 
   temperature_fixed:
-      - faces: [z_min]
-        values: [14.2]
       - faces: [z_max]
+        values: [14.2]
+      - faces: [z_min]
         values: [70.1]
 
   fluid_flux:
       # Fluid flux and temperature flux currently only support nodal values.
-      - coords: [[33, 24, 30]]
-        values: [10]
+      - coords: []
+        values: []
 
   temperature_flux:
       # Fluid flux and temperature flux currently only support nodal values.
@@ -61,13 +78,13 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 50000.0
+  t_end: 500000.0
   timestep: 10.0
   timestep_min: 1.0
   timestep_max: 1000.0
 
   # Output
-  output_frequency: 2
+  output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
 
@@ -75,7 +92,7 @@ simulation:
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  buoyancy_on: 0
+  buoyancy_on: 1
   steady_pressure: 0
   steady_temperature: 0
 

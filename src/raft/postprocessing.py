@@ -27,7 +27,7 @@ def compute_fluid_flux(
     nsd = mesh["nsd"]
     ne = mesh["ne"]
     nne = mesh["nne"]
-
+    regions = mesh["regions"]
     conn = mesh["conn"]
     nodes = mesh["nodes"]
 
@@ -35,8 +35,7 @@ def compute_fluid_flux(
     q = np.zeros((nsd, nn))
     count = np.zeros(nn)
 
-    # Material properties
-    kf = np.diag(mat["permeability"])
+    # Material properties - fluid
     mu = mat["fluid"]["viscosity"]
 
     # Local coordinates (xi) based on element type
@@ -95,6 +94,9 @@ def compute_fluid_flux(
     # Loop over elements
     for e in range(ne):
         enodes = conn[e, :]  # element nodes
+        # material properties - element
+        kf = mat["solid"]["permeability_eff"][regions[e]]
+
         xI = nodes[enodes, :nsd]  # element physical coordinates
         pe = p[enodes]  # element nodal pressures
 
@@ -122,6 +124,7 @@ def postprocessing(
     n: int,
     mesh: dict[str, Any],
     config: dict[str, Any],
+    material: dict[str, Any],
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,
@@ -161,17 +164,90 @@ def postprocessing(
             data[np.abs(data) < threshold] = 0
             return data
 
-        # Collect scalar data in an dictionary for export
-        scalardata = [
+        # Point Data
+        # --- Collect scalar data in a dictionary for export
+        scalardata_point = [
             {"name": "T", "data": sanitize(T.copy())},
             {"name": "p", "data": sanitize(p.copy())},
         ]
 
         # --- Vector data
-        vectordata = [{"name": "flux", "data": sanitize(flux.T)}]
+        vectordata_point = [{"name": "flux", "data": sanitize(flux.T)}]
+
+        # Cell Data
+        if n == 0:  # In the initial condition, export material properties and regions
+            indx = np.array(mesh["regions"])
+            scalardata_cell = [
+                {"name": "region", "data": mesh["regions"].copy()},
+                {"name": "porosity", "data": np.atleast_1d(np.asarray(material["solid"]["porosity"]))[indx]},
+                {
+                    "name": "biot_coefficient",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["biot_coeff"]))[indx],
+                },
+                {
+                    "name": "storage_modulus",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["storage_mod"]))[indx],
+                },
+                {
+                    "name": "thermal_expansion_effective",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_expansion_eff"]))[indx],
+                },
+                {
+                    "name": "volumetric_heatcapacity",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["volumetric_heat_capacity_eff"]))[
+                        indx
+                    ],
+                },
+                {
+                    "name": "rotation_x",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_x"]))[indx],
+                },
+                {
+                    "name": "rotation_y",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_y"]))[indx],
+                },
+                {
+                    "name": "rotation_z",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_z"]))[indx],
+                },
+                {
+                    "name": "effective_permeability_x",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 0, 0],
+                },
+                {
+                    "name": "effective_permeability_y",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 1, 1],
+                },
+                {
+                    "name": "effective_permeability_z",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 2, 2],
+                },
+                {
+                    "name": "effective_conductivity_x",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 0, 0],
+                },
+                {
+                    "name": "effective_conductivity_y",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 1, 1],
+                },
+                {
+                    "name": "effective_conductivity_z",
+                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 2, 2],
+                },
+            ]
+        else:
+            scalardata_cell = []
 
         # ----- Export to vtk
-        write_mesh2vtk(filename, "TANGO", mesh["nodes"], mesh["conn"], scalardata, vectordata)
+        write_mesh2vtk(
+            filename,
+            "TANGO",
+            mesh["nodes"],
+            mesh["conn"],
+            scalardata_point,
+            vectordata_point,
+            scalardata_cell,
+        )
 
     # --- Output text files, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0:

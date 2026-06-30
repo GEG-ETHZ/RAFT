@@ -14,6 +14,28 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_heterogeneous() -> None:
+    """Verify solution of heterogeneous properties against analytical solution."""
+    case_dir = _test_data_dir()
+    test_name = "Heterogeneous Test"
+    config_filename = "config_test_heterogeneous.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    test_pass = test_checks.check_heterogeneous(config_filename, case_dir, primary_variables, mesh, test_name)
+    assert test_pass
+
+
+def test_regions() -> None:
+    """Verify assignment of regions against a known list."""
+    case_dir = _test_data_dir()
+    # test_name = "Regions Test"
+    config_filename = "config_test_regions.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    test_pass = test_checks.check_regions(case_dir, mesh)
+    assert test_pass
+
+
 def test_patch_anisotropy() -> None:
     """Check exact linear approximation in anisotropy."""
     case_dir = _test_data_dir()
