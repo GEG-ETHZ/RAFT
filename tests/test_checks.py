@@ -144,12 +144,12 @@ def check_advection(
     # flux
     p0 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
     p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    kf = mat["permeability"]
+    kf = mat["solid"]["permeability"]
     mu = mat["fluid"]["viscosity"]
     q = kf / mu * (p1 - p0) / L
 
     # conductivity
-    phi = mat["porosity"]
+    phi = mat["solid"]["porosity"]
     lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
     cp = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
@@ -262,12 +262,12 @@ def check_pressurization(
     mat = config["material"]
 
     # ----- material properties
-    kf = mat["permeability"]
+    kf = mat["solid"]["permeability"]
     mu = mat["fluid"]["viscosity"]
     alpha_s = mat["solid"]["therm_expansion"]
     alpha_f = mat["fluid"]["therm_expansion"]
-    phi = mat["porosity"]
-    biot = mat["biot_coeff"]
+    phi = mat["solid"]["porosity"]
+    biot = mat["solid"]["biot_coeff"]
 
     # effective expansion modulus
     alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
@@ -294,6 +294,102 @@ def check_pressurization(
     p_exact = beta * (x**3 - x)
     err_ex = sum((p_exact - p[line_1]) ** 2)
     # The error here is calculated pased on the nodal solutions.
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_regions(config_dir: Path, mesh: dict[str, Any]) -> bool:
+    """Check regions against known list."""
+    # saved file with correct regions allocated to mesh.
+    region_path = config_dir / "regions_test_check.txt"
+
+    with open(region_path) as file:
+        element_regions = [int(line.strip()) for line in file]
+
+    test_regions = np.asarray(mesh["regions"])
+
+    test_pass = bool(np.all(element_regions == test_regions))
+
+    return test_pass
+
+
+def check_heterogeneous(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+) -> bool:
+    """Check patch test. Result should be an exact linear solution."""
+    # Set tolerance
+    tol = 1.0e-4
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+
+    n = 13
+    indx = list(range(8, 8 + n + 1))
+    line_1 = np.array([0] + indx + [4])
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1))
+
+    # Define regions
+    H = 21
+    regions = np.zeros(len(line_1)).astype(int)
+    regions[d_1 < H] = 1
+
+    # check temperature
+
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    A = max(mesh["nodes"][:, 0]) * max(mesh["nodes"][:, 1])
+    q = -q / A * 4
+
+    k = config["material"]["solid"]["therm_cond"]
+
+    T_ex = T0 * np.ones(len(d_1))
+    for i in range(len(d_1) - 1):
+        T_ex[i + 1] = T_ex[i] - q / k[regions[i + 1]] * (d_1[i + 1] - d_1[i])
+
+    T = results["T"][:, 0]
+
+    plt.figure()
+    plt.plot(d_1, T_ex, "r-")
+    plt.plot(d_1, T[line_1], "ko")
+    plt.xlabel("d (m)")
+    plt.ylabel("T")
+    plt.title(test_name)
+
+    # calculate error
+    err_ex = sum((T_ex - T[line_1]) ** 2)
+
+    # check pressure
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    q = -q / A * 4
+
+    k = config["material"]["solid"]["permeability"]
+    mu = config["material"]["fluid"]["viscosity"]
+
+    p_ex = p0 * np.ones(len(d_1))
+    for i in range(len(d_1) - 1):
+        p_ex[i + 1] = p_ex[i] - mu * q / k[regions[i + 1]] * (d_1[i + 1] - d_1[i])
+
+    p = results["p"][:, 0]
+
+    plt.figure()
+    plt.plot(d_1, p_ex, "b-")
+    plt.plot(d_1, p[line_1], "ko")
+    plt.xlabel("d (m)")
+    plt.ylabel("p")
+    plt.title(test_name)
+
+    err_ex += sum((p_ex - p[line_1]) ** 2)
 
     test_pass = bool(err_ex < tol)
 

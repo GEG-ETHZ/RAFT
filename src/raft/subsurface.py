@@ -275,7 +275,7 @@ def main(
     if verbose:
         print("Export initial condition")
     n = 0  # Time step counter
-    postprocessing(n, mesh, config, primary_variables, t, verbose)
+    postprocessing(n, mesh, config, material, primary_variables, t, verbose)
     n += 1
 
     # ---- Time integration
@@ -302,7 +302,7 @@ def main(
         # Post-processing
         if verbose:
             print("     Postprocessing...")
-        postprocessing(n, mesh, config, primary_variables, t, verbose)
+        postprocessing(n, mesh, config, material, primary_variables, t, verbose)
 
         # Update time step
         t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])

@@ -33,14 +33,71 @@ The simulator uses a YAML configuration file to define simulation options, mater
 ### `mesh`
 * **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format).
 * **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`).
+### `regions`
+Regions allow you to assign different material properties to different sections of your domain. Each region is defined by a geometric shape which assign the region number to all elements whose centroids fall within the shape. Region numbers correspond to indices in the material property lists. Regions are an independent definition that does not rely on the mesh or domain, but conforming mesh boundaries are encouraged for more accurate results.
+
+If regions are not defined, homogeneity is assumed (all elements are assigned to region 0).
+
+**Region Definition:**
+Each region specification requires three fields:
+* **`shape`** *(string)*: Type of geometric boundary. Supported shapes:
+  * `"sphere"`
+  * `"cylinder"`
+  * `"polyhedron"`
+* **`values`** *(list)*: Shape-dependent parameters (see below).
+* **`region_number`** *(integer)*: Region ID assigned to elements within the shape. Must correspond to a valid index in your material property lists.
+
+**Shape-Specific Parameters:**
+
+* **Sphere:**
+```yaml
+  - shape: "sphere"
+    values: [[center_x, center_y, center_z], radius]
+    region_number: 1
+```
+  * Center (list of 3 floats): Coordinates of sphere center. Note that this can be outside the domain.
+  * Radius (float): Sphere radius.
+* **Cylinder:**
+```yaml
+  - shape: "cylinder"
+    values: [[center_x, center_y, center_z], radius, [axis_x, axis_y, axis_z], height]
+    region_number: 1
+```
+  * Center (list of 3 floats): Coordinates of cylinder axis origin. Note that this can be outside the domain.
+  * Radius (float): Cylinder radius.
+  * Axis direction (list of 3 floats): Unit vector along cylinder axis (will be normalized automatically).
+  * Height (float, optional): Cylinder half-height along axis direction. The cylinder extends equally in both directions from the center point. If omitted, height is unbounded.
+* **Polyhedron:**
+```yaml
+  - shape: "polyhedron"
+    values: [[x1, y1, z1], [x2, y2, z2], ..., [xn, yn, zn]]
+    region_number: 1
+```
+  * Vertex list (list of lists): Coordinates of polyhedron vertices. A convex hull is computed from these points to define the region.
+**Assignment Rules:**
+* Regions are processed in the order specified in the config file.
+* If an element centroid falls within multiple regions, it is assigned to the **last (highest-priority) region** that contains it.
+* All elements are initially assigned to region 0; unassigned elements remain in region 0.
+* Material properties are indexed by region number, so ensure your material lists have entries for each region used.
+* Multiple shape definitions can be assigned the same region numbers.
+
 
 ### `material`
-* **`solid`**: Rock mass properties.
+* **`solid`**: Rock mass properties. Rock mass properties are defined per region. If regions are defined, RAFT expects a list with a number of entries equal to the number of regions. Region numbers correspond to property indices.
   * **`bulk_mod`** *(float, default: `20.0e9`)*: Solid bulk modulus in Pascals ($\text{Pa}$).
   * **`density`** *(float, default: `2600.0`)*: Rock density in $\text{kg/m}^3$.
   * **`therm_cond`** *(float or list, default: `3.0`)*: Rock thermal conductivity in $\text{W/m}\cdot\text{K}$. Can be a scalar for isotropic conductivity, or a list of length equal to the dimensions for anisotropic conductivity (e.g. `[3.0, 2.0, 0.1]`).
   * **`specific_heat`** *(float, default: `800.0`)*: Rock specific heat capacity in $\text{J/kg}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `12.0e-6`)*: Rock volumetric linear thermal expansion coefficient in $1/\text{K}$.
+  * **`porosity`** *(float, default: `0.01`)*: Reservoir porosity (dimensionless fraction).
+  * **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless).
+  * **`permeability`** *(float or list, default: `1.0e-16`)*: Permeability in $\text{m}^2$. Can be a scalar for isotropic permeability, or a list of length equal to the dimensions for anisotropic permeability (e.g. `[1.0e-13, 1.0e-11, 1.0e-12]`).
+  * **`rotation_x`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the x-axis in degrees.
+  * **`rotation_y`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the y-axis in degrees.
+  * **`rotation_z`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the z-axis in degrees.
+
+These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R_z$ to rotate the local coordinate system along which the rock mass anisotropy is defined. The rotation is applied to both anisotropic permeability ($K = R \operatorname{diag}(k) R^T$) and anisotropic solid thermal conductivity ($\Lambda_s = R \operatorname{diag}(\lambda_s) R^T$).
+
 * **`fluid`**: Fluid phase properties.
   * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
   * **`density`** *(float, default: `1000.0`)*: Fluid density in $\text{kg/m}^3$.
@@ -48,14 +105,6 @@ The simulator uses a YAML configuration file to define simulation options, mater
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
   * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
-* **`porosity`** *(float, default: `0.01`)*: Reservoir porosity (dimensionless fraction).
-* **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless).
-* **`permeability`** *(float or list, default: `1.0e-16`)*: Permeability in $\text{m}^2$. Can be a scalar for isotropic permeability, or a list of length equal to the dimensions for anisotropic permeability (e.g. `[1.0e-13, 1.0e-11, 1.0e-12]`).
-* **`rotation_x`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the x-axis in degrees.
-* **`rotation_y`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the y-axis in degrees.
-* **`rotation_z`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the z-axis in degrees.
-
-These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R_z$ to rotate the local coordinate system along which the rock mass anisotropy is defined. The rotation is applied to both anisotropic permeability ($K = R \operatorname{diag}(k) R^T$) and anisotropic solid thermal conductivity ($\Lambda_s = R \operatorname{diag}(\lambda_s) R^T$).
 
 ### `initial_conditions`
 * **`geothermal_gradient`** *(float, default: `0.0`)*: Geothermal temperature gradient with depth in $^\circ\text{C/m}$.
