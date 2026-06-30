@@ -93,7 +93,7 @@ def integrate_linear_matrices(
         m_e = mat["solid"]["volumetric_heat_capacity_eff"][regions[i]]
         lambda_e = mat["solid"]["therm_cond_eff"][regions[i]]
 
-        kf_b = ng.T @ kf @ ng  # kf component in gravity direction
+        kf_b = ng.T @ np.dot(kf, ng)  # kf component in gravity direction
 
         # Element matrices
         Kppe = np.zeros((nne, nne))
@@ -114,11 +114,11 @@ def integrate_linear_matrices(
             wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
 
             KMe += N.T @ (comp_f * N) * wJe
-            Kppe += B.T @ (kf / mu @ B) * wJe
+            Kppe += B.T @ np.dot(kf / mu, B) * wJe
             KpTe += N.T @ (alpha_e * N) * wJe
             KbTe += N.T @ (kf_b / mu * alpha_f * rho_f @ g.T) @ B * wJe
             Ce += N.T @ (m_e * N) * wJe
-            KTTe += B.T @ (lambda_e @ B) * wJe
+            KTTe += B.T @ np.dot(lambda_e, B) * wJe
             Ve += wJe
 
         # ----- Assemble element contributions into global matrices
@@ -197,6 +197,10 @@ def integrate_nonlinear_matrices(
         kf = mat["solid"]["permeability_eff"][r]
         lambda_e = mat["solid"]["therm_cond_eff"][r]
 
+        # Check for region isotropy
+        if isinstance(lambda_e, (float, int)):
+            isotropic = True
+
         # advection velocity = advection_conduct * pressure gradient
         advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
 
@@ -226,7 +230,7 @@ def integrate_nonlinear_matrices(
                 # gradT = B @ Te
 
                 # fluxes
-                flux = -advec_conduct @ gradp
+                flux = -np.dot(advec_conduct, gradp)
                 flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
 
                 # SUPG Stabilization
@@ -240,10 +244,13 @@ def integrate_nonlinear_matrices(
                         + (flux[2, 0] / L_vec[2, 0]) ** 2
                     )
 
-                    # Steamline vector
-                    n_stream = flux / flux_mag
-                    # Project conductivity along the vector
-                    lambda_e_projected = n_stream.T @ lambda_e @ n_stream
+                    if isotropic:
+                        lambda_e_projected = lambda_e
+                    else:
+                        # Steamline vector
+                        n_stream = flux / flux_mag
+                        # Project conductivity along the vector
+                        lambda_e_projected = n_stream.T @ lambda_e @ n_stream
 
                     # Pecelt number
                     Pe = h_eff * flux_mag / lambda_e_projected

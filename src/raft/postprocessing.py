@@ -105,7 +105,7 @@ def compute_fluid_flux(
             B, _ = getBmatrix(xi[n, :], xI)
 
             # Fluid flux calculation
-            flux_val = -kf / mu @ (B @ pe)
+            flux_val = -np.dot(kf / mu, (B @ pe))
             q[:, enodes[n]] += flux_val
 
             count[enodes[n]] += 1
@@ -177,6 +177,28 @@ def postprocessing(
         # Cell Data
         if n == 0:  # In the initial condition, export material properties and regions
             indx = np.array(mesh["regions"])
+            # Extract and handle potential isotropic vs anisotropic permeability tensor
+            perm_eff = np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx]
+            if perm_eff.ndim == 3:
+                perm_x = perm_eff[:, 0, 0]
+                perm_y = perm_eff[:, 1, 1]
+                perm_z = perm_eff[:, 2, 2]
+            else:
+                perm_x = perm_eff
+                perm_y = perm_eff
+                perm_z = perm_eff
+
+            # Extract and handle potential isotropic vs anisotropic thermal conductivity tensor
+            cond_eff = np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx]
+            if cond_eff.ndim == 3:
+                cond_x = cond_eff[:, 0, 0]
+                cond_y = cond_eff[:, 1, 1]
+                cond_z = cond_eff[:, 2, 2]
+            else:
+                cond_x = cond_eff
+                cond_y = cond_eff
+                cond_z = cond_eff
+
             scalardata_cell = [
                 {"name": "region", "data": mesh["regions"].copy()},
                 {"name": "porosity", "data": np.atleast_1d(np.asarray(material["solid"]["porosity"]))[indx]},
@@ -212,27 +234,27 @@ def postprocessing(
                 },
                 {
                     "name": "effective_permeability_x",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 0, 0],
+                    "data": perm_x,
                 },
                 {
                     "name": "effective_permeability_y",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 1, 1],
+                    "data": perm_y,
                 },
                 {
                     "name": "effective_permeability_z",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx][:, 2, 2],
+                    "data": perm_z,
                 },
                 {
                     "name": "effective_conductivity_x",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 0, 0],
+                    "data": cond_x,
                 },
                 {
                     "name": "effective_conductivity_y",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 1, 1],
+                    "data": cond_y,
                 },
                 {
                     "name": "effective_conductivity_z",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx][:, 2, 2],
+                    "data": cond_z,
                 },
             ]
         else:

@@ -188,7 +188,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         biot = _get_region_value(mat["solid"]["biot_coeff"], r)
         Kf = mat["fluid"]["bulk_mod"]
         Ks = _get_region_value(mat["solid"]["bulk_mod"], r)
-        ks = _get_region_value(mat["solid"]["therm_cond"], r)
+        lambda_s = _get_region_value(mat["solid"]["therm_cond"], r)
         kf = _get_region_value(mat["solid"]["permeability"], r)
 
         # physical properties
@@ -199,9 +199,9 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z, nsd)
         R = Rx @ Ry @ Rz  # general rotation matrix
 
-        # turn permeability into list if homogeneous
-        kf_list = [kf] * nsd if not isinstance(kf, list) else kf
-        kf = R @ np.diag(kf_list) @ R.T
+        # For anisotropic case, perform rotation
+        if isinstance(kf, list):
+            kf = R @ np.diag(kf) @ R.T
 
         # Derived properties (computed here, not stored in YAML)
         M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
@@ -210,8 +210,14 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
 
         # effective conductivity
-        ks_list = [ks] * nsd if not isinstance(ks, list) else ks
-        lambda_e = phi * mat["fluid"]["therm_cond"] * np.eye(nsd) + (1 - phi) * R @ np.diag(ks_list) @ R.T
+        if isinstance(lambda_s, list):
+            # anisotropic case
+            lambda_e = (
+                phi * mat["fluid"]["therm_cond"] * np.eye(nsd) + (1 - phi) * R @ np.diag(lambda_s) @ R.T
+            )
+        else:
+            # isotropic case
+            lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * lambda_s
 
         # effective volumetric heat capacity
         cp_s = _get_region_value(mat["solid"]["specific_heat"], r)
