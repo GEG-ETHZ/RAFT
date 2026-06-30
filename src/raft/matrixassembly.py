@@ -167,7 +167,8 @@ def integrate_nonlinear_matrices(
     nsd = mesh["nsd"]
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    regions = mesh["regions"]
+    region_lists = mesh["region_lists"]
+    num_regions = mesh["num_regions"]
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     total_entries = ne * nne * nne
@@ -191,89 +192,91 @@ def integrate_nonlinear_matrices(
     nq = len(W)
 
     # ----- Matrix integration element loop
-    for i in range(ne):
-        enodes = conn[i, :]  # local element nodes
+    for r in range(num_regions):
         # solid properties - by region
-        kf = mat["solid"]["permeability_eff"][regions[i]]
-        lambda_e = mat["solid"]["therm_cond_eff"][regions[i]]
+        kf = mat["solid"]["permeability_eff"][r]
+        lambda_e = mat["solid"]["therm_cond_eff"][r]
 
         # advection velocity = advection_conduct * pressure gradient
         advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
 
-        pe = p[enodes].reshape(-1, 1)  # element nodal pressures
-        # Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
-        enodes_coords = nodes[enodes, :]
-        L_vec = (enodes_coords.max(axis=0) - enodes_coords.min(axis=0)).reshape(-1, 1)  # element lengths
+        for e in region_lists[r]:
+            enodes = conn[e, :]  # local element nodes
 
-        # Element matrices
-        KATTe = np.zeros((nne, nne))
-        K_stab_TTe = np.zeros((nne, nne))
-        # KATPe = np.zeros((nne, nne))
-        # K_stab_TPe = np.zeros((nne, nne))
+            pe = p[enodes].reshape(-1, 1)  # element nodal pressures
+            # Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
+            enodes_coords = nodes[enodes, :]
+            L_vec = (enodes_coords.max(axis=0) - enodes_coords.min(axis=0)).reshape(-1, 1)  # element lengths
 
-        for q in range(nq):
-            xi = Q[q, :]
-            Wi = W[q]
+            # Element matrices
+            KATTe = np.zeros((nne, nne))
+            K_stab_TTe = np.zeros((nne, nne))
+            # KATPe = np.zeros((nne, nne))
+            # K_stab_TPe = np.zeros((nne, nne))
 
-            B, Je = getBmatrix(xi, nodes[enodes, :])
-            N = getNmatrix(xi)
+            for q in range(nq):
+                xi = Q[q, :]
+                Wi = W[q]
 
-            # gradients
-            gradp = B @ pe
-            # gradT = B @ Te
+                B, Je = getBmatrix(xi, nodes[enodes, :])
+                N = getNmatrix(xi)
 
-            # fluxes
-            flux = -advec_conduct @ gradp
-            flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
+                # gradients
+                gradp = B @ pe
+                # gradT = B @ Te
 
-            # SUPG Stabilization
-            if flux_mag == 0:
-                tau = 0
-            else:
-                # Effective length weighted by fluxes
-                h_eff = flux_mag / math.sqrt(
-                    (flux[0, 0] / L_vec[0, 0]) ** 2
-                    + (flux[1, 0] / L_vec[1, 0]) ** 2
-                    + (flux[2, 0] / L_vec[2, 0]) ** 2
-                )
+                # fluxes
+                flux = -advec_conduct @ gradp
+                flux_mag = math.sqrt(flux[0, 0] ** 2 + flux[1, 0] ** 2 + flux[2, 0] ** 2)
 
-                # Steamline vector
-                n_stream = flux / flux_mag
-                # Project conductivity along the vector
-                lambda_e_projected = n_stream.T @ lambda_e @ n_stream
+                # SUPG Stabilization
+                if flux_mag == 0:
+                    tau = 0
+                else:
+                    # Effective length weighted by fluxes
+                    h_eff = flux_mag / math.sqrt(
+                        (flux[0, 0] / L_vec[0, 0]) ** 2
+                        + (flux[1, 0] / L_vec[1, 0]) ** 2
+                        + (flux[2, 0] / L_vec[2, 0]) ** 2
+                    )
 
-                # Pecelt number
-                Pe = h_eff * flux_mag / lambda_e_projected
-                # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
-                tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+                    # Steamline vector
+                    n_stream = flux / flux_mag
+                    # Project conductivity along the vector
+                    lambda_e_projected = n_stream.T @ lambda_e @ n_stream
 
-            # Resdiual of the discretized form, dropping 2nd order terms
-            # Rth = flux.T @ gradT
-            # 2nd order terms are usually negligible, but may be necessary for higher order elements.
-            # - lambda_e * G * Te
-            # - m_e * cv1 * N * Te
-            # G = d^2/dx^2 ( N )
+                    # Pecelt number
+                    Pe = h_eff * flux_mag / lambda_e_projected
+                    # SUPG stabilization coefficient (Shakib, Hughes, & Zohan (1991))
+                    tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
 
-            # Integrate
-            wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
-            KATTe += N.T @ (flux.T @ B) * wJe
-            K_stab_TTe += B.T * tau @ flux @ (flux.T @ B) * wJe
-            # with 2nd order terms
-            # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
+                # Resdiual of the discretized form, dropping 2nd order terms
+                # Rth = flux.T @ gradT
+                # 2nd order terms are usually negligible, but may be necessary for higher order elements.
+                # - lambda_e * G * Te
+                # - m_e * cv1 * N * Te
+                # G = d^2/dx^2 ( N )
 
-            # Derivatives wrt pressure
-            # KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
-            # K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
+                # Integrate
+                wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
+                KATTe += N.T @ (flux.T @ B) * wJe
+                K_stab_TTe += B.T * tau @ flux @ (flux.T @ B) * wJe
+                # with 2nd order terms
+                # B.T * tau * advec_conduct @ gradp * ( flux.T*B  - lambda_e * G - m_e * cv1 * N ) * wJe
 
-        # ----- Assemble element contributions into global matrices
-        sl = slice(i * nne * nne, (i + 1) * nne * nne)
-        row_vec[sl] = np.repeat(enodes, nne)
-        col_vec[sl] = np.tile(enodes, nne)
+                # Derivatives wrt pressure
+                # KATPe += N.T * advec_conduct @ gradT.T @ B * wJe
+                # K_stab_TPe += B.T * tau * advec_conduct * (Rth + advec_conduct * gradp.T @ gradT) @ B * wJe
 
-        vec["KATT"][sl] = KATTe.ravel()
-        vec["K_stab_TT"][sl] = K_stab_TTe.ravel()
-        # vec["KATP"][sl]      = KATPe.ravel()
-        # vec["K_stab_TP"][sl] = K_stab_TPe.ravel()
+            # ----- Assemble element contributions into global matrices
+            sl = slice(e * nne * nne, (e + 1) * nne * nne)
+            row_vec[sl] = np.repeat(enodes, nne)
+            col_vec[sl] = np.tile(enodes, nne)
+
+            vec["KATT"][sl] = KATTe.ravel()
+            vec["K_stab_TT"][sl] = K_stab_TTe.ravel()
+            # vec["KATP"][sl]      = KATPe.ravel()
+            # vec["K_stab_TP"][sl] = K_stab_TPe.ravel()
 
     # ----- Return and convert to sparse matrix
     return {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec}

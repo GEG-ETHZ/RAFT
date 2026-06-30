@@ -246,6 +246,19 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
     return list(regions_list)
 
 
+def _create_region_lists(mesh: dict[str, Any]) -> dict[str, Any]:
+    """Create lists of all elements associated with each region."""
+    regions = np.asarray(mesh["regions"])
+    num_regions = max(regions) + 1
+    region_lists = [0] * (num_regions)
+    for r in range(0, num_regions):
+        region_lists[r] = np.nonzero(np.asarray(regions == r))[0]
+
+    mesh["region_lists"] = region_lists
+    mesh["num_regions"] = num_regions
+    return mesh
+
+
 def _import_regions(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
     config_regions = config_mesh["regions"]
 
@@ -264,6 +277,8 @@ def _import_regions(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[s
         # Case 2: construct regions from applied geometries
 
         mesh["regions"] = _assign_regions(config_regions, mesh)
+
+    mesh = _create_region_lists(mesh)
 
     return mesh
 
