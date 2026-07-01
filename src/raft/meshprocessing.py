@@ -7,7 +7,7 @@ import numpy as np
 import numpy.typing as npt
 
 
-def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.int64] | None]:
+def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.int64] | None]:  # noqa
     """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
 
     meshfile : name of mesh file
@@ -58,6 +58,8 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
         match (nsd, elmtyp):
             case (3, 5):  # B8
                 nne, edg = 8, 0
+            case (3, 4):  # T4
+                nne, edg = 4, 0
             case (3, 12):  # B27
                 nne, edg = 27, 0
             case (2, 3):  # Q4
@@ -86,6 +88,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     nodes = mesh["nodes"]
     nne = mesh["nne"]
     ne = mesh["ne"]
+    nsd = mesh["nsd"]
 
     # Define element faces. Node numberings should have outwards pointing normals.
     if nne == 8:  # B8 elements
@@ -96,6 +99,13 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
             "face3": [0, 4, 7, 3],
             "face4": [1, 2, 6, 5],
             "face5": [2, 3, 7, 6],
+        }
+    elif nne == 4 and nsd == 3:  # T4
+        faces = {
+            "face0": [0, 1, 3],
+            "face1": [0, 3, 2],
+            "face2": [0, 2, 1],
+            "face3": [1, 2, 3],
         }
     else:
         raise NotImplementedError(f"Boundary extraction for {nne}-node elements")
@@ -118,6 +128,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
                 # Store count and original
                 face_tracker[sorted_face] = [1, original_face]
 
+    # sory through the faces and extract all unique faces
     boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
@@ -309,6 +320,8 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     match (mesh["nsd"], mesh["nne"]):
         case (3, 8):  # B8
             nq, etyp = 2, "B8"
+        case (3, 4):  # T4
+            nq, etyp = 2, "T4"
         case (3, 27):  # B27
             nq, etyp = 3, "B27"
         case (2, 4):  # Q4

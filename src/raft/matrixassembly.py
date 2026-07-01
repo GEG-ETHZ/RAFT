@@ -31,9 +31,6 @@ def _make_sparse(
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
 
 
-# Combined rotation (if needed)
-
-
 def integrate_linear_matrices(
     mesh: dict[str, Any], mat: dict[str, Any]
 ) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
@@ -51,6 +48,7 @@ def integrate_linear_matrices(
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     regions = mesh["regions"]
+    etype = mesh["element_type"]
 
     # ----- gravity vector
     ng = np.zeros((nsd, 1))
@@ -80,7 +78,7 @@ def integrate_linear_matrices(
 
     # ----- Quadrature points
     nq = mesh["n_quadrature"]
-    Q, W = getquadrature(nq, nsd)
+    Q, W = getquadrature(nq, nsd, etype)
     nq = len(W)
 
     # ----- Matrix integration element loop
@@ -108,8 +106,8 @@ def integrate_linear_matrices(
             xi = Q[q, :]
             Wi = W[q]
 
-            B, Je = getBmatrix(xi, nodes[enodes, :])
-            N = getNmatrix(xi)
+            B, Je = getBmatrix(xi, nodes[enodes, :], etype)
+            N = getNmatrix(xi, etype)
 
             wJe = Wi * _calc_detJe(Je, nsd)  # Weight * Jacobian, used in every integrand
 
@@ -169,6 +167,7 @@ def integrate_nonlinear_matrices(
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     region_lists = mesh["region_lists"]
     num_regions = mesh["num_regions"]
+    etype = mesh["element_type"]
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     total_entries = ne * nne * nne
@@ -188,7 +187,7 @@ def integrate_nonlinear_matrices(
 
     # ----- Quadrature points
     nq = mesh["n_quadrature"]
-    Q, W = getquadrature(nq, nsd)
+    Q, W = getquadrature(nq, nsd, etype)
     nq = len(W)
 
     # ----- Matrix integration element loop
@@ -198,8 +197,7 @@ def integrate_nonlinear_matrices(
         lambda_e = mat["solid"]["therm_cond_eff"][r]
 
         # Check for region isotropy
-        if isinstance(lambda_e, (float, int)):
-            isotropic = True
+        isotropic = bool(isinstance(lambda_e, (float, int)))
 
         # advection velocity = advection_conduct * pressure gradient
         advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
@@ -222,8 +220,8 @@ def integrate_nonlinear_matrices(
                 xi = Q[q, :]
                 Wi = W[q]
 
-                B, Je = getBmatrix(xi, nodes[enodes, :])
-                N = getNmatrix(xi)
+                B, Je = getBmatrix(xi, nodes[enodes, :], etype)
+                N = getNmatrix(xi, etype)
 
                 # gradients
                 gradp = B @ pe

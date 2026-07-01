@@ -6,24 +6,34 @@ from numba import njit  # type: ignore[import-untyped]
 
 
 @njit  # type: ignore[untyped-decorator]
-def getNmatrix(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+def getNmatrix(parent_coords: npt.NDArray[np.float64], etype: str) -> npt.NDArray[np.float64]:
     """Get the shape function matrix from parent coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
     #
     # parent_coords: [1x3] parent coordinates at which the shape function is computed
     # N            : [1x n dof e] Shape function matrix
 
-    N = np.empty((1, 8))
-    n1 = 0.5 - 0.5 * parent_coords
-    n2 = 0.5 + 0.5 * parent_coords
-    N[0, 0] = n1[0] * n1[1] * n1[2]
-    N[0, 1] = n2[0] * n1[1] * n1[2]
-    N[0, 2] = n2[0] * n2[1] * n1[2]
-    N[0, 3] = n1[0] * n2[1] * n1[2]
-    N[0, 4] = n1[0] * n1[1] * n2[2]
-    N[0, 5] = n2[0] * n1[1] * n2[2]
-    N[0, 6] = n2[0] * n2[1] * n2[2]
-    N[0, 7] = n1[0] * n2[1] * n2[2]
+    if etype == "B8":
+        N = np.empty((1, 8))
+        n1 = 0.5 - 0.5 * parent_coords
+        n2 = 0.5 + 0.5 * parent_coords
+        N[0, 0] = n1[0] * n1[1] * n1[2]
+        N[0, 1] = n2[0] * n1[1] * n1[2]
+        N[0, 2] = n2[0] * n2[1] * n1[2]
+        N[0, 3] = n1[0] * n2[1] * n1[2]
+        N[0, 4] = n1[0] * n1[1] * n2[2]
+        N[0, 5] = n2[0] * n1[1] * n2[2]
+        N[0, 6] = n2[0] * n2[1] * n2[2]
+        N[0, 7] = n1[0] * n2[1] * n2[2]
+    elif etype == "T4":
+        N = np.empty((1, 4))
+        xi = parent_coords[0]
+        eta = parent_coords[1]
+        zeta = parent_coords[2]
+        N[0, 0] = 1 - xi - eta - zeta
+        N[0, 1] = xi
+        N[0, 2] = eta
+        N[0, 3] = zeta
 
     return N
 
@@ -74,7 +84,7 @@ def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def getBmatrix(
-    parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64]
+    parents_coords: npt.NDArray[np.float64], phys_coords: npt.NDArray[np.float64], etype: str
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the gradient and Jacobian matrices from parent and physical coordinates."""
     # This function assumes B8 linear elements and should be updated for different element types.
@@ -92,37 +102,48 @@ def getBmatrix(
         zeta = parents_coords[2]
 
     # Derivatives of shape functions in parent coordinates
-    ez = eta * zeta
-    xz = xi * zeta
-    xe = xi * eta
-    dNdxi = np.empty((3, 8))
+    if etype == "B8":
+        ez = eta * zeta
+        xz = xi * zeta
+        xe = xi * eta
+        dNdxi = np.empty((3, 8))
 
-    dNdxi[0, 0] = 0.125 * (-1 + eta + zeta - ez)
-    dNdxi[0, 1] = 0.125 * (1 - eta - zeta + ez)
-    dNdxi[0, 2] = 0.125 * (1 + eta - zeta - ez)
-    dNdxi[0, 3] = 0.125 * (-1 - eta + zeta + ez)
-    dNdxi[0, 4] = 0.125 * (-1 + eta - zeta + ez)
-    dNdxi[0, 5] = 0.125 * (1 - eta + zeta - ez)
-    dNdxi[0, 6] = 0.125 * (1 + eta + zeta + ez)
-    dNdxi[0, 7] = 0.125 * (-1 - eta - zeta - ez)
+        dNdxi[0, 0] = 0.125 * (-1 + eta + zeta - ez)
+        dNdxi[0, 1] = 0.125 * (1 - eta - zeta + ez)
+        dNdxi[0, 2] = 0.125 * (1 + eta - zeta - ez)
+        dNdxi[0, 3] = 0.125 * (-1 - eta + zeta + ez)
+        dNdxi[0, 4] = 0.125 * (-1 + eta - zeta + ez)
+        dNdxi[0, 5] = 0.125 * (1 - eta + zeta - ez)
+        dNdxi[0, 6] = 0.125 * (1 + eta + zeta + ez)
+        dNdxi[0, 7] = 0.125 * (-1 - eta - zeta - ez)
 
-    dNdxi[1, 0] = 0.125 * (-1 + xi + zeta - xz)
-    dNdxi[1, 1] = 0.125 * (-1 - xi + zeta + xz)
-    dNdxi[1, 2] = 0.125 * (1 + xi - zeta - xz)
-    dNdxi[1, 3] = 0.125 * (1 - xi - zeta + xz)
-    dNdxi[1, 4] = 0.125 * (-1 + xi - zeta + xz)
-    dNdxi[1, 5] = 0.125 * (-1 - xi - zeta - xz)
-    dNdxi[1, 6] = 0.125 * (1 + xi + zeta + xz)
-    dNdxi[1, 7] = 0.125 * (1 - xi + zeta - xz)
+        dNdxi[1, 0] = 0.125 * (-1 + xi + zeta - xz)
+        dNdxi[1, 1] = 0.125 * (-1 - xi + zeta + xz)
+        dNdxi[1, 2] = 0.125 * (1 + xi - zeta - xz)
+        dNdxi[1, 3] = 0.125 * (1 - xi - zeta + xz)
+        dNdxi[1, 4] = 0.125 * (-1 + xi - zeta + xz)
+        dNdxi[1, 5] = 0.125 * (-1 - xi - zeta - xz)
+        dNdxi[1, 6] = 0.125 * (1 + xi + zeta + xz)
+        dNdxi[1, 7] = 0.125 * (1 - xi + zeta - xz)
 
-    dNdxi[2, 0] = 0.125 * (-1 + xi + eta - xe)
-    dNdxi[2, 1] = 0.125 * (-1 - xi + eta + xe)
-    dNdxi[2, 2] = 0.125 * (-1 - xi - eta - xe)
-    dNdxi[2, 3] = 0.125 * (-1 + xi - eta + xe)
-    dNdxi[2, 4] = 0.125 * (1 - xi - eta + xe)
-    dNdxi[2, 5] = 0.125 * (1 + xi - eta - xe)
-    dNdxi[2, 6] = 0.125 * (1 + xi + eta + xe)
-    dNdxi[2, 7] = 0.125 * (1 - xi + eta - xe)
+        dNdxi[2, 0] = 0.125 * (-1 + xi + eta - xe)
+        dNdxi[2, 1] = 0.125 * (-1 - xi + eta + xe)
+        dNdxi[2, 2] = 0.125 * (-1 - xi - eta - xe)
+        dNdxi[2, 3] = 0.125 * (-1 + xi - eta + xe)
+        dNdxi[2, 4] = 0.125 * (1 - xi - eta + xe)
+        dNdxi[2, 5] = 0.125 * (1 + xi - eta - xe)
+        dNdxi[2, 6] = 0.125 * (1 + xi + eta + xe)
+        dNdxi[2, 7] = 0.125 * (1 - xi + eta - xe)
+    elif etype == "T4":
+        dNdxi = np.zeros((3, 4))
+        dNdxi[0, 0] = -1
+        dNdxi[0, 1] = 1
+
+        dNdxi[1, 0] = -1
+        dNdxi[1, 2] = 1
+
+        dNdxi[2, 0] = -1
+        dNdxi[2, 3] = 1
 
     J = dNdxi @ phys_coords
 
@@ -132,46 +153,78 @@ def getBmatrix(
     return B, J
 
 
-def getquadrature(qt: int, ndim: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Returns the Gauss quadrature points and weights for the
     specified order of integration and number of dimensions.
     """
     #   qt:     number of quadrature points
     #   nsd:    number of space dimensions
+    #   etyp:   element type
     #   W:      [qt^ndim x 1] vector of quadrature weights
     #   Q:      [qt^ndim x ndim] quadrature coordinates in parent coordinate system
 
-    rpt = np.zeros((qt, 1))
-    rwt = np.zeros((qt, 1))
-    if qt == 1:
-        rpt[0] = 0.0
+    if etyp != "T4":
+        rpt = np.zeros((qt, 1))
+        rwt = np.zeros((qt, 1))
+        if qt == 1:
+            rpt[0] = 0.0
 
-        rwt[0] = 2.0
-    elif qt == 2:
-        rpt[0] = 0.577350269189626
-        rpt[1] = -0.577350269189626
+            rwt[0] = 2.0
+        elif qt == 2:
+            rpt[0] = 0.577350269189626
+            rpt[1] = -0.577350269189626
 
-        rwt[0] = 1.0
-        rwt[1] = 1.0
-    elif qt == 3:
-        rpt[0] = 0.774596669241483
-        rpt[1] = -0.774596669241483
-        rpt[2] = 0
+            rwt[0] = 1.0
+            rwt[1] = 1.0
+        elif qt == 3:
+            rpt[0] = 0.774596669241483
+            rpt[1] = -0.774596669241483
+            rpt[2] = 0
 
-        rwt[0] = 0.555555555555556
-        rwt[1] = 0.555555555555556
-        rwt[2] = 0.888888888888889
+            rwt[0] = 0.555555555555556
+            rwt[1] = 0.555555555555556
+            rwt[2] = 0.888888888888889
+        else:
+            raise Exception("Unsupported number of quadrature points")
+
+        # Create grid
+        grids = np.meshgrid(*([rpt] * ndim), indexing="ij")
+
+        # Create points
+        Q = np.stack(grids, axis=-1).reshape(-1, ndim)
+
+        # Create weights
+        wgrids = np.meshgrid(*([rwt] * ndim), indexing="ij")
+        W = np.prod(wgrids, axis=0).ravel()
     else:
-        raise Exception("Unsupported number of quadrature points")
+        # T4 case
+        if ndim != 3:
+            raise NotImplementedError("Lower dimensional triangular quadrature not implemented.")
 
-    # Create grid
-    grids = np.meshgrid(*([rpt] * ndim), indexing="ij")
+        if qt == 1:
+            Q = np.array([0.25, 0.25, 0.25])
+            W = np.array([1.0])
+        elif qt == 2:
+            Q = np.array(
+                [
+                    [0.58541020, 0.13819660, 0.13819660],
+                    [0.13819660, 0.58541020, 0.13819660],
+                    [0.13819660, 0.13819660, 0.58541020],
+                    [0.13819660, 0.13819660, 0.13819660],
+                ]
+            )
+            W = [0.25, 0.25, 0.25, 0.25]
+        elif qt == 3:
+            Q = np.array(
+                [
+                    [0.25, 0.25, 0.25],
+                    [1 / 2, 1 / 6, 1 / 6],
+                    [1 / 6, 1 / 2, 1 / 6],
+                    [1 / 6, 1 / 6, 1 / 2],
+                    [1 / 6, 1 / 6, 1 / 6],
+                ]
+            )
+            W = [-4 / 5, 9 / 20, 9 / 20, 9 / 20, 9 / 20]
 
-    # Create points
-    Q = np.stack(grids, axis=-1).reshape(-1, ndim)
-
-    # Create weights
-    wgrids = np.meshgrid(*([rwt] * ndim), indexing="ij")
-    W = np.prod(wgrids, axis=0).ravel()
-
+        W = np.asarray(W) / 6
     return Q, W

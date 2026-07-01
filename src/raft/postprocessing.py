@@ -30,6 +30,7 @@ def compute_fluid_flux(
     regions = mesh["regions"]
     conn = mesh["conn"]
     nodes = mesh["nodes"]
+    etype = mesh["element_type"]
 
     # Initialize output arrays
     q = np.zeros((nsd, nn))
@@ -39,11 +40,11 @@ def compute_fluid_flux(
     mu = mat["fluid"]["viscosity"]
 
     # Local coordinates (xi) based on element type
-    if nne == 4:  # Q4 element
+    if etype == "Q4":  # Q4 element
         xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
-    elif nne == 9:  # Q9 element
+    elif etype == "Q9":  # Q9 element
         xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0], [0, 0]])
-    elif nne == 8 or nne == 27:  # B8 element
+    elif etype == "B8":  # B8 element
         xi = np.array(
             [
                 [-1, -1, -1],
@@ -56,7 +57,9 @@ def compute_fluid_flux(
                 [-1, 1, 1],
             ]
         )
-    elif nne == 27:  # B27 element
+    elif etype == "T4":
+        xi = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    elif etype == "B27":  # B27 element
         xi = np.array(
             [
                 [-1, -1, -1],
@@ -89,7 +92,7 @@ def compute_fluid_flux(
             ]
         )
     else:
-        raise ValueError(f"Unsupported number of nodes per element: {nne}")
+        raise ValueError(f"Unsupported element type: {etype}")
 
     # Loop over elements
     for e in range(ne):
@@ -102,7 +105,7 @@ def compute_fluid_flux(
 
         # Loop over nodes within the element
         for n in range(nne):
-            B, _ = getBmatrix(xi[n, :], xI)
+            B, _ = getBmatrix(xi[n, :], xI, etype)
 
             # Fluid flux calculation
             flux_val = -np.dot(kf / mu, (B @ pe))
@@ -118,6 +121,36 @@ def compute_fluid_flux(
         q[n, :] /= nonzero_count
 
     return q
+
+
+def _extract_cartesian_properties(
+    material_list: list[Any], indx: npt.NDArray[np.int64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Extracts x, y, and z directional components from a list of region properties.
+
+    Handles both anisotropic 3x3 tensors and isotropic scalars per region,
+    mapping them to elements via the provided region index array.
+    """
+    region_x = []
+    region_y = []
+    region_z = []
+
+    for item in material_list:
+        if isinstance(item, float):  # Isotropic scalar
+            region_x.append(item)
+            region_y.append(item)
+            region_z.append(item)
+        else:  # ansisotropic tensor
+            region_x.append(item[0, 0])
+            region_y.append(item[1, 1])
+            region_z.append(item[2, 2])
+
+    # Map the per-region values to individual elements using the index mapping
+    return (
+        np.array(region_x)[indx],
+        np.array(region_y)[indx],
+        np.array(region_z)[indx],
+    )
 
 
 def postprocessing(
@@ -171,6 +204,14 @@ def postprocessing(
             {"name": "p", "data": sanitize(p.copy())},
         ]
 
+        if n == 0:  # In the initial condition, also export BC groups
+            BCgroups = mesh["boundaries"]
+            for name in BCgroups:
+                label = "boundary_" + name
+                data = np.zeros(mesh["nn"])
+                data[np.asarray(list(BCgroups[name]))] = 1
+                scalardata_point.append({"name": label, "data": data})
+
         # --- Vector data
         vectordata_point = [{"name": "flux", "data": sanitize(flux.T)}]
 
@@ -178,26 +219,10 @@ def postprocessing(
         if n == 0:  # In the initial condition, export material properties and regions
             indx = np.array(mesh["regions"])
             # Extract and handle potential isotropic vs anisotropic permeability tensor
-            perm_eff = np.atleast_1d(np.asarray(material["solid"]["permeability_eff"]))[indx]
-            if perm_eff.ndim == 3:
-                perm_x = perm_eff[:, 0, 0]
-                perm_y = perm_eff[:, 1, 1]
-                perm_z = perm_eff[:, 2, 2]
-            else:
-                perm_x = perm_eff
-                perm_y = perm_eff
-                perm_z = perm_eff
-
-            # Extract and handle potential isotropic vs anisotropic thermal conductivity tensor
-            cond_eff = np.atleast_1d(np.asarray(material["solid"]["therm_cond_eff"]))[indx]
-            if cond_eff.ndim == 3:
-                cond_x = cond_eff[:, 0, 0]
-                cond_y = cond_eff[:, 1, 1]
-                cond_z = cond_eff[:, 2, 2]
-            else:
-                cond_x = cond_eff
-                cond_y = cond_eff
-                cond_z = cond_eff
+            perm_x, perm_y, perm_z = _extract_cartesian_properties(
+                material["solid"]["permeability_eff"], indx
+            )
+            cond_x, cond_y, cond_z = _extract_cartesian_properties(material["solid"]["therm_cond_eff"], indx)
 
             scalardata_cell = [
                 {"name": "region", "data": mesh["regions"].copy()},

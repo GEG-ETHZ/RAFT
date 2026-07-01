@@ -1,5 +1,5 @@
 mesh:
-  file: box_regions.msh
+  file: box_regions_T4.msh
   regions:
     - shape: "polyhedron"
       values: [[0, 0, 45],
