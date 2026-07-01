@@ -14,6 +14,48 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_patch_z_T4() -> None:
+    """Check exact linear approximation in Z."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Z - T4"
+    config_filename = "config_test_patchZ_T4.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 2
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+    )
+    assert test_pass
+
+
+def test_patch_y_T4() -> None:
+    """Check exact linear approximation in Y."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Y - T4"
+    config_filename = "config_test_patchY_T4.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 1
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+    )
+    assert test_pass
+
+
+def test_patch_x_T4() -> None:
+    """Check exact linear approximation in X."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - X - T4"
+    config_filename = "config_test_patchX_T4.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 0
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+    )
+    assert test_pass
+
+
 def test_heterogeneous() -> None:
     """Verify solution of heterogeneous properties against analytical solution."""
     case_dir = _test_data_dir()
