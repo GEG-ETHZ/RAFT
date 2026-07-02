@@ -7,20 +7,40 @@ import numpy.typing as npt
 
 
 def _createBCpairs(incoming: dict[str, Any]) -> npt.NDArray[np.float64]:
-    pairs = list(zip(incoming["BCnodes"], incoming["BCvalues"]))
+    pairs = list(zip(incoming["nodes"], incoming["BCvalues"]))
     if pairs:
         return np.array(pairs, dtype=np.float64)
     return np.empty((0, 2), dtype=np.float64)
 
 
-def _evaluateBCfunctions(incoming: dict[str, Any], t: float) -> dict[str, Any]:
+def _evaluateBCfunctions(
+    incoming: dict[str, Any], t: float, nodes: npt.NDArray[np.float64]
+) -> dict[str, Any]:
+    """Evaluate functions defining the boundary condition values."""
     match incoming["function"]:
         case "constant":
-            incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["BCnodes"])
+            incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["nodes"])
         case "linear":
             incoming["BCvalues"] = [t * incoming["values"][0] + incoming["values"][1]] * len(
-                incoming["BCnodes"]
+                incoming["nodes"]
             )
+        case "gradient":
+            s = incoming["values"][0]
+            s = s / np.linalg.norm(s)  # unit vector in gradient direction
+            y0 = incoming["values"][1]  # reference gradient value at min point
+            slope = incoming["values"][2]  # gradient slope
+
+            indx_nodes = incoming["nodes"]
+
+            x = nodes[indx_nodes, :] @ s
+            x_min = min(x)
+
+            incoming["BCvalues"] = y0 + slope * (x - x_min)
+        case "ramp":
+            y_ramp = incoming["values"][0]
+            t_ramp = incoming["values"][1]
+            y = y_ramp if t >= t_ramp else t / t_ramp * y_ramp
+            incoming["BCvalues"] = [y] * len(incoming["nodes"])
 
     return incoming
 
@@ -28,14 +48,19 @@ def _evaluateBCfunctions(incoming: dict[str, Any], t: float) -> dict[str, Any]:
 def _gatherBCs(  # noqa: C901
     mesh: dict[str, Any], t: float, incoming: list[dict[str, Any]], bctype: int
 ) -> npt.NDArray[np.float64]:
-    """bctype: 1 - Dirichlet, 2 - Neumann
+    """bctype: 1 - Dirichlet, 2 - Neumann.
+
     Boundary condition type necessary for flux integrals, not yet implemented.
     """
     BCarray = np.empty((0, 2))
     # for each BC group
     for group in incoming:
         # gather all the corresponding nodes
-        if "faces" in group:
+        if "nodes" in group:
+            # directly append the nodes
+            # covers "nodes" and "coords" cases, which have been mapped in pre-processing
+            BCnodes = group["nodes"]
+        elif "faces" in group:
             # load the groups of faces determined in the pre-processing
             if bctype == 2:
                 raise NotImplementedError("Flux face integrals")
@@ -43,16 +68,7 @@ def _gatherBCs(  # noqa: C901
             BCnodes = []
             for face in group["faces"]:
                 BCnodes.extend(mesh["boundaries"][face])
-        elif "coords" in group:
-            # find the node closest to the coordinates
-            BCnodes = []
-            for xi in group["coords"]:
-                d = np.linalg.norm(mesh["nodes"] - xi, axis=1)
-                closest_node = np.argmin(d).astype(int)
-                BCnodes.append(closest_node)
-        elif "nodes" in group:
-            # directly append the nodes
-            BCnodes = group["nodes"]
+
         else:
             raise NotImplementedError("Invalid BC geometry specification")
 
@@ -61,14 +77,14 @@ def _gatherBCs(  # noqa: C901
             continue
 
         # save collected nodes to group
-        group["BCnodes"] = BCnodes
+        group["nodes"] = BCnodes
 
         # evaluate the value of the nodes
         if "function" not in group:
             group["function"] = "constant"  # assume constant value if no function given
 
         # get the precribed value of the BC group
-        group = _evaluateBCfunctions(group, t)
+        group = _evaluateBCfunctions(group, t, mesh["nodes"])
 
         # combine the group into a single array
         grouparray = _createBCpairs(group)

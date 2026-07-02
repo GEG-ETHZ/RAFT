@@ -94,6 +94,28 @@ def _check_convergence(
     return converged
 
 
+def _partition_and_solve_matrix(
+    A: npt.NDArray[np.float64],
+    b: npt.NDArray[np.float64],
+    dofs_all: npt.NDArray[np.float64],
+    nE: npt.NDArray[np.float64],  # essential DoF indices
+    dE: npt.NDArray[np.float64],  # essential DoF values
+) -> npt.NDArray[np.float64]:
+    """Partitions and solves a matrix given a set of essential DoFs. Returns full vector of DoFs."""
+    nF = np.setdiff1d(dofs_all, nE)  # free DoFs
+
+    KFF = A[np.ix_(nF, nF)]
+    KFE = A[np.ix_(nF, nE)]
+
+    dF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
+
+    d = np.empty((len(dofs_all), 1))
+    d[nE, 0] = dE
+    d[nF, 0] = dF.ravel()
+
+    return d.ravel()
+
+
 # ------------------------ Primary time integration function --------
 def _lin_extrap_time_integration(
     sim_control: dict[str, Any],
@@ -119,6 +141,8 @@ def _lin_extrap_time_integration(
     buoy_on = sim_control["buoyancy_on"]
     steady_pres = sim_control["steady_pressure"]
     steady_temp = sim_control["steady_temperature"]
+    # extract mesh characteristics
+    nn = mesh["nn"]
 
     converged = 0
     while not converged:
@@ -164,17 +188,15 @@ def _lin_extrap_time_integration(
 
         nE = p_fix.astype(int)  # essential DoFs
         nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
-        dE = p_bar
-        KFF = A[np.ix_(nF, nF)]
-        KFE = A[np.ix_(nF, nE)]
-        pF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-        p[nE, 0] = dE
-        p[nF, 0] = pF.ravel()
+        p[:, 0] = _partition_and_solve_matrix(A, b, p_dofs, nE, p_bar)
 
         # Calculate reaction flow rates at prescribed DoFs
         KEE = A[np.ix_(nE, nE)]
         KEF = A[np.ix_(nE, nF)]
-        qE = KEE @ dE.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
+        pF = p[nF, 0]
+        q = np.zeros((nn, 1))
+        q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
+        q = q + F_extp
 
         # Update nonlinear matrices with new pressure
         if verbose:
@@ -190,23 +212,112 @@ def _lin_extrap_time_integration(
         A = (cv[0] * C) + KTA + KTT
         b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
 
-        nE = T_fix  # essential DoFs
-        nF = np.setdiff1d(T_dofs, nE)  # free DoFs
-        dE = T_bar
-        KFF = A[np.ix_(nF, nF)]
-        KFE = A[np.ix_(nF, nE)]
-        TF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-        T[nE, 0] = dE
-        T[nF, 0] = TF.ravel()
+        T[:, 0] = _partition_and_solve_matrix(A, b, T_dofs, T_fix, T_bar)
 
         # Check for extrapolation error
         converged = _check_convergence(T, T_extrap, dt, sim_control, n, verbose)
 
     primary_variables["p"] = p
     primary_variables["T"] = T
-    primary_variables["q_out"] = qE  # outlet flow rates
-    primary_variables["T_out"] = T[p_fix, 0]  # outlet temperatures
+    primary_variables["q"] = q  # outlet flow rates
     return primary_variables, dt
+
+
+def _assign_initial_gradient(
+    nodes: npt.NDArray[np.float64], y0: float, slope: float, direction: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Gradient calculation for initial conditions based on arbitrary direction."""
+    s = direction / np.linalg.norm(direction)  # unit vector in gradient direction
+
+    x = np.dot(nodes, s)
+    x_min = np.min(x)
+    y = y0 + slope * (x - x_min)
+
+    return np.asarray(y, dtype=np.float64)
+
+
+# ------------------ Solve for initial condifions
+def _assign_initial_conditions(
+    config_ini: dict[str, Any],
+    sim_control: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    matrices_linear: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    n: int,
+    verbose: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assign initial conditions."""
+    if verbose:
+        print("Assigning initial conditions.")
+
+    assign_type = config_ini["assignment"]
+    supported_types = ["constant", "gradient", "BC_compatible"]
+
+    if assign_type == "constant":
+        # Apply constant uniform initial conditions
+        primary_variables["p"][:, :] = config_ini["p_ini"]
+        primary_variables["T"][:, :] = config_ini["T_ini"]
+
+    elif assign_type == "gradient":
+        # Apply gradient initial conditions
+        # temperature
+        T = _assign_initial_gradient(
+            mesh["nodes"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
+        )
+
+        # pressure
+        p = _assign_initial_gradient(
+            mesh["nodes"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
+        )
+
+        primary_variables["p"][:, :] = np.matlib.repmat(p.reshape(-1, 1), 1, 4)
+        primary_variables["T"][:, :] = np.matlib.repmat(T.reshape(-1, 1), 1, 4)
+    elif assign_type == "BC_compatible":
+        # Create dummy sim_control for SS initial condition.
+        #
+        # In general, we should use a non-linear solver to find the steady-state
+        # condition for pressure and temperature. However, we can neglect pressurization
+        # since it's time-dependent, and we can neglect buoyancy because the steady-state
+        # initial condition has no reference temperature. Buoyancy would instead
+        # be accounted for in the hydrostatic pressure, which does not affect flow.
+        #
+        # This reduces the problem to a one-way p -> T, just like in our linearized
+        # extrapolation. Note that future non-linear implementations may change this.
+        sim_control_SS = sim_control.copy()
+        sim_control_SS["pressurization_on"] = 0
+        sim_control_SS["buoyancy_on"] = 0
+        sim_control_SS["steady_pressure"] = 1
+        sim_control_SS["steady_temperature"] = 1
+        material["T_0"] = np.zeros((mesh["nn"],))
+
+        primary_variables, dt = _lin_extrap_time_integration(
+            sim_control_SS,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            [1, 1, 1],
+            n,
+            verbose,
+        )
+
+        p = primary_variables["p"][:, 0]
+        T = primary_variables["T"][:, 0]
+        primary_variables["p"][:, :] = np.matlib.repmat(p.reshape(-1, 1), 1, 4)
+        primary_variables["T"][:, :] = np.matlib.repmat(T.reshape(-1, 1), 1, 4)
+    else:
+        raise ValueError(
+            f"Unknown initial condition assignment type: '{assign_type}'\n"
+            f"Supported shapes: {', '.join(supported_types)}\n"
+        )
+
+    # use initial conditions as the reference temperature for buoyancy
+    material["T_0"] = primary_variables["T"][:, 0]  # initial condition reference temperature
+
+    return primary_variables, material
 
 
 # -------------------------------- Main simulation run function -------------
@@ -231,6 +342,7 @@ def main(
     # ----- Initialize simulation parameters
 
     ## Numerical controls
+    n = 0  # Time step counter
     t = config["simulation"]["t_start"]
     t_end = config["simulation"]["t_end"]
     # initialize timesteps and store 3 timesteps (necessary for higher order)
@@ -243,10 +355,10 @@ def main(
     T_dofs = np.arange(0, mesh["nn"])
     primary_variables["p_dofs"] = p_dofs
     primary_variables["T_dofs"] = T_dofs
-    # Vectors of primary DoFs - ndof x 3
-    # [t_n, t_(n-1), t_(n-2)]
-    p = np.zeros((len(p_dofs), 4))
-    T = np.zeros((len(T_dofs), 4))
+    # Vectors of primary DoFs - ndof x 4
+    # [t_n, t_(n-1), t_(n-2), ...]
+    primary_variables["p"] = np.zeros((len(p_dofs), 4))
+    primary_variables["T"] = np.zeros((len(T_dofs), 4))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -257,24 +369,26 @@ def main(
     matrices_linear, material, mesh = integrate_linear_matrices(mesh, material)
 
     # --- Initial Conditions
-    # assume uniform, non-uniform to be implemented in future.
-    p[p_dofs, :] = config["initial_conditions"]["p_surf"]
-    T[T_dofs, :] = config["initial_conditions"]["T_surf"]
-    material["T_0"] = T[:, 1]  # initial condition reference temperature
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-
     # Update Boundary Conditions for initial step
     boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
-    outlet_nodes = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-    q_out = np.zeros((len(outlet_nodes), 1))
-    primary_variables["q_out"] = q_out
-    primary_variables["T_out"] = T[outlet_nodes, 0]
+    q = np.zeros((mesh["nn"], 1))
+    primary_variables["q"] = q
+
+    [primary_variables, T_0] = _assign_initial_conditions(
+        config["initial_conditions"],
+        config["simulation"],
+        mesh,
+        material,
+        matrices_linear,
+        primary_variables,
+        boundary_conditions,
+        n,
+        verbose,
+    )
 
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    n = 0  # Time step counter
     postprocessing(n, mesh, config, material, primary_variables, t, verbose)
     n += 1
 

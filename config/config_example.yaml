@@ -1,5 +1,5 @@
 mesh:
-  file: box_regions_T4.msh
+  file: box_regions.msh
   regions:
     - shape: "polyhedron"
       values: [[0, 0, 45],
@@ -46,18 +46,23 @@ material:
       viscosity: 0.7e-3         # Pa-s
 
 initial_conditions:
-  geothermal_gradient: 0.0      # deg C/m
-  T_surf: 70                   # deg C
-  pressure_gradient: 0.0        # Pa/m
-  p_surf: 1.0e+5
+  assignment: "BC_compatible"
+  T_ini: 70
+  p_ini: 1.0e+5
+  T_grad: 0.1
+  p_grad: 1.0e+3
+  grad_direction_T: [0,1,-1]
+  grad_direction_p: [0,-1,-1]
+
 
 
 boundary_conditions:
   pressure_fixed:
       - faces: [z_max]
-        values: [3e6]
+        values: [2.0e+6]
+        tag: "inflow"
       - faces: [z_min]
-        values: [1e5]
+        values: [1.0e+5]
 
   temperature_fixed:
       - faces: [z_max]
@@ -67,8 +72,10 @@ boundary_conditions:
 
   fluid_flux:
       # Fluid flux and temperature flux currently only support nodal values.
-      - coords: []
-        values: []
+      - coords: [[50, 20, 10]]
+        values: [-0.1, 1000]
+        function: "ramp"
+        tag: "wellbore"
 
   temperature_flux:
       # Fluid flux and temperature flux currently only support nodal values.
