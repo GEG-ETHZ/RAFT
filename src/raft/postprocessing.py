@@ -153,6 +153,73 @@ def _extract_cartesian_properties(
     )
 
 
+def _export_flow_logs(
+    n: int,
+    primary_variables: dict[str, Any],
+    config: dict[str, Any],
+    io_path: str,
+    t: float,
+) -> None:
+    """Export flow logs from BC groups.
+
+    Loops over the Neumann and Dirichlet boundary conditions on the flow
+    problem and exports pressure, flow rate, and temperature associated with
+    each tagged BC group. Only exports tagged groups. Flows and pressures are
+    summed over the group and temperatures are taken as a flow weighted mean.
+    """
+    # ---- File name
+    name = "outflow.log"
+    filename = os.path.join(io_path, name)  # results folder path
+
+    # ---- Collect tagged groups
+    bc_types_to_log = ("pressure_fixed", "fluid_flux")
+    tagged_groups: list[dict[str, Any]] = []
+    for bc_type in bc_types_to_log:
+        for entry in config["boundary_conditions"].get(bc_type, []):
+            if "tag" in entry:
+                tagged_groups.append(entry)
+
+    # ---- Clear file on first pass
+    if n == 0:
+        with open(filename, "w") as fid:
+            fid.write("time\t")
+            fid.write(
+                "\t".join(
+                    f"{grp['tag']}_pressure\t{grp['tag']}_flow\t{grp['tag']}_T" for grp in tagged_groups
+                )
+            )
+            fid.write("\n")
+
+    # Extract and group flows
+    p = primary_variables["p"][:, 1].flatten()
+    q = primary_variables["q"].flatten()
+    T = primary_variables["T"][:, 1].flatten()
+
+    outflow_values: list[float] = []
+    for group in tagged_groups:
+        indx = np.asarray(group["nodes"])
+
+        p_group = p[indx]
+        q_group = q[indx]
+        T_group = T[indx]
+
+        p_avg = np.mean(p_group)
+        q_sum = sum(q_group)
+        T_avg = np.dot(q_group, T_group) / q_sum if abs(q_sum) > 1e-12 else np.mean(T_group)
+
+        outflow_values.append(p_avg)
+        outflow_values.append(q_sum)
+        outflow_values.append(T_avg)
+
+    # ----- Extract primary variables
+    with open(filename, "a") as fid:
+        fid.write(f"{t:.6e}\t")
+        fid.write("\t".join(f"{val:.6e}" for val in outflow_values))
+        fid.write("\n")
+
+    return
+
+
 def postprocessing(
     n: int,
     mesh: dict[str, Any],
@@ -298,20 +365,6 @@ def postprocessing(
 
     # --- Output text files, frequency is controlled by user user input
     if (n % config["simulation"]["output_frequency"]) == 0:
-        # ---- File name
-        name = "outflow.log"
-        filename = os.path.join(io_path, name)
-
-        # ---- Clear file on first pass
-        if n == 0:
-            open(filename, "w").close()
-
-        # ----- Extract primary variables
-        q_out = primary_variables["q_out"].flatten()
-        T_out = primary_variables["T_out"].flatten()
-        with open(filename, "a") as fid:
-            fid.write(f"{t:.6e}\t")
-            fid.write("\t".join(f"{val:.6e}" for val in q_out) + "\t")
-            fid.write("\t".join(f"{val:.6e}" for val in T_out) + "\n")
+        _export_flow_logs(n, primary_variables, config, io_path, t)
 
     return config

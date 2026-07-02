@@ -43,10 +43,13 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- initial conditions --------------------------------------------------
     "initial_conditions": {
-        "geothermal_gradient": 0.0,  # deg C/m
-        "T_surf": 20.0,  # deg C
-        "pressure_gradient": 0.0,  # Pa/m
-        "p_surf": 1.0e5,  # Pa
+        "assignment": "constant",
+        "T_ini": 20.0,  # deg C
+        "p_ini": 1.0e5,  # Pa
+        "T_grad": 0.0,  # deg C/m
+        "p_grad": 0.0,  # Pa / m
+        "grad_direction_T": [0, 0, -1],  # unit vector in gradient direction
+        "grad_direction_p": [0, 0, -1],  # unit vector in gradient direction
     },
     # ---- boundary conditions -------------------------------------------------
     "boundary_conditions": {
@@ -234,6 +237,25 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
     return mat
 
 
+def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """During the preprocessing step, turn boundary condition groups
+    defined by coordinates into node groups.
+    """
+    BC_dict = config["boundary_conditions"]
+    for BC_type in BC_dict:
+        for group in BC_dict[BC_type]:
+            BCnodes = []
+            if "coords" in group:
+                for xi in group["coords"]:
+                    d = np.linalg.norm(mesh["nodes"] - xi, axis=1)
+                    closest_node = np.argmin(d).astype(int)
+                    BCnodes.append(closest_node)
+                group["nodes"] = BCnodes
+
+    config["boundary_conditions"] = BC_dict
+    return config
+
+
 def preprocessing(
     config_name: str, config_dir: Path | None = None, verbose: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -242,6 +264,8 @@ def preprocessing(
     config["mesh"]["config_dir"] = config["config_dir"]
 
     mesh = load_mesh(config["mesh"], verbose)
+
+    config = _convert_coordBCs_to_nodeBCs(mesh, config)
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])

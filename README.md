@@ -11,10 +11,12 @@ it to the current timestep.
  - Fluid flow
      - Darcy flow
      - Pressurization
-     - Buoyancy
+     - Buoyancy$^1$
  - Heat flow
      - Diffusion
      - Advection (Streamline Upwind Pretrov Galerkin (SUPG) stabilization)
+
+$^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to density is included. Hydrostatic pressures are not accounted or solved for.
 
 ## Running the simulation
 Run a simulation:
@@ -107,10 +109,18 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
 
 ### `initial_conditions`
-* **`geothermal_gradient`** *(float, default: `0.0`)*: Geothermal temperature gradient with depth in $^\circ\text{C/m}$.
-* **`T_surf`** *(float, default: `20.0`)*: Reference/surface temperature in $^\circ\text{C}$.
-* **`pressure_gradient`** *(float, default: `0.0`)*: Fluid pressure gradient with depth in $\text{Pa/m}$.
-* **`p_surf`** *(float, default: `1.0e5`)*: Reference/surface pressure in $\text{Pa}$.
+* **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.
+  * `"constant"`: Uniform conditions assumed throughout for pressure and temperature. Inputs required under **`initial_conditions`**:
+    * **`T_ini`** *(float, default: `20.0`)*: Initial temperature in $^\circ\text{C}$.
+    * **`p_ini`** *(float, default: `1.0e5`)*: Initial pressure in $\text{Pa}$.
+  * `"gradient"`: A gradient is applied in the direction of a reference vector. Not that this may not be at equilibrium in the case of heterogeneous properties. Inputs required under **`initial_conditions`**:
+    * **`T_ini`** *(float, default: `20.0`)*: Reference temperature at minimum point along gradient vector in domain in $^\circ\text{C}$.
+    * **`p_ini`** *(float, default: `1.0e5`)*: Reference pressure at minimum point along gradient vector in domain in $\text{Pa}$.
+    * **`T_grad`** *(float, default: `0.0`)*: Temperature gradient along the gradient vector in $^\circ\text{C/m}$.
+    * **`p_grad`** *(float, default: `0.0`)*: Pressure gradient along the gradient vector in $\text{Pa/m}$.
+    * **`grad_direction_T`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the temperature gradient. Automatically normalized.
+    * **`grad_direction_p`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the pressure gradient. Automatically normalized.
+  * **`"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures.
 
 ### `boundary_conditions`
 Boundary conditions are specified in groups. Each group can be applied using one of three geometric specification methods: node indices, coordinate proximity, or named faces. Each group can also specify either constant or time-dependent values.
@@ -134,10 +144,25 @@ Each boundary condition group must specify nodes using exactly one of the follow
   * Constant value. Default if function not specified.
   * `values`: `[specified value]` Single value float applied to all nodes in the group.
 * `function`: `"linear"`
-  * Linearly increasing with time.
+  * Linearly changing with time.
   * `values` : `[slope, intercept]` defines $y(t) = \text{slope} \cdot t + \text{intercept}$.
+* `function`: `"gradient"`
+  * Linearly changing in space following $y = y_0 + m (g - \min(g))$.
+  * `values` : `[direction, reference value, slope]`
+    * `direction`: 3x1 list of floats defining a vector in the gradient direction, $\vec{s}$ . Automatically normalized. Defines local coordinate system $g = \vec{X}\cdot \vec{s}$.
+    * `reference value`: The reference value of the gradient at the minimum of $g$ within the specified nodes, $y_0$.
+    * `slope`: gradient $m$ along $g$.
+* `function`: `"ramp"`
+  * Linear increase to a value $y_{ramp}$ over time period $t_{ramp}$.
+  * `values` : `[y_ramp, t_ramp]` defines:
+        $\quad y(t) =  \frac{t}{t_{ramp}}y_{ramp} \quad \forall t<t_{ramp}$
+        $\quad y(t) = y_{ramp} \quad \forall t\geq t_{ramp}$.
 
-
+**Output Specification:**
+*(Optional)* Flow boundary condition groups can optionally be marked with an `tag: "groupname"` entry. If they are marked with a tag, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:
+* groupname_pressure: arithmetic mean of pressure over the group nodes. Node that this is not weighted by nodal area, and thus caution should be used when examining this value over pressure faces with non-uniform meshes.
+* groupname_flow: sum of flow rates over the group nodes.
+* groupname_temperature: flow-weighted average temperature over the group nodes.
 
 
 ### `simulation`
