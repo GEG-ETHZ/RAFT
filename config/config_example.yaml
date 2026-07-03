@@ -67,8 +67,7 @@ boundary_conditions:
   temperature_fixed:
       - faces: [z_max]
         values: [14.2]
-      - faces: [z_min]
-        values: [70.1]
+
 
   fluid_flux:
       # Fluid flux and temperature flux currently only support nodal values.
@@ -79,8 +78,8 @@ boundary_conditions:
 
   temperature_flux:
       # Fluid flux and temperature flux currently only support nodal values.
-      - nodes: []
-        values: []
+      - faces: [z_min]
+        values: [70.1]
 
 simulation:
   # Time

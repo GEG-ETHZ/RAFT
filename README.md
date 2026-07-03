@@ -136,7 +136,7 @@ Each boundary condition group must specify nodes using exactly one of the follow
 
 * **`nodes`** *(list of integers)*: Direct node IDs where the boundary condition is applied.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
-* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Use caution when applying Neumann conditions to a face, as surface integrals over the face for a specified flux are not yet implemented. Instead, the values are applied directly into the forcing vector.
+* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included.
 
 **Value Specification:**
  The function applied to the nodes is determined by the field `function`. Each group should contain a field named `"values"` which depends on the type of function being applied.

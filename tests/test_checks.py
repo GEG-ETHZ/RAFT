@@ -16,6 +16,7 @@ def check_patch_test(
     mesh: dict[str, Any],
     dimension: int,
     test_name: str,
+    plot_on: bool,
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
@@ -74,15 +75,16 @@ def check_patch_test(
 
     T = results["T"][:, 0]
 
-    plt.figure()
-    plt.plot([0, L], [T0, T1])
-    plt.plot(d_1, T[line_1], "ko")
-    plt.plot(d_2, T[line_2], "bo")
-    plt.plot(d_3, T[line_3], "k^")
-    plt.plot(d_4, T[line_4], "b^")
-    plt.xlabel("d (m)")
-    plt.ylabel("T")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot([0, L], [T0, T1])
+        plt.plot(d_1, T[line_1], "ko")
+        plt.plot(d_2, T[line_2], "bo")
+        plt.plot(d_3, T[line_3], "k^")
+        plt.plot(d_4, T[line_4], "b^")
+        plt.xlabel("d (m)")
+        plt.ylabel("T")
+        plt.title(test_name)
 
     # define exact solution - linear
     def _lin_exact(y0: float, y1: float, x: float, X: float) -> float:
@@ -101,15 +103,16 @@ def check_patch_test(
 
     p = results["p"][:, 0]
 
-    plt.figure()
-    plt.plot([0, L], [p0, p1])
-    plt.plot(d_1, p[line_1], "ko")
-    plt.plot(d_2, p[line_2], "bo")
-    plt.plot(d_3, p[line_3], "k^")
-    plt.plot(d_4, p[line_4], "b^")
-    plt.xlabel("d (m)")
-    plt.ylabel("p")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot([0, L], [p0, p1])
+        plt.plot(d_1, p[line_1], "ko")
+        plt.plot(d_2, p[line_2], "bo")
+        plt.plot(d_3, p[line_3], "k^")
+        plt.plot(d_4, p[line_4], "b^")
+        plt.xlabel("d (m)")
+        plt.ylabel("p")
+        plt.title(test_name)
 
     err_ex += sum((_lin_exact(p0, p1, d_1, L) - p[line_1]) ** 2)
     err_ex += sum((_lin_exact(p0, p1, d_2, L) - p[line_2]) ** 2)
@@ -121,8 +124,146 @@ def check_patch_test(
     return test_pass
 
 
+def check_patch_test_flux(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    dimension: int,
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check patch test. Result should be an exact linear solution."""
+    # Set tolerance
+    tol = 1.0e-9
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    dims = [0, 1, 2]
+
+    if dimension in dims:  # Cases aligned with cartesian axis
+        dims.remove(dimension)
+        line_1 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+            )
+        )[0]
+        line_2 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
+            )
+        )[0]
+        line_3 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+            )
+        )[0]
+        line_4 = np.nonzero(
+            np.logical_and(
+                nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
+            )
+        )[0]
+    else:
+        # Cases not aligned with cartesian axis. Only works if only 1 element
+        # specified across the other axes.
+        n = 8
+        indx = list(range(n, n + n + 1))
+        line_1 = np.array([0] + indx + [4])
+        line_2 = np.array([3] + [i + n + 1 for i in indx] + [7])
+        line_3 = np.array([1] + [i + 2 * (n + 1) for i in indx] + [5])
+        line_4 = np.array([2] + [i + 3 * (n + 1) for i in indx] + [6])
+
+    L = np.sqrt(np.sum((nodes[line_1[1], :] - nodes[line_1[0], :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1))
+    d_2 = np.sqrt(np.sum((nodes[line_2, :] - nodes[line_2[0], :]) ** 2, 1))
+    d_3 = np.sqrt(np.sum((nodes[line_3, :] - nodes[line_3[0], :]) ** 2, 1))
+    d_4 = np.sqrt(np.sum((nodes[line_4, :] - nodes[line_4[0], :]) ** 2, 1))
+
+    # check temperature
+
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    k = config["material"]["solid"]["therm_cond"]
+
+    # define exact solution - linear
+    def _lin_exact(y0: float, m: float, x: float) -> float:
+        y = y0 + m * x
+        return y
+
+    m = q / k
+
+    T1 = _lin_exact(T0, m, L)
+
+    T = results["T"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot([0, L], [T0, T1])
+        plt.plot(d_1, T[line_1], "ko")
+        plt.plot(d_2, T[line_2], "bo")
+        plt.plot(d_3, T[line_3], "k^")
+        plt.plot(d_4, T[line_4], "b^")
+        plt.xlabel("d (m)")
+        plt.ylabel("T")
+        plt.title(test_name)
+
+    # calculate error
+    mean_val = 0.5 * (T0 + T1)
+    err_ex = sum((_lin_exact(T0, m, d_1) - T[line_1]) ** 2) / mean_val
+    err_ex += sum((_lin_exact(T0, m, d_2) - T[line_2]) ** 2) / mean_val
+    err_ex += sum((_lin_exact(T0, m, d_3) - T[line_3]) ** 2) / mean_val
+    err_ex += sum((_lin_exact(T0, m, d_4) - T[line_4]) ** 2) / mean_val
+
+    # check pressure
+    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    k = config["material"]["solid"]["permeability"]
+    mu = config["material"]["fluid"]["viscosity"]
+
+    # define exact solution - linear
+    # pressure is defined in the opposite direction
+    def _lin_exact_p(y0: float, m: float, x: float, L: float) -> float:
+        y = y0 + m * (L - x)
+        return y
+
+    m = mu * q / k
+    p0 = _lin_exact_p(p1, m, 0, L)
+
+    p = results["p"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot([0, L], [p0, p1])
+        plt.plot(d_1, p[line_1], "ko")
+        plt.plot(d_2, p[line_2], "bo")
+        plt.plot(d_3, p[line_3], "k^")
+        plt.plot(d_4, p[line_4], "b^")
+        plt.xlabel("d (m)")
+        plt.ylabel("p")
+        plt.title(test_name)
+
+    mean_val = 0.5 * (p0 + p1)
+    err_ex = sum((_lin_exact_p(p1, m, d_1, L) - p[line_1]) ** 2) / mean_val
+    err_ex += sum((_lin_exact_p(p1, m, d_2, L) - p[line_2]) ** 2) / mean_val
+    err_ex += sum((_lin_exact_p(p1, m, d_3, L) - p[line_3]) ** 2) / mean_val
+    err_ex += sum((_lin_exact_p(p1, m, d_4, L) - p[line_4]) ** 2) / mean_val
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
 def check_advection(
-    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
 ) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
@@ -167,12 +308,13 @@ def check_advection(
     # extract T and normalize
     T = (results["T"][:, 0] - T0) / (T1 - T0)
 
-    plt.figure()
-    plt.plot(x, T_exact, "r-")
-    plt.plot(d_1 / L, T[line_1], "ko")
-    plt.ylabel("T")
-    plt.title(test_name)
-    plt.text(0.05, 0.9, f"Pe = {Pe * L:.2f}")
+    if plot_on:
+        plt.figure()
+        plt.plot(x, T_exact, "r-")
+        plt.plot(d_1 / L, T[line_1], "ko")
+        plt.ylabel("T")
+        plt.title(test_name)
+        plt.text(0.05, 0.9, f"Pe = {Pe * L:.2f}")
 
     # calculate error
     T_exact = (np.exp(Pe * d_1 / L) - 1) / (np.exp(Pe) - 1)
@@ -187,7 +329,12 @@ def check_advection(
 
 
 def check_buoyancy(
-    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
 ) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
@@ -223,11 +370,12 @@ def check_buoyancy(
     # extract T and normalize
     p = results["p"][:, 0]
 
-    plt.figure()
-    plt.plot(x, p_exact, "r-")
-    plt.plot(d_1 / L, p[line_1], "ko")
-    plt.ylabel("p")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot(x, p_exact, "r-")
+        plt.plot(d_1 / L, p[line_1], "ko")
+        plt.ylabel("p")
+        plt.title(test_name)
 
     # calculate error
     x = d_1 / L
@@ -241,7 +389,12 @@ def check_buoyancy(
 
 
 def check_pressurization(
-    config_name: str, config_dir: Path, results: dict[str, Any], mesh: dict[str, Any], test_name: str
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
 ) -> bool:
     """Check pressurization against analytical solution."""
     # Set tolerance
@@ -283,11 +436,12 @@ def check_pressurization(
     # extract T and normalize
     p = results["p"][:, 0]
 
-    plt.figure()
-    plt.plot(1 - x, p_exact, "r-")
-    plt.plot(d_1 / L, p[line_1], "ko")
-    plt.ylabel("p")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot(1 - x, p_exact, "r-")
+        plt.plot(d_1 / L, p[line_1], "ko")
+        plt.ylabel("p")
+        plt.title(test_name)
 
     # calculate error
     x = 1 - (d_1 / L)
@@ -321,6 +475,7 @@ def check_heterogeneous(
     results: dict[str, Any],
     mesh: dict[str, Any],
     test_name: str,
+    plot_on: bool,
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
@@ -358,12 +513,13 @@ def check_heterogeneous(
 
     T = results["T"][:, 0]
 
-    plt.figure()
-    plt.plot(d_1, T_ex, "r-")
-    plt.plot(d_1, T[line_1], "ko")
-    plt.xlabel("d (m)")
-    plt.ylabel("T")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot(d_1, T_ex, "r-")
+        plt.plot(d_1, T[line_1], "ko")
+        plt.xlabel("d (m)")
+        plt.ylabel("T")
+        plt.title(test_name)
 
     # calculate error
     err_ex = sum((T_ex - T[line_1]) ** 2)
@@ -382,12 +538,13 @@ def check_heterogeneous(
 
     p = results["p"][:, 0]
 
-    plt.figure()
-    plt.plot(d_1, p_ex, "b-")
-    plt.plot(d_1, p[line_1], "ko")
-    plt.xlabel("d (m)")
-    plt.ylabel("p")
-    plt.title(test_name)
+    if plot_on:
+        plt.figure()
+        plt.plot(d_1, p_ex, "b-")
+        plt.plot(d_1, p[line_1], "ko")
+        plt.xlabel("d (m)")
+        plt.ylabel("p")
+        plt.title(test_name)
 
     err_ex += sum((p_ex - p[line_1]) ** 2)
 

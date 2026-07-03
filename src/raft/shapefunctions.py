@@ -34,7 +34,21 @@ def getNmatrix(parent_coords: npt.NDArray[np.float64], etype: str) -> npt.NDArra
         N[0, 1] = xi
         N[0, 2] = eta
         N[0, 3] = zeta
-
+    elif etype == "Q4":
+        N = np.empty((1, 4))
+        n1 = 0.5 - 0.5 * parent_coords
+        n2 = 0.5 + 0.5 * parent_coords
+        N[0, 0] = n1[0] * n1[1]
+        N[0, 1] = n2[0] * n1[1]
+        N[0, 2] = n2[0] * n2[1]
+        N[0, 3] = n1[0] * n2[1]
+    elif etype == "T3":
+        N = np.empty((1, 3))
+        xi = parent_coords[0]
+        eta = parent_coords[1]
+        N[0, 0] = 1 - xi - eta
+        N[0, 1] = xi
+        N[0, 2] = eta
     return N
 
 
@@ -144,6 +158,27 @@ def getBmatrix(
 
         dNdxi[2, 0] = -1
         dNdxi[2, 3] = 1
+    elif etype == "Q4":
+        dNdxi = np.empty((2, 4))
+
+        dNdxi[0, 0] = 0.25 * (-1 + eta)
+        dNdxi[0, 1] = 0.25 * (1 - eta)
+        dNdxi[0, 2] = 0.25 * (1 + eta)
+        dNdxi[0, 3] = 0.25 * (-1 - eta)
+
+        dNdxi[1, 0] = 0.25 * (-1 + xi)
+        dNdxi[1, 1] = 0.25 * (-1 - xi)
+        dNdxi[1, 2] = 0.25 * (1 + xi)
+        dNdxi[1, 3] = 0.25 * (1 - xi)
+    elif etype == "T3":
+        dNdxi = np.empty((2, 3))
+        dNdxi[0, 0] = -1
+        dNdxi[0, 1] = 1
+        dNdxi[0, 2] = 0
+
+        dNdxi[1, 0] = -1
+        dNdxi[1, 1] = 0
+        dNdxi[1, 2] = 1
 
     J = dNdxi @ phys_coords
 
@@ -153,7 +188,7 @@ def getBmatrix(
     return B, J
 
 
-def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:  # noqa
     """Returns the Gauss quadrature points and weights for the
     specified order of integration and number of dimensions.
     """
@@ -163,7 +198,48 @@ def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64
     #   W:      [qt^ndim x 1] vector of quadrature weights
     #   Q:      [qt^ndim x ndim] quadrature coordinates in parent coordinate system
 
-    if etyp != "T4":
+    if etyp.startswith("T"):  # Triangular
+        # T3 case
+        if ndim == 2:
+            if qt == 1:
+                Q = np.array([1 / 3, 1 / 3]).reshape(-1, 2)
+                W = np.asarray([0.5])
+            if qt == 2:
+                Q = np.array(
+                    [
+                        [1 / 6, 1 / 6],
+                        [2 / 3, 1 / 6],
+                        [1 / 6, 2 / 3],
+                    ]
+                )
+                W = np.asarray([1 / 6, 1 / 6, 1 / 6])
+        else:
+            # T4 Case
+            if qt == 1:
+                Q = np.array([0.25, 0.25, 0.25])
+                W = np.array([1.0 / 6.0])
+            elif qt == 2:
+                Q = np.array(
+                    [
+                        [0.58541020, 0.13819660, 0.13819660],
+                        [0.13819660, 0.58541020, 0.13819660],
+                        [0.13819660, 0.13819660, 0.58541020],
+                        [0.13819660, 0.13819660, 0.13819660],
+                    ]
+                )
+                W = np.asarray([1 / 24, 1 / 24, 1 / 24, 1 / 24])
+            elif qt == 3:
+                Q = np.array(
+                    [
+                        [1 / 4, 1 / 4, 1 / 4],
+                        [1 / 2, 1 / 6, 1 / 6],
+                        [1 / 6, 1 / 2, 1 / 6],
+                        [1 / 6, 1 / 6, 1 / 2],
+                        [1 / 6, 1 / 6, 1 / 6],
+                    ]
+                )
+                W = np.asarray([-4 / 30, 9 / 120, 9 / 120, 9 / 120, 9 / 120])
+    else:  # Gauss
         rpt = np.zeros((qt, 1))
         rwt = np.zeros((qt, 1))
         if qt == 1:
@@ -181,9 +257,9 @@ def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64
             rpt[1] = -0.774596669241483
             rpt[2] = 0
 
-            rwt[0] = 0.555555555555556
-            rwt[1] = 0.555555555555556
-            rwt[2] = 0.888888888888889
+            rwt[0] = 5 / 9
+            rwt[1] = 5 / 9
+            rwt[2] = 8 / 9
         else:
             raise Exception("Unsupported number of quadrature points")
 
@@ -196,35 +272,4 @@ def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64
         # Create weights
         wgrids = np.meshgrid(*([rwt] * ndim), indexing="ij")
         W = np.prod(wgrids, axis=0).ravel()
-    else:
-        # T4 case
-        if ndim != 3:
-            raise NotImplementedError("Lower dimensional triangular quadrature not implemented.")
-
-        if qt == 1:
-            Q = np.array([0.25, 0.25, 0.25])
-            W = np.array([1.0])
-        elif qt == 2:
-            Q = np.array(
-                [
-                    [0.58541020, 0.13819660, 0.13819660],
-                    [0.13819660, 0.58541020, 0.13819660],
-                    [0.13819660, 0.13819660, 0.58541020],
-                    [0.13819660, 0.13819660, 0.13819660],
-                ]
-            )
-            W = [0.25, 0.25, 0.25, 0.25]
-        elif qt == 3:
-            Q = np.array(
-                [
-                    [0.25, 0.25, 0.25],
-                    [1 / 2, 1 / 6, 1 / 6],
-                    [1 / 6, 1 / 2, 1 / 6],
-                    [1 / 6, 1 / 6, 1 / 2],
-                    [1 / 6, 1 / 6, 1 / 6],
-                ]
-            )
-            W = [-4 / 5, 9 / 20, 9 / 20, 9 / 20, 9 / 20]
-
-        W = np.asarray(W) / 6
     return Q, W

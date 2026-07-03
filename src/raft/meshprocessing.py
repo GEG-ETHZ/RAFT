@@ -115,7 +115,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
 
     # use dictionary to track faces and keep original order for calculating normals.
     # dictionary structure: sorted_face: [count, original face]
-    face_tracker: dict[tuple[int, ...], list[int | tuple[int, ...]]] = {}
+    face_tracker: dict[tuple[int, ...], list[Any]] = {}
 
     for elem in range(ne):
         for face_name, face_local in faces.items():
@@ -123,7 +123,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
             sorted_face = tuple(sorted(original_face))  # for uniqueness
             if sorted_face in face_tracker:
                 # Increment count
-                face_tracker[sorted_face][0] += 1  # type: ignore[operator]
+                face_tracker[sorted_face][0] += 1
             else:
                 # Store count and original
                 face_tracker[sorted_face] = [1, original_face]
@@ -132,19 +132,25 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
-    x_min: set[int] = set()
-    x_max: set[int] = set()
-    y_min: set[int] = set()
-    y_max: set[int] = set()
-    z_min: set[int] = set()
-    z_max: set[int] = set()
+    boundaries: dict[str, Any] = {}
+    boundaries["x_min"] = set()
+    boundaries["x_max"] = set()
+    boundaries["y_min"] = set()
+    boundaries["y_max"] = set()
+    boundaries["z_min"] = set()
+    boundaries["z_max"] = set()
+
+    boundaries["x_min_conn"] = []
+    boundaries["x_max_conn"] = []
+    boundaries["y_min_conn"] = []
+    boundaries["y_max_conn"] = []
+    boundaries["z_min_conn"] = []
+    boundaries["z_max_conn"] = []
 
     for face in boundary_faces:
         # calculate plane normal
         xI = nodes[face, :]
-        v1 = [xI[1, 0] - xI[0, 0], xI[1, 1] - xI[0, 1], xI[1, 2] - xI[0, 2]]
-        v2 = [xI[2, 0] - xI[0, 0], xI[2, 1] - xI[0, 1], xI[2, 2] - xI[0, 2]]
-        n = np.cross(v1, v2)
+        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
 
         # project n onto axis normals
         ex = n @ [1, 0, 0]
@@ -156,24 +162,16 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
         max_component = max(components, key=lambda k: abs(components[k]))
 
         # Append to appropriate list based on sign
-        if max_component == "x":
-            (x_max if ex > 0 else x_min).update(face)  # type: ignore[arg-type]
-        elif max_component == "y":
-            (y_max if ey > 0 else y_min).update(face)  # type: ignore[arg-type]
-        else:  # max_component == 'z'
-            (z_max if ez > 0 else z_min).update(face)  # type: ignore[arg-type]
+        side = "max" if components[max_component] > 0 else "min"
 
-    mesh["boundaries"] = {}
-    mesh["boundaries"]["x_max"] = x_max
-    mesh["boundaries"]["x_min"] = x_min
-    mesh["boundaries"]["y_max"] = y_max
-    mesh["boundaries"]["y_min"] = y_min
-    mesh["boundaries"]["z_max"] = z_max
-    mesh["boundaries"]["z_min"] = z_min
+        boundaries[f"{max_component}_{side}"].update(face)
+        boundaries[f"{max_component}_{side}_conn"].append(list(face))
 
-    x_all = x_max | x_min
-    y_all = y_max | y_min
-    z_all = z_max | z_min
+    mesh["boundaries"] = boundaries
+
+    x_all = boundaries["x_max"] | boundaries["x_min"]
+    y_all = boundaries["y_max"] | boundaries["y_min"]
+    z_all = boundaries["z_max"] | boundaries["z_min"]
     n_all = x_all | y_all | z_all
 
     mesh["boundaries"]["x_all"] = x_all
