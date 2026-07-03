@@ -5,6 +5,8 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .matrixassembly import integrate_boundary_flux_matrices
+
 
 def _createBCpairs(incoming: dict[str, Any]) -> npt.NDArray[np.float64]:
     pairs = list(zip(incoming["nodes"], incoming["BCvalues"]))
@@ -53,6 +55,9 @@ def _gatherBCs(  # noqa: C901
     Boundary condition type necessary for flux integrals, not yet implemented.
     """
     BCarray = np.empty((0, 2))
+    face_flag = False
+    face_conn = []
+    face_nn = 0
     # for each BC group
     for group in incoming:
         # gather all the corresponding nodes
@@ -60,15 +65,19 @@ def _gatherBCs(  # noqa: C901
             # directly append the nodes
             # covers "nodes" and "coords" cases, which have been mapped in pre-processing
             BCnodes = group["nodes"]
+
+            # on second passes, check that if nodes is an amalgamation of faces
+            if "faces" in group:
+                face_flag = True
         elif "faces" in group:
             # load the groups of faces determined in the pre-processing
-            if bctype == 2:
-                raise NotImplementedError("Flux face integrals")
-
             BCnodes = []
             for face in group["faces"]:
                 BCnodes.extend(mesh["boundaries"][face])
-
+                if bctype == 2:
+                    face_flag = True
+                    face_conn.extend(mesh["boundaries"][face + "_conn"])
+                    face_nn += len(mesh["boundaries"][face])
         else:
             raise NotImplementedError("Invalid BC geometry specification")
 
@@ -85,6 +94,12 @@ def _gatherBCs(  # noqa: C901
 
         # get the precribed value of the BC group
         group = _evaluateBCfunctions(group, t, mesh["nodes"])
+        if bctype == 2 and face_flag:
+            if "flux_weight_matrix" not in group:
+                flux_mats = integrate_boundary_flux_matrices(mesh, face_conn, group["nodes"])
+                group["flux_weight_matrix"] = flux_mats["A"]
+
+            group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
 
         # combine the group into a single array
         grouparray = _createBCpairs(group)

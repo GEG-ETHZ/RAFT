@@ -14,6 +14,51 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_patch_z_flux() -> None:
+    """Check exact linear approximation in Z."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Z - flux"
+    config_filename = "config_test_patchZ_flux.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 2
+    plot_on = False
+    test_pass = test_checks.check_patch_test_flux(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_y_flux() -> None:
+    """Check exact linear approximation in Y."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Y - flux"
+    config_filename = "config_test_patchY_flux.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 1
+    plot_on = False
+    test_pass = test_checks.check_patch_test_flux(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_x_flux() -> None:
+    """Check exact linear approximation in X."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - X - flux"
+    config_filename = "config_test_patchX_flux.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 0
+    plot_on = False
+    test_pass = test_checks.check_patch_test_flux(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_patch_z_T4() -> None:
     """Check exact linear approximation in Z."""
     case_dir = _test_data_dir()
@@ -22,8 +67,9 @@ def test_patch_z_T4() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 2
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -36,8 +82,9 @@ def test_patch_y_T4() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 1
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -50,8 +97,9 @@ def test_patch_x_T4() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 0
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -63,7 +111,10 @@ def test_heterogeneous() -> None:
     config_filename = "config_test_heterogeneous.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    test_pass = test_checks.check_heterogeneous(config_filename, case_dir, primary_variables, mesh, test_name)
+    plot_on = False
+    test_pass = test_checks.check_heterogeneous(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
     assert test_pass
 
 
@@ -86,8 +137,9 @@ def test_patch_anisotropy() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -99,8 +151,9 @@ def test_pressurization() -> None:
     config_filename = "config_test_pressurization.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
+    plot_on = False
     test_pass = test_checks.check_pressurization(
-        config_filename, case_dir, primary_variables, mesh, test_name
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
     assert test_pass
 
@@ -112,7 +165,10 @@ def test_buoyancy() -> None:
     config_filename = "config_test_buoyancy.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    test_pass = test_checks.check_buoyancy(config_filename, case_dir, primary_variables, mesh, test_name)
+    plot_on = False
+    test_pass = test_checks.check_buoyancy(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
     assert test_pass
 
 
@@ -123,7 +179,10 @@ def test_advection() -> None:
     config_filename = "config_test_advection.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    test_pass = test_checks.check_advection(config_filename, case_dir, primary_variables, mesh, test_name)
+    plot_on = False
+    test_pass = test_checks.check_advection(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
     assert test_pass
 
 
@@ -135,8 +194,9 @@ def test_patch_y() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 1
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -149,8 +209,9 @@ def test_patch_x() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 0
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 
@@ -163,8 +224,9 @@ def test_patch_z() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 2
+    plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass
 

@@ -1,6 +1,7 @@
 """Assembles global linear FEM matrices."""
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -285,3 +286,100 @@ def integrate_nonlinear_matrices(
 
     # ----- Return and convert to sparse matrix
     return {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec}
+
+
+def integrate_boundary_flux_matrices(
+    mesh: dict[str, Any],
+    conn_face: list[list[int]],
+    node_order: Sequence[int],
+) -> dict[str, csc_matrix[Any]]:
+    """Integrate lower dimensional boundary integrals for flux BCs."""
+    ne = np.size(conn_face, 0)
+    nne = np.size(conn_face, 1)
+    nsd = mesh["nsd"] - 1
+    nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    etype = mesh["element_type"]
+
+    # ----- Local face numbering
+    # Map each global node id in conn_face to a local index.
+    # Used for assembly.
+
+    face_node_ids = np.unique(np.asarray(conn_face, dtype=np.int32))
+    global_to_local = {int(g): i for i, g in enumerate(face_node_ids)}
+    nn_face = len(face_node_ids)
+    conn_face_local = np.array(
+        [[global_to_local[int(n)] for n in enodes] for enodes in conn_face],
+        dtype=np.int32,
+    )
+
+    match etype:
+        case "B8":
+            etype = "Q4"
+            nq = 2
+        case "T4":
+            etype = "T3"
+            nq = 1
+        case _:
+            raise NotImplementedError(f"Face elements of {etype}.")
+
+    # ----- Vectorized matrix assembly
+    # Assemble lists of rows, columns, and entries and then assemble the sparse
+    # matrix all at once.
+    # For the scalar pressure and temperature, there are nne * nne entries
+    # per element.
+    total_entries = ne * nne * nne
+    vec = {name: np.zeros(total_entries) for name in ("A")}
+    row_vec = np.empty(total_entries, dtype=np.int32)
+    col_vec = np.empty(total_entries, dtype=np.int32)
+
+    # Matrices to assemble:
+    # A = area weight for flux distribution over the face
+
+    # ----- Quadrature points
+    Q, W = getquadrature(nq, nsd, etype)
+    nq = len(W)
+
+    # ----- Matrix integration element loop
+    for i in range(ne):
+        enodes = conn_face[i]  # global node ids, used for geometry
+        enodes_local = conn_face_local[i]  # local node ids, used for assembly
+
+        # calculate face normal
+        xI = nodes[enodes, :]
+        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+        # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
+        ax = np.argmax(abs(n))
+        xI = np.delete(xI, ax, 1)
+
+        # Element matrices
+        Ae = np.zeros((nne, nne))
+
+        for q in range(nq):
+            xi = Q[q, :]
+            Wi = W[q]
+
+            Je = getBmatrix(xi, xI, etype)[1]
+            N = getNmatrix(xi, etype)
+
+            # Boundary faces may be misordered relative to their global position,
+            # relative in negative jacobians.
+            # This shouldn't be an issue because all elements are defined with the same
+            # relative numbering. Flux directions can then be controlled via
+            # the sign of the applied traction.
+            wJe = Wi * abs(_calc_detJe(Je, nsd))  # Weight * Jacobian, used in every integrand
+
+            Ae += np.dot(N.T, N) * wJe
+
+        # ----- Assemble element contributions into global matrices
+        # Build global (row, col) index pairs for this element block once
+        sl = slice(i * nne * nne, (i + 1) * nne * nne)
+        # enodes repeated/tiled gives all (row,col) combos in row-major order
+        row_vec[sl] = np.repeat(enodes_local, nne)  # [e0,e0,..,e1,e1,..]
+        col_vec[sl] = np.tile(enodes_local, nne)  # [e0,e1,..,e0,e1,..]
+
+        vec["A"][sl] = Ae.ravel()
+
+    matrices = {name: _make_sparse(vec[name], row_vec, col_vec, nn_face) for name in vec}
+    # Map local ordering back to global ordering using the input node_order
+    local_idx = np.searchsorted(face_node_ids, np.asarray(node_order, dtype=np.int32))
+    return {name: mat[local_idx, :][:, local_idx] for name, mat in matrices.items()}
