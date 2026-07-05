@@ -59,7 +59,8 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - faces: [z_max]
-        values: [2.0e+6]
+        values: [2.0e+6, 200]
+        function: "ramp"
         tag: "inflow"
       - faces: [z_min]
         values: [1.0e+5]
@@ -72,8 +73,8 @@ boundary_conditions:
   fluid_flux:
       # Fluid flux and temperature flux currently only support nodal values.
       - coords: [[50, 20, 10]]
-        values: [-0.1, 1000]
-        function: "ramp"
+        values: [[0, 10, 100, 1000, 1000, 2000], [0, -0.01, -0.02, -0.1, -0.2, -0.1]]
+        function: "table"
         tag: "wellbore"
 
   temperature_flux:

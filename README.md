@@ -157,6 +157,9 @@ Each boundary condition group must specify nodes using exactly one of the follow
   * `values` : `[y_ramp, t_ramp]` defines:
         $\quad y(t) =  \frac{t}{t_{ramp}}y_{ramp} \quad \forall t<t_{ramp}$
         $\quad y(t) = y_{ramp} \quad \forall t\geq t_{ramp}$.
+* `function`: `"table"`
+  * Accepts a series of times and values, linearly interpolating between them. The timestepping code will ensure it does not step over any times listed in the table. 0 is assumed before the first listed time. The function is assumed constant beyond the final time listed in the table.
+  * `values` : `[[t_0, t_1, ... , t_n], [y_0, y_1, ... , y_n]]` in which $t_i$ are a list of increasing times and $y_i$ are the corresponding value at that time.
 
 **Output Specification:**
 *(Optional)* Flow boundary condition groups can optionally be marked with an `tag: "groupname"` entry. If they are marked with a tag, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:

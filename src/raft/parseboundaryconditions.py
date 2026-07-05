@@ -43,7 +43,11 @@ def _evaluateBCfunctions(
             t_ramp = incoming["values"][1]
             y = y_ramp if t >= t_ramp else t / t_ramp * y_ramp
             incoming["BCvalues"] = [y] * len(incoming["nodes"])
-
+        case "table":
+            tn = incoming["values"][0]
+            yn = incoming["values"][1]
+            y = np.interp(t, tn, yn) if t >= tn[0] else 0
+            incoming["BCvalues"] = [y] * len(incoming["nodes"])
     return incoming
 
 
@@ -111,6 +115,7 @@ def _gatherBCs(  # noqa: C901
     if BCarray.size > 0:
         _, idx = np.unique(BCarray[:, 0], return_index=True)
         BCarray = BCarray[idx]
+
     return BCarray
 
 

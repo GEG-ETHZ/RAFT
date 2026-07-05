@@ -43,18 +43,42 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
     return cv, cx
 
 
-def _update_time(t: float, dt: list[float], t_end: float, dt_max: float) -> tuple[float, list[float]]:
+def _update_time(
+    t: float, dt: list[float], dt_max: float, critical_times: list[float]
+) -> tuple[float, list[float]]:
     """Update the current time and timestep."""
+    # update timestep
     dt[2] = dt[1]
     dt[1] = dt[0]
     if dt[0] < dt_max:
-        dt[0] *= 1.25  # Note: arbitrary timestep increasing rate. Could be made variable.
+        dt[0] = min(1.25 * dt[0], dt_max)  # Note: arbitrary timestep increasing rate. Could be made variable.
     t += dt[0]
-    if t > t_end and t != t_end:
-        t -= dt[0]
-        dt[0] = t_end - t
-        t = t_end
+
+    # find next critical time and prevent overshoot
+    upcoming = [ct for ct in critical_times if ct > t - dt[0]]
+    if upcoming:
+        t_next = min(upcoming)
+        if t > t_next and t != t_next:
+            t -= dt[0]
+            dt[0] = t_next - t
+            t = t_next
+
     return t, dt
+
+
+def get_critical_times(bc_config: dict[str, Any], t_end: float) -> npt.NDArray[np.float64]:
+    """Collect all times from BC groups using the 'table' function."""
+    times: set[float] = set()
+    # add end times
+    times.add(t_end)
+    # search for any boundary condition change times
+    for key in ("temperature_fixed", "pressure_fixed", "temperature_flux", "fluid_flux"):
+        for group in bc_config.get(key, []):
+            if group.get("function") == "table":
+                times.update(group["values"][0])
+            elif group.get("function") == "ramp":
+                times.add(float(group["values"][1]))
+    return np.array(sorted(times), dtype=np.float64)
 
 
 def _check_convergence(
@@ -348,6 +372,9 @@ def main(
     # initialize timesteps and store 3 timesteps (necessary for higher order)
     # dt = [dt_n, dt_(n-1), dt_(n-2)]
     dt = config["simulation"]["timestep"] * np.ones(3)
+    dt_max = config["simulation"]["timestep_max"]
+    # Gather any important time points as specified in the boundary conditions
+    critical_times = get_critical_times(config["boundary_conditions"], t_end)
 
     ## Initialize vectors
     primary_variables = {}  # storage structure for all primary variables and results
@@ -419,7 +446,7 @@ def main(
         postprocessing(n, mesh, config, material, primary_variables, t, verbose)
 
         # Update time step
-        t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
+        t, dt = _update_time(t, dt, dt_max, critical_times)
         n += 1
         # Check end condition
         if t >= t_end:

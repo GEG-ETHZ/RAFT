@@ -2,7 +2,7 @@
 
 from raft.subsurface import main
 
-dofs, mesh = main("config_profiling.yaml")
+dofs, mesh = main("config_example.yaml")
 
 # import sys
 # from pathlib import Path
