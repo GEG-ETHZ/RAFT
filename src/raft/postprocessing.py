@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .shapefunctions import getB
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
@@ -21,16 +22,17 @@ def compute_fluid_flux(
 
     Returns nsd x nn array of fluxes at each node.
     """
-    from .shapefunctions import getBmatrix
+    from .shapefunctions import GNMATRIX_FUNCS
 
     nn = mesh["nn"]
     nsd = mesh["nsd"]
-    ne = mesh["ne"]
     nne = mesh["nne"]
     regions = mesh["regions"]
     conn = mesh["conn"]
     nodes = mesh["nodes"]
     etype = mesh["element_type"]
+    region_lists = mesh["region_lists"]
+    num_regions = mesh["num_regions"]
 
     # Initialize output arrays
     q = np.zeros((nsd, nn))
@@ -94,24 +96,33 @@ def compute_fluid_flux(
     else:
         raise ValueError(f"Unsupported element type: {etype}")
 
-    # Loop over elements
-    for e in range(ne):
-        enodes = conn[e, :]  # element nodes
-        # material properties - element
-        kf = mat["solid"]["permeability_eff"][regions[e]]
+    getGN = GNMATRIX_FUNCS[etype]
+    GN_q_list = []
+    for n in range(nne):
+        GN_q_list.append(getGN(xi[n, :]))
+    GN_q = np.array(GN_q_list)
 
-        xI = nodes[enodes, :nsd]  # element physical coordinates
-        pe = p[enodes]  # element nodal pressures
+    for r in range(num_regions):
+        # solid properties - by region
+        kf = mat["solid"]["permeability_eff"][r]
+        # Check for region isotropy
+        isotropic = bool(isinstance(kf, (float, int)))
 
-        # Loop over nodes within the element
-        for n in range(nne):
-            B, _ = getBmatrix(xi[n, :], xI, etype)
+        for e in region_lists[r]:
+            enodes = conn[e, :]  # element nodes
+            # material properties - element
+            kf = mat["solid"]["permeability_eff"][regions[e]]
 
-            # Fluid flux calculation
-            flux_val = -np.dot(kf / mu, (B @ pe))
-            q[:, enodes[n]] += flux_val
+            xI = nodes[enodes, :nsd]  # element physical coordinates
+            B_q = getB(GN_q, xI, nsd)[0]
 
-            count[enodes[n]] += 1
+            pe = p[enodes]  # element nodal pressures
+
+            gradp_all = B_q @ pe
+            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ (kf / mu).T)
+
+            q[:, enodes] += flux_e.T
+            count[enodes] += 1
 
     # Nodal averaging of fluxes
     # Avoid division by zero for unused nodes
