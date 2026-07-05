@@ -24,10 +24,8 @@ material:
       viscosity: 0.7e-3         # m^2 (permeability)
 
 initial_conditions:
-  geothermal_gradient: 0.0      # deg C/m
-  T_surf: 200                  # deg C
-  pressure_gradient: 0.0        # Pa/m
-  p_surf: 1.0e+5
+  T_ini: 200                  # deg C
+  p_ini: 1.0e+5
 
 
 boundary_conditions:
