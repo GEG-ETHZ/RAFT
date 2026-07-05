@@ -44,7 +44,7 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
 
 
 def _update_time(
-    t: float, dt: list[float], dt_max: float, critical_times: list[float]
+    t: float, dt: list[float], dt_max: float, critical_times: npt.NDArray[np.float64]
 ) -> tuple[float, list[float]]:
     """Update the current time and timestep."""
     # update timestep
