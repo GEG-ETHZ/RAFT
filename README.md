@@ -182,7 +182,7 @@ Each boundary condition group must specify nodes using exactly one of the follow
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change (typically `1`).
 * **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
 * **`pressurization_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable thermal pressurization coupling; `0` to disable.
-* **`buoyancy_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable density buoyancy effects; `0` to disable.
+* **`buoyancy_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable density buoyancy effects; `0` to disable. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
 * **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
 * **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
 * **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks.
