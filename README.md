@@ -33,8 +33,8 @@ Run the test suite:
 The simulator uses a YAML configuration file to define simulation options, material properties, initial conditions, boundary conditions, and numerical controls. Below is the list of parameters and their options.
 
 ### `mesh`
-* **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format). Meshes may be either B8 or T4 elements, but must use entirely one element. Mixed meshes are currently not supported.
-* **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`). 2D is not currently supported.
+* **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format). Meshes may be either B8 or T4 elements in 3D or Q4 or T3 in 2D, but must use entirely one element. Mixed meshes are currently not supported.
+* **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`).
 ### `regions`
 Regions allow you to assign different material properties to different sections of your domain. Each region is defined by a geometric shape which assign the region number to all elements whose centroids fall within the shape. Region numbers correspond to indices in the material property lists. Regions are an independent definition that does not rely on the mesh or domain, but conforming mesh boundaries are encouraged for more accurate results.
 
@@ -120,7 +120,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
     * **`p_grad`** *(float, default: `0.0`)*: Pressure gradient along the gradient vector in $\text{Pa/m}$.
     * **`grad_direction_T`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the temperature gradient. Automatically normalized.
     * **`grad_direction_p`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the pressure gradient. Automatically normalized.
-  * **`"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures.
+  * **`"BC_compatible"`**: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
 
 ### `boundary_conditions`
 Boundary conditions are specified in groups. Each group can be applied using one of three geometric specification methods: node indices, coordinate proximity, or named faces. Each group can also specify either constant or time-dependent values.
@@ -154,9 +154,9 @@ Each boundary condition group must specify nodes using exactly one of the follow
     * `slope`: gradient $m$ along $g$.
 * `function`: `"ramp"`
   * Linear increase to a value $y_{ramp}$ over time period $t_{ramp}$.
-  * `values` : `[y_ramp, t_ramp]` defines:
-        $\quad y(t) =  \frac{t}{t_{ramp}}y_{ramp} \quad \forall t<t_{ramp}$
-        $\quad y(t) = y_{ramp} \quad \forall t\geq t_{ramp}$.
+  * `values` : `[[y0, y1], t_ramp]` defines:
+        $\quad y(t) = y_0 + \frac{t}{t_{ramp}}(y_1 -y_0)\quad \forall t<t_{ramp}$
+        $\quad y(t) = y_1 \quad \forall t\geq t_{ramp}$.
 * `function`: `"table"`
   * Accepts a series of times and values, linearly interpolating between them. The timestepping code will ensure it does not step over any times listed in the table. 0 is assumed before the first listed time. The function is assumed constant beyond the final time listed in the table.
   * `values` : `[[t_0, t_1, ... , t_n], [y_0, y_1, ... , y_n]]` in which $t_i$ are a list of increasing times and $y_i$ are the corresponding value at that time.

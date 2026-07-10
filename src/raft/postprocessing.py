@@ -66,6 +66,8 @@ def compute_fluid_flux(  # noqa
         )
     elif etype == "T4":
         xi = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    elif etype == "T3":
+        xi = np.array([[0, 0], [1, 0], [0, 1]])
     elif etype == "B27":  # B27 element
         xi = np.array(
             [
@@ -144,7 +146,7 @@ def compute_fluid_flux(  # noqa
 
 
 def _extract_cartesian_properties(
-    material_list: list[Any], indx: npt.NDArray[np.int64]
+    material_list: list[Any], indx: npt.NDArray[np.int64], nsd: int
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Extracts x, y, and z directional components from a list of region properties.
 
@@ -163,7 +165,10 @@ def _extract_cartesian_properties(
         else:  # ansisotropic tensor
             region_x.append(item[0, 0])
             region_y.append(item[1, 1])
-            region_z.append(item[2, 2])
+            if nsd == 3:
+                region_z.append(item[2, 2])
+            else:
+                region_z.append(0.0)
 
     # Map the per-region values to individual elements using the index mapping
     return (
@@ -258,6 +263,7 @@ def postprocessing(  # noqa
     config_stem = Path(config["config_name"]).stem
     io_path = os.path.join(base_path, config_stem)
     config["output_directory_full"] = io_path
+    nsd = mesh["nsd"]
 
     if not os.path.exists(io_path):
         os.makedirs(io_path)
@@ -313,9 +319,11 @@ def postprocessing(  # noqa
             indx = np.array(mesh["regions"])
             # Extract and handle potential isotropic vs anisotropic permeability tensor
             perm_x, perm_y, perm_z = _extract_cartesian_properties(
-                material["solid"]["permeability_eff"], indx
+                material["solid"]["permeability_eff"], indx, nsd
             )
-            cond_x, cond_y, cond_z = _extract_cartesian_properties(material["solid"]["therm_cond_eff"], indx)
+            cond_x, cond_y, cond_z = _extract_cartesian_properties(
+                material["solid"]["therm_cond_eff"], indx, nsd
+            )
 
             scalardata_cell = [
                 {"name": "region", "data": mesh["regions"].copy()},

@@ -1,6 +1,7 @@
 """Subsurface simulator - main time integration loop."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from .preprocessing import preprocessing
 from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
 
-def _update_time(
+def _update_time(  # noqa
     solver_type: str,
     t: float,
     dt: list[float],
@@ -32,10 +33,18 @@ def _update_time(
     if not converged:  # Decrease the timestep
         if dt[0] == dt_min:
             # minimum timestep reached, proceed with simulation
-            if verbose:
-                print(
-                    f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                )
+            match solver_type:
+                case "linearized":
+                    if verbose:
+                        print(
+                            f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                        )
+                case "fully_coupled":
+                    if verbose:
+                        print(
+                            "     Minimum timestep reached, unable to converge to solution."  # noqa: E501
+                        )
+                    sys.exit()
         else:
             if solver_type == "linearized":
                 # Cut timestep in proportion with error

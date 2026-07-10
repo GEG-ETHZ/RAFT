@@ -146,10 +146,15 @@ def write_mesh2vtk(  # noqa: C901
         for field in vector_data_point:
             fid.write(f"VECTORS {field['name']} float\n")
             data = np.asarray(field["data"])
+
+            if nsd == 2:
+                # append zeros to vectors
+                data = np.hstack([data, np.zeros((nn, 1))])
+
             for j in range(nn):
                 fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {data[j, 2]:.4e} \n")
 
-        # --- Scalar point data ---
+        # --- Scalar cell data ---
         if ndc > 0:
             fid.write(f"CELL_DATA {ne}\n")
 

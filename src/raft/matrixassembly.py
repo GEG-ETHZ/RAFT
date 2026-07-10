@@ -252,24 +252,31 @@ def _compute_supg_quantities(
     lambda_e: npt.NDArray[np.float64] | float,
     L_vec: npt.NDArray[np.float64],
     nq: int,
+    nsd: int,
 ) -> _SUPGQuantities:
     """Compute the Darcy flux and SUPG (Shakib, Hughes, & Zohan (1991)) stabilization terms."""
     gradp = B_q @ pe  # nq x nsd x 1
 
     flux = -advec_conduct * gradp if isotropic_perm else -advec_conduct @ gradp
     flux_T = flux.transpose(0, 2, 1)  # quadrature-point-wise transpose, calculate once
-    flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)  # flux magnitude
+    if nsd == 3:
+        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)  # flux magnitude
+    else:
+        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)  # flux magnitude
     indx_noflow = np.nonzero(flux_mag == 0)
     # prevent divide by zero
     flux_mag[indx_noflow] = 1.0e-15
     flux[indx_noflow, :, :] = 1.0e-15
 
     # Effective length weighted by fluxes
-    h_eff = flux_mag / np.sqrt(
-        (flux[:, 0, 0] / L_vec[0, 0]) ** 2
-        + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
-        + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
-    )
+    if nsd == 3:
+        h_eff = flux_mag / np.sqrt(
+            (flux[:, 0, 0] / L_vec[0, 0]) ** 2
+            + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
+            + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
+        )
+    else:
+        h_eff = flux_mag / np.sqrt((flux[:, 0, 0] / L_vec[0, 0]) ** 2 + (flux[:, 1, 0] / L_vec[1, 0]) ** 2)
     if isotropic_cond:
         lambda_e_projected = lambda_e * np.ones((nq, 1, 1))
     else:
@@ -504,7 +511,7 @@ def integrate_nonlinear_matrices(
             # ----------------------------------- Advection and stabilization
             # Calculate fluxes, stabilization coefficicent, pressure gradients and store in supg dataclass
             supg = _compute_supg_quantities(
-                B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_e, L_vec, nq
+                B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_e, L_vec, nq, nsd
             )
 
             # advection matrix
@@ -664,6 +671,10 @@ def integrate_boundary_flux_matrices(
         case "T4":
             etype = "T3"
             nq = 1
+        case "T3":
+            etype = "L2"
+        case "Q4":
+            etype = "L2"
         case _:
             raise NotImplementedError(f"Face elements of {etype}.")
 
@@ -688,7 +699,11 @@ def integrate_boundary_flux_matrices(
 
         # calculate face normal
         xI = nodes[enodes, :]
-        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+        if nsd == 2:
+            n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+        else:
+            n = np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
+
         # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
         ax = np.argmax(abs(n))
         xI = np.delete(xI, ax, 1)

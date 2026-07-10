@@ -243,7 +243,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
 
         # For anisotropic case, perform rotation
         if isinstance(kf, list):
-            kf = R @ np.diag(kf) @ R.T
+            kf = R @ np.diag(kf[0:nsd]) @ R.T
 
         # Derived properties (computed here, not stored in YAML)
         M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
@@ -281,12 +281,18 @@ def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -
     defined by coordinates into node groups.
     """
     BC_dict = config["boundary_conditions"]
+    nodes = mesh["nodes"]
+    if np.size(nodes, 1) < 3:
+        nodes = np.hstack((nodes, np.zeros((mesh["nn"], 1))))
+
     for BC_type in BC_dict:
         for group in BC_dict[BC_type]:
             BCnodes = []
             if "coords" in group:
                 for xi in group["coords"]:
-                    d = np.linalg.norm(mesh["nodes"] - xi, axis=1)
+                    if np.size(xi, 0) != 3:
+                        xi.append(0.0)
+                    d = np.linalg.norm(nodes - xi, axis=1)
                     closest_node = np.argmin(d).astype(int)
                     BCnodes.append(closest_node)
                 group["nodes"] = BCnodes
