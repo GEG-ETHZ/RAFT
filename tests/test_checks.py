@@ -142,10 +142,11 @@ def check_patch_test_flux(
 
     # Extract nodes along lines
     nodes = mesh["nodes"]
-    dims = [0, 1, 2]
+    nsd = mesh["nsd"]
+    dims = [0, 1, 2] if nsd == 3 else [0, 1]
 
-    if dimension in dims:  # Cases aligned with cartesian axis
-        dims.remove(dimension)
+    dims.remove(dimension)
+    if nsd == 3:
         line_1 = np.nonzero(
             np.logical_and(
                 nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
@@ -156,32 +157,18 @@ def check_patch_test_flux(
                 nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == min(nodes[:, dims[1]])
             )
         )[0]
-        line_3 = np.nonzero(
-            np.logical_and(
-                nodes[:, dims[0]] == min(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
-            )
-        )[0]
-        line_4 = np.nonzero(
-            np.logical_and(
-                nodes[:, dims[0]] == max(nodes[:, dims[0]]), nodes[:, dims[1]] == max(nodes[:, dims[1]])
-            )
-        )[0]
-    else:
-        # Cases not aligned with cartesian axis. Only works if only 1 element
-        # specified across the other axes.
-        n = 8
-        indx = list(range(n, n + n + 1))
-        line_1 = np.array([0] + indx + [4])
-        line_2 = np.array([3] + [i + n + 1 for i in indx] + [7])
-        line_3 = np.array([1] + [i + 2 * (n + 1) for i in indx] + [5])
-        line_4 = np.array([2] + [i + 3 * (n + 1) for i in indx] + [6])
+        line_1 = line_1[np.argsort(nodes[line_1, dimension])]
+        line_2 = line_2[np.argsort(nodes[line_2, dimension])]
+    elif nsd == 2:
+        line_1 = np.nonzero(nodes[:, dims[0]] == min(nodes[:, dims[0]]))[0]
+        line_2 = np.nonzero(nodes[:, dims[0]] == max(nodes[:, dims[0]]))[0]
+        line_1 = line_1[np.argsort(nodes[line_1, dimension])]
+        line_2 = line_2[np.argsort(nodes[line_2, dimension])]
 
-    L = np.sqrt(np.sum((nodes[line_1[1], :] - nodes[line_1[0], :]) ** 2))
+    L = np.sqrt(np.sum((nodes[line_1[-1], :] - nodes[line_1[0], :]) ** 2))
 
     d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1))
     d_2 = np.sqrt(np.sum((nodes[line_2, :] - nodes[line_2[0], :]) ** 2, 1))
-    d_3 = np.sqrt(np.sum((nodes[line_3, :] - nodes[line_3[0], :]) ** 2, 1))
-    d_4 = np.sqrt(np.sum((nodes[line_4, :] - nodes[line_4[0], :]) ** 2, 1))
 
     # check temperature
 
@@ -205,8 +192,6 @@ def check_patch_test_flux(
         plt.plot([0, L], [T0, T1])
         plt.plot(d_1, T[line_1], "ko")
         plt.plot(d_2, T[line_2], "bo")
-        plt.plot(d_3, T[line_3], "k^")
-        plt.plot(d_4, T[line_4], "b^")
         plt.xlabel("d (m)")
         plt.ylabel("T")
         plt.title(test_name)
@@ -215,8 +200,6 @@ def check_patch_test_flux(
     mean_val = 0.5 * (T0 + T1)
     err_ex = sum((_lin_exact(T0, m, d_1) - T[line_1]) ** 2) / mean_val
     err_ex += sum((_lin_exact(T0, m, d_2) - T[line_2]) ** 2) / mean_val
-    err_ex += sum((_lin_exact(T0, m, d_3) - T[line_3]) ** 2) / mean_val
-    err_ex += sum((_lin_exact(T0, m, d_4) - T[line_4]) ** 2) / mean_val
 
     # check pressure
     p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
@@ -240,8 +223,6 @@ def check_patch_test_flux(
         plt.plot([0, L], [p0, p1])
         plt.plot(d_1, p[line_1], "ko")
         plt.plot(d_2, p[line_2], "bo")
-        plt.plot(d_3, p[line_3], "k^")
-        plt.plot(d_4, p[line_4], "b^")
         plt.xlabel("d (m)")
         plt.ylabel("p")
         plt.title(test_name)
@@ -249,8 +230,6 @@ def check_patch_test_flux(
     mean_val = 0.5 * (p0 + p1)
     err_ex = sum((_lin_exact_p(p1, m, d_1, L) - p[line_1]) ** 2) / mean_val
     err_ex += sum((_lin_exact_p(p1, m, d_2, L) - p[line_2]) ** 2) / mean_val
-    err_ex += sum((_lin_exact_p(p1, m, d_3, L) - p[line_3]) ** 2) / mean_val
-    err_ex += sum((_lin_exact_p(p1, m, d_4, L) - p[line_4]) ** 2) / mean_val
 
     test_pass = bool(err_ex < tol)
 

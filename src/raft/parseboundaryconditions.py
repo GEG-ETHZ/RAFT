@@ -39,9 +39,10 @@ def _evaluateBCfunctions(
 
             incoming["BCvalues"] = y0 + slope * (x - x_min)
         case "ramp":
-            y_ramp = incoming["values"][0]
+            y_0 = incoming["values"][0][0]
+            y_1 = incoming["values"][0][1]
             t_ramp = incoming["values"][1]
-            y = y_ramp if t >= t_ramp else t / t_ramp * y_ramp
+            y = y_1 if t >= t_ramp else y_0 + t / t_ramp * (y_1 - y_0)
             incoming["BCvalues"] = [y] * len(incoming["nodes"])
         case "table":
             tn = incoming["values"][0]

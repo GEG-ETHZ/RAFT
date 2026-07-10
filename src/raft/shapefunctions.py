@@ -59,6 +59,15 @@ def _getNmatrix_T3(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return N
 
 
+@njit  # type: ignore[untyped-decorator]
+def _getNmatrix_L2(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    N = np.empty((1, 2))
+    xi = parent_coords[0]
+    N[0, 0] = 0.5 * (1 - xi)
+    N[0, 1] = 0.5 * (xi + 1)
+    return N
+
+
 # Dispatch table: resolve the element-type branch ONCE per mesh (etype is constant
 # across the whole integration loop), then call the returned njit function directly
 # with array-only arguments inside hot loops.
@@ -67,6 +76,7 @@ NMATRIX_FUNCS: dict[str, Callable[[npt.NDArray[np.float64]], npt.NDArray[np.floa
     "T4": _getNmatrix_T4,
     "Q4": _getNmatrix_Q4,
     "T3": _getNmatrix_T3,
+    "L2": _getNmatrix_L2,
 }
 
 
@@ -169,6 +179,18 @@ def _getGNmatrix_T3(
     return GN
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _getGNmatrix_L2(
+    parents_coords: npt.NDArray[np.float64],  # noqa
+) -> npt.NDArray[np.float64]:
+    dNdxi = np.empty((1, 2))
+    dNdxi[0, 0] = -0.5
+    dNdxi[0, 1] = 0.5
+
+    GN = dNdxi
+    return GN
+
+
 # See NMATRIX_FUNCS above: resolve once outside hot loops, then call directly.
 GNMATRIX_FUNCS: dict[
     str,
@@ -181,13 +203,16 @@ GNMATRIX_FUNCS: dict[
     "T4": _getGNmatrix_T4,
     "Q4": _getGNmatrix_Q4,
     "T3": _getGNmatrix_T3,
+    "L2": _getGNmatrix_L2,
 }
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def _calc_detJe(Je: npt.NDArray[np.float64], nsd: int) -> float:
     # set Jacobian formula based on space dimensions
-    if nsd == 2:
+    if nsd == 1:
+        return float(Je[0, 0])
+    elif nsd == 2:
         return float(Je[0, 0] * Je[1, 1] - Je[0, 1] * Je[1, 0])
     else:
         return float(
@@ -200,7 +225,9 @@ def _calc_detJe(Je: npt.NDArray[np.float64], nsd: int) -> float:
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
     Jinv = np.empty((nsd, nsd), dtype=np.float64)
-    if nsd == 2:
+    if nsd == 1:
+        Jinv = 1.0 / J
+    elif nsd == 2:
         Jinv = (
             1.0
             / (J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0])

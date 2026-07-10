@@ -421,7 +421,7 @@ def fully_coupled_time_integration(  # noqa
     if verbose:
         print("      FULLY COUPLED NEWTON RAPHSON: ITERATION   ", end="")
 
-    while not converged:
+    while True:
         if verbose:
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
@@ -463,7 +463,7 @@ def fully_coupled_time_integration(  # noqa
             R, fixed_dofs, NR, mesh, iteration, NR_tol
         )
 
-        if converged:
+        if converged and iteration > 1:
             if verbose:
                 print(" - CONVERGED")
             break

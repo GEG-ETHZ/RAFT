@@ -66,6 +66,8 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
                 nne, edg = 4, 0
             case (2, 10):  # Q9
                 nne, edg = 9, 0
+            case (2, 2):  # T3
+                nne, edg = 3, 0
 
         # Only append elements if they are not edge elements
         if edg == 0:
@@ -79,7 +81,7 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
     return nodes, conn
 
 
-def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
+def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     """Find the nodes along the exterior for applying boundary conditions.
 
     Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
@@ -107,8 +109,21 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
             "face2": [0, 2, 1],
             "face3": [1, 2, 3],
         }
+    elif nne == 4 and nsd == 2:  # Q4
+        faces = {
+            "face0": [0, 1],
+            "face1": [1, 2],
+            "face2": [2, 3],
+            "face3": [3, 0],
+        }
+    elif nne == 3 and nsd == 2:  # T3
+        faces = {
+            "face0": [0, 1],
+            "face1": [1, 2],
+            "face2": [2, 0],
+        }
     else:
-        raise NotImplementedError(f"Boundary extraction for {nne}-node elements")
+        raise NotImplementedError(f"Boundary extraction for {nne}-node elements in {nsd} dimensions.")
 
     # Loop through all elements, collect a list of faces in global coordinates,
     # then find unique faces.
@@ -150,17 +165,26 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     for face in boundary_faces:
         # calculate plane normal
         xI = nodes[face, :]
-        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+        if nsd == 3:
+            n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+            # project n onto axis normals
+            ex = n @ [1, 0, 0]
+            ey = n @ [0, 1, 0]
+            ez = n @ [0, 0, 1]
 
-        # project n onto axis normals
-        ex = n @ [1, 0, 0]
-        ey = n @ [0, 1, 0]
-        ez = n @ [0, 0, 1]
+            # Find which component has the largest magnitude
+            components = {"x": ex, "y": ey, "z": ez}
+        else:
+            # 2D vectors
+            n = -np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
+            # project n onto axis normals
+            ex = n @ [1, 0]
+            ey = n @ [0, 1]
 
-        # Find which component has the largest magnitude
-        components = {"x": ex, "y": ey, "z": ez}
+            # Find which component has the largest magnitude
+            components = {"x": ex, "y": ey}
+
         max_component = max(components, key=lambda k: abs(components[k]))
-
         # Append to appropriate list based on sign
         side = "max" if components[max_component] > 0 else "min"
 
@@ -178,11 +202,20 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     mesh["boundaries"]["z_all"] = z_all
     mesh["boundaries"]["n_all"] = np.arange(0, mesh["nn"])
 
+    if nsd == 2:
+        # Remove the z faces
+        mesh["boundaries"].pop("z_max")
+        mesh["boundaries"].pop("z_min")
+        mesh["boundaries"].pop("z_max_conn")
+        mesh["boundaries"].pop("z_min_conn")
+        mesh["boundaries"].pop("z_all")
+
     return mesh
 
 
 def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) -> list[int]:
     ne = mesh["ne"]
+    nsd = mesh["nsd"]
     nodes = mesh["nodes"]
     conn = mesh["conn"]
     tol = 1.0e-6
@@ -192,6 +225,8 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
 
     # Step 2: Calculate all element centroids
     centroids = np.mean(nodes[conn, :], 1)
+    if nsd == 2:
+        centroids = np.hstack((centroids, np.zeros((ne, 1))))
 
     # Step 3: Assign regions in order of specification
     supported_shapes = ["polyhedron", "sphere", "cylinder"]
@@ -325,6 +360,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
             nq, etyp = 2, "Q4"
         case (2, 9):  # Q9
             nq, etyp = 3, "Q9"
+        case (2, 3):  # T3
+            nq, etyp = 1, "T3"
+
     mesh["n_quadrature"] = nq
     mesh["element_type"] = etyp
 

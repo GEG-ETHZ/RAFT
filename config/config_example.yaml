@@ -58,16 +58,16 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-        - faces: [z_max]
+        - faces: [y_max]
           values: [1.0e5]
           tag: "inflow"
-        - faces: [z_min]
+        - faces: [y_min]
           values: [1.5e5]
 
   temperature_fixed:
-      - faces: [z_max]
+      - faces: [y_max]
         values: [286]
-      - faces: [z_min]
+      - faces: [y_min]
         values: [340]
       - coords: [[50, 20, 10]]
         values: [300.0]
