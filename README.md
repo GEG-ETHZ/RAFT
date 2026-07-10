@@ -106,7 +106,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
-  * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
+  * **`viscosity`** *(float or list, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Viscosity also supports a list of floats `[A, B, C, D]` for non-linear viscosity form: $\mu = A e^{-B/T + CT + DT^2}$
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.
@@ -174,8 +174,10 @@ Each boundary condition group must specify nodes using exactly one of the follow
 * **`timestep`** *(float, default: `1.0`)*: Simulation timestep.
 * **`timestep_min`** *(float, default: `1.0`)*: Minimum allowed timestep.
 * **`timestep_max`** *(float, default: `1.0`)*: Maximum allowed timestep.
+* **`solver_type`** *(string, default: `"linearized"`)*: Type of time integration solver. Options are `"linearized"` or `"fully_coupled"`.
 * **`output_frequency`** *(integer, default: `1`)*: Controls how often outputs are written (every $N$ timesteps).
 * **`output_vtk`** *(integer/boolean, default: `0`)*: If set to `1`, enables writing mesh and solution fields to `.vtk` files for visualization.
+* **`output_viscosity`** *(integer/boolean, default: `0`)*: If set to `1`, enables output of fluid viscosity fields.
 * **`output_directory`** *(string, optional)*: Custom output directory path. Defaults to `outputs/` under the repository root.
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change (typically `1`).
 * **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
@@ -184,6 +186,10 @@ Each boundary condition group must specify nodes using exactly one of the follow
 * **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
 * **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
 * **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks.
+* **`iterative_controls`** *(dictionary)*: Non-linear iterative solver settings, applicable when `solver_type` is `"fully_coupled"`.
+  * **`NR_tol`** *(float, default: `1.0e-6`)*: Newton-Raphson residual tolerance.
+  * **`iter_max`** *(integer, default: `100`)*: Maximum number of iterations per timestep.
+  * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.
 
 ## Prerequisites
 - Python version specified in `.python-version`

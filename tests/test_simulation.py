@@ -14,6 +14,34 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_pressurization() -> None:
+    """Test pressurization against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Pressurization Test"
+    config_filename = "config_test_pressurization.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = True
+    test_pass = test_checks.check_pressurization(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_nonlinear_viscosity() -> None:
+    """Check exactness of non-linear viscosity"""
+    case_dir = _test_data_dir()
+    test_name = "Non-linear Viscosity"
+    config_filename = "config_test_NL_viscosity.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+
+    plot_on = False
+    test_pass = test_checks.check_NL_viscosity(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_patch_z_flux() -> None:
     """Check exact linear approximation in Z."""
     case_dir = _test_data_dir()
@@ -140,20 +168,6 @@ def test_patch_anisotropy() -> None:
     plot_on = False
     test_pass = test_checks.check_patch_test(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_pressurization() -> None:
-    """Test pressurization against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Pressurization Test"
-    config_filename = "config_test_pressurization.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_pressurization(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
     assert test_pass
 

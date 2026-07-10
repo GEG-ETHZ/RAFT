@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .matprops import get_viscosity
 from .shapefunctions import getB
 from .writevtk import write_mesh2vtk
 
@@ -15,8 +16,8 @@ from .writevtk import write_mesh2vtk
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
 
 
-def compute_fluid_flux(
-    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64]
+def compute_fluid_flux(  # noqa
+    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64], T: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
@@ -40,6 +41,10 @@ def compute_fluid_flux(
 
     # Material properties - fluid
     mu = mat["fluid"]["viscosity"]
+    mu_nonlinear = False
+    if isinstance(mu, np.ndarray):
+        mu_nonlinear = True
+        mu_coeff = mu
 
     # Local coordinates (xi) based on element type
     if etype == "Q4":  # Q4 element
@@ -117,9 +122,13 @@ def compute_fluid_flux(
             B_q = getB(GN_q, xI, nsd)[0]
 
             pe = p[enodes]  # element nodal pressures
+            if mu_nonlinear:
+                Te = T[enodes]
+                mu, _ = get_viscosity(Te, mu_coeff)
+                mu = mu[:, None]
 
             gradp_all = B_q @ pe
-            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ (kf / mu).T)
+            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ kf.T) / mu
 
             q[:, enodes] += flux_e.T
             count[enodes] += 1
@@ -231,7 +240,7 @@ def _export_flow_logs(
     return
 
 
-def postprocessing(
+def postprocessing(  # noqa
     n: int,
     mesh: dict[str, Any],
     config: dict[str, Any],
@@ -268,7 +277,7 @@ def postprocessing(
 
         # --- Calculate fluxes
         # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
-        flux = compute_fluid_flux(mesh, config["material"], p)
+        flux = compute_fluid_flux(mesh, config["material"], p, T)
 
         # --- Sanitize and collect scalar data
         def sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.NDArray[np.float64]:
@@ -281,6 +290,12 @@ def postprocessing(
             {"name": "T", "data": sanitize(T.copy())},
             {"name": "p", "data": sanitize(p.copy())},
         ]
+        if config["simulation"]["output_viscosity"]:
+            if config["simulation"]["viscosity_nonconstant"]:
+                mu, _ = get_viscosity(T, config["material"]["fluid"]["viscosity"])
+            else:
+                mu = config["material"]["fluid"]["viscosity"] * np.ones(mesh["nn"])
+            scalardata_point.append({"name": "viscosity", "data": sanitize(mu.copy())})
 
         if n == 0:  # In the initial condition, also export BC groups
             BCgroups = mesh["boundaries"]

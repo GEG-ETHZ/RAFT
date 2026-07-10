@@ -65,15 +65,23 @@ DEFAULTS: dict[str, Any] = {
         "timestep": 1.0,
         "timestep_min": 1.0,
         "timestep_max": 1.0,
+        "solver_type": "linearized",
         "output_frequency": 1,
         "output_vtk": 0,
+        "output_viscosity": 0,
         "rate_order": 1,
+        "fully_coupled": 0,
         "advection_on": 0,
         "pressurization_on": 0,
         "buoyancy_on": 0,
         "steady_pressure": 0,
         "steady_temperature": 0,
         "rel_error_T": 1.0e-2,
+        "iterative_controls": {
+            "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
+            "iter_max": 100,  # Maximum number of iterations
+            "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
+        },
     },
 }
 
@@ -98,6 +106,36 @@ def _apply_defaults(
     return config
 
 
+def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
+    """Determine physics controls that are controlled through implicit inputs.
+
+    This primarily includes non-constant material properties.
+    """
+    mu = config["material"]["fluid"]["viscosity"]
+    if isinstance(mu, float):  # constant
+        config["simulation"]["viscosity_nonconstant"] = 0
+    elif not isinstance(mu, list) or len(mu) < 1:  # not a list
+        raise ValueError(f"Incompatible viscosity format: {mu}")
+    elif len(mu) == 1:  # single list -> transfer to float
+        config["material"]["fluid"]["viscosity"] = mu[0]
+        config["simulation"]["viscosity_nonconstant"] = 0
+    else:  # non-constant function
+        coeff = np.zeros((4,))
+        for i in range(len(mu)):
+            coeff[i] = mu[i]
+        if verbose:
+            print(
+                f"""\nViscosity = {coeff[0]:.2e} * exp({coeff[1]:.2e} / T
+                + {coeff[2]:.2e} * T + {coeff[3]:.2e} * T^2 )"""
+            )
+            print("Note that T is assumed in K.")
+
+        config["material"]["fluid"]["viscosity"] = coeff
+        config["simulation"]["viscosity_nonconstant"] = 1
+
+    return config
+
+
 def load_config(config_name: str, config_dir: Path | None = None, verbose: bool = True) -> dict[str, Any]:
     """Load config file and check for values."""
     if config_dir is None:
@@ -118,6 +156,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
         print(f"\n ----- Configuration parameters for {config_name}")
 
     _apply_defaults(config, DEFAULTS, verbose=verbose)
+    _determine_physics_controls(config, verbose)
 
     if verbose:
         print()

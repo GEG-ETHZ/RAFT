@@ -551,3 +551,109 @@ def check_heterogeneous(
     test_pass = bool(err_ex < tol)
 
     return test_pass
+
+
+def check_NL_viscosity(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check pressure against semi-analytical solution.
+
+    By setting flux on a quasi-1D problem, the solution mandates constant flux
+    throughout the domain. This decouples pressure and temperature, allowing us to
+    solve for the analytical temperature distribution. Then, we use the analytical
+    temperature distribution to find the viscosity distribution and numerically
+    integrate to find the semi-analytical pressure distribution.
+    """
+    from raft.matprops import get_viscosity
+
+    # Set tolerance
+    tol = 1.0e-3
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    line_1 = np.where((nodes[:, 0] == 0) & (nodes[:, 1] == 0))[0]
+
+    L = np.max(nodes[:, 2])
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+    # flux
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+
+    # temperature
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+
+    # conductivity
+    phi = mat["solid"]["porosity"]
+    lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
+    cp = mat["fluid"]["specific_heat"]
+    rho_f = mat["fluid"]["density"]
+
+    # peclet number per length
+    Pe = L * abs(q * cp * rho_f) / lambda_e
+
+    # analytical solution
+    x = np.linspace(0, L, 100) / L
+    T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
+    T_exact = T0 + (T1 - T0) * T_exact
+
+    # Viscosity
+    visc_coeff = mat["fluid"]["viscosity"]
+    visc_exact = visc_coeff[0] * np.exp(
+        visc_coeff[1] / T_exact + visc_coeff[2] * T_exact + visc_coeff[3] * T_exact**2
+    )
+
+    # pressure
+    k = mat["solid"]["permeability"]
+    p_exact = np.empty(100)
+    p_exact[0] = p0
+    dx = x[1] * L
+    for i in range(1, 100):
+        p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
+
+    # extract results
+    p = results["p"][:, 0]
+    T = results["T"][:, 0]
+    visc_approx, _ = get_viscosity(T[line_1], visc_coeff)
+
+    if plot_on:
+        plt.figure()
+        plt.plot(x, T_exact, "r-")
+        plt.plot(d_1 / L, T[line_1], "ko")
+        plt.ylabel("T")
+        plt.title(test_name)
+
+        plt.figure()
+        plt.plot(x, visc_exact, "r--")
+        plt.plot(d_1 / L, visc_approx, "ko")
+        plt.ylabel("viscosity")
+        plt.title(test_name)
+
+        plt.figure()
+        plt.plot(x, p_exact, "b-")
+        plt.plot(d_1 / L, p[line_1], "ko")
+        plt.ylabel("p")
+        plt.title(test_name)
+
+    # calculate error
+    p_exact_atnodes = np.interp(d_1, x * L, p_exact)
+    numerator = sum((p_exact_atnodes - p[line_1]) ** 2)
+    denominator = sum((p_exact_atnodes) ** 2)
+    # The error here is calculated based on the nodal solutions.
+    err_ex = np.sqrt(numerator / denominator)
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
