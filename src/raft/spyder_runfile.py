@@ -1,8 +1,9 @@
+# %%
 """Script to run the simulation or test suite within the Spyder IDE."""
 
 from raft.subsurface import main
 
-dofs, mesh = main("config_example.yaml")
+dofs, mesh = main("config_profiling.yaml")
 
 # import sys
 # from pathlib import Path

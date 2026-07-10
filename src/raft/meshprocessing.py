@@ -172,12 +172,11 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:
     x_all = boundaries["x_max"] | boundaries["x_min"]
     y_all = boundaries["y_max"] | boundaries["y_min"]
     z_all = boundaries["z_max"] | boundaries["z_min"]
-    n_all = x_all | y_all | z_all
 
     mesh["boundaries"]["x_all"] = x_all
     mesh["boundaries"]["y_all"] = y_all
     mesh["boundaries"]["z_all"] = z_all
-    mesh["boundaries"]["n_all"] = n_all
+    mesh["boundaries"]["n_all"] = np.arange(0, mesh["nn"])
 
     return mesh
 

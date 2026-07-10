@@ -54,7 +54,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 2.0
+  t_end: 1.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0
