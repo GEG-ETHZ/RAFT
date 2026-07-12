@@ -14,6 +14,20 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_axisymmetry() -> None:
+    """Check axisymmetry against exact solution."""
+    case_dir = _test_data_dir()
+    test_name = "Axisymmetric"
+    config_filename = "config_test_axisymmetry.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = True
+    test_pass = test_checks.check_axisymmetry(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_patch_x_flux_2D() -> None:
     """Check exact linear approximation in X in 2D with Q4 elements."""
     case_dir = _test_data_dir()
@@ -22,7 +36,7 @@ def test_patch_x_flux_2D() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 0
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_patch_test_flux(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
@@ -37,7 +51,7 @@ def test_patch_y_flux_2D() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 1
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_patch_test_flux(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )

@@ -5,6 +5,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 
 from raft.preprocessing import load_config
 
@@ -632,6 +633,96 @@ def check_NL_viscosity(
     denominator = sum((p_exact_atnodes) ** 2)
     # The error here is calculated based on the nodal solutions.
     err_ex = np.sqrt(numerator / denominator)
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_axisymmetry(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Flux on the inside of an annulus. Linear approximation of logarithm
+    will not be exact, use high tolerance."""
+    # Set tolerance
+    tol = 1.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+
+    line_1 = np.nonzero(nodes[:, 1] == min(nodes[:, 1]))[0]
+    line_2 = np.nonzero(nodes[:, 1] == max(nodes[:, 1]))[0]
+    line_1 = line_1[np.argsort(nodes[line_1, 0])]
+    line_2 = line_2[np.argsort(nodes[line_2, 0])]
+
+    Ri = min(nodes[:, 0])
+    Ro = max(nodes[:, 0])
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1)) + Ri
+    d_2 = np.sqrt(np.sum((nodes[line_2, :] - nodes[line_2[0], :]) ** 2, 1)) + Ri
+
+    # check temperature
+
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    k = config["material"]["solid"]["therm_cond"]
+
+    # define exact solution
+    def _y_exact(
+        r: npt.NDArray[np.float64], y0: float, q: float, k: float, Ri: float, Ro: float
+    ) -> npt.NDArray[np.float64]:
+        y = y0 - q / k * Ri * np.log(r / Ro)
+        return y
+
+    r = np.linspace(Ri, Ro, 50)
+    T_exact = _y_exact(r, T0, q, k, Ri, Ro)
+
+    T = results["T"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot(r, T_exact)
+        plt.plot(d_1, T[line_1], "ko")
+        plt.plot(d_2, T[line_2], "bo")
+        plt.xlabel("r (m)")
+        plt.ylabel("T")
+        plt.title(test_name)
+
+    # calculate error
+    mean_val = np.mean(T_exact)
+    err_ex = sum((_y_exact(d_1, T0, q, k, Ri, Ro) - T[line_1]) ** 2) / mean_val**2
+    err_ex += sum((_y_exact(d_2, T0, q, k, Ri, Ro) - T[line_2]) ** 2) / mean_val**2
+
+    # check pressure
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    k = config["material"]["solid"]["permeability"] / config["material"]["fluid"]["viscosity"]
+
+    # define exact solution
+    p_exact = _y_exact(r, p0, q, k, Ri, Ro)
+
+    p = results["p"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot(r, p_exact)
+        plt.plot(d_1, p[line_1], "ko")
+        plt.plot(d_2, p[line_2], "bo")
+        plt.xlabel("d (m)")
+        plt.ylabel("p")
+        plt.title(test_name)
+
+    denom = p_exact[0]
+    err_ex += sum((_y_exact(d_1, p0, q, k, Ri, Ro) - p[line_1]) ** 2) / denom**2
+    err_ex += sum((_y_exact(d_2, p0, q, k, Ri, Ro) - p[line_2]) ** 2) / denom**2
 
     test_pass = bool(err_ex < tol)
 

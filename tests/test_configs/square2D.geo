@@ -5,14 +5,16 @@ L = 51;
 W = 75;
 H = 45;
 
-nL = 31;
+Ri = 3;
+
+nL = 10;
 nW = 7;
 nH = 7;
 
-Point(1) = {0,  0,  0, nL};
-Point(2) = {L,  0,  0, nL};
-Point(3) = {L,  W,  0, nL};
-Point(4) = {0,  W,  0, nL};
+Point(1) = {Ri,  0,  0, nL};
+Point(2) = {L+Ri,  0,  0, nL};
+Point(3) = {L+Ri,  W,  0, nL};
+Point(4) = {Ri,  W,  0, nL};
 //+
 Line(1) = {1, 2};
 //+
