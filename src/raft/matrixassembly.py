@@ -118,6 +118,7 @@ def integrate_linear_matrices(
     """Integrate linear matrices outside of time integration loop."""
     # ----- integration controls
     mu_linear = not bool(controls["viscosity_nonconstant"])
+    axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- fluid properties, universal
     if mu_linear:
@@ -178,6 +179,10 @@ def integrate_linear_matrices(
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
+            if axisymmetry:
+                # Add radial component to integrand for axisymmetry
+                r = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r.T
 
             # Element matrices
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -408,7 +413,7 @@ def _integrate_viscosity_pressure_correction(
     }
 
 
-def integrate_nonlinear_matrices(
+def integrate_nonlinear_matrices(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -428,6 +433,7 @@ def integrate_nonlinear_matrices(
     mu_nonlinear = controls["viscosity_nonconstant"]
     mu_linear = not mu_nonlinear
     fully_coupled = controls["fully_coupled"]
+    axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- fluid properties
     mu = mat["fluid"]["viscosity"]
@@ -480,6 +486,10 @@ def integrate_nonlinear_matrices(
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
+            if axisymmetry:
+                # Add radial component to integrand for axisymmetry
+                r = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r.T
 
             # Element matrices initialize
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -586,6 +596,7 @@ def integrate_NLpressure_matrices(
     region_lists = mesh["region_lists"]
     num_regions = mesh["num_regions"]
     etype = mesh["element_type"]
+    axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- gravity vector
     ng = np.zeros((nsd, 1))
@@ -615,6 +626,10 @@ def integrate_NLpressure_matrices(
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
+            if axisymmetry:
+                # Add radial component to integrand for axisymmetry
+                r = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r.T
 
             # Element matrices
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -641,9 +656,7 @@ def integrate_NLpressure_matrices(
 
 
 def integrate_boundary_flux_matrices(
-    mesh: dict[str, Any],
-    conn_face: list[list[int]],
-    node_order: Sequence[int],
+    mesh: dict[str, Any], conn_face: list[list[int]], node_order: Sequence[int], controls: dict[str, Any]
 ) -> dict[str, csc_matrix[Any]]:
     """Integrate lower dimensional boundary integrals for flux BCs."""
     ne = np.size(conn_face, 0)
@@ -651,6 +664,7 @@ def integrate_boundary_flux_matrices(
     nsd = mesh["nsd"] - 1
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     etype = mesh["element_type"]
+    axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- Local face numbering
     # Map each global node id in conn_face to a local index.
@@ -710,6 +724,10 @@ def integrate_boundary_flux_matrices(
 
         detJe_q = getB(GN_q, xI, nsd)[1]
         wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
+        if axisymmetry:
+            # Add radial component to integrand for axisymmetry
+            r = N_q @ nodes[enodes, 0]
+            wJe_q = wJe_q * r.T
 
         # Element matrices
         element_matrices = _initialize_element_matrices(list_of_matrices, nne)

@@ -53,7 +53,7 @@ def _evaluateBCfunctions(
 
 
 def _gatherBCs(  # noqa: C901
-    mesh: dict[str, Any], t: float, incoming: list[dict[str, Any]], bctype: int
+    mesh: dict[str, Any], t: float, incoming: list[dict[str, Any]], bctype: int, controls: dict[str, Any]
 ) -> npt.NDArray[np.float64]:
     """bctype: 1 - Dirichlet, 2 - Neumann.
 
@@ -101,7 +101,7 @@ def _gatherBCs(  # noqa: C901
         group = _evaluateBCfunctions(group, t, mesh["nodes"])
         if bctype == 2 and face_flag:
             if "flux_weight_matrix" not in group:
-                flux_mats = integrate_boundary_flux_matrices(mesh, face_conn, group["nodes"])
+                flux_mats = integrate_boundary_flux_matrices(mesh, face_conn, group["nodes"], controls)
                 group["flux_weight_matrix"] = flux_mats["A"]
 
             group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
@@ -122,9 +122,10 @@ def _gatherBCs(  # noqa: C901
 
 def parsebcs(
     bc_config: dict[str, Any],
-    mesh: dict[str, Any],  # noqa
+    mesh: dict[str, Any],
     primary_variables: dict[str, Any],  # noqa
-    t: float,  # noqa
+    t: float,
+    controls: dict[str, Any],
 ) -> dict[str, Any]:
     """Parse input boundary conditions and return a dictionary containing the following.
 
@@ -146,16 +147,16 @@ def parsebcs(
     # pressure, temperature, and time (p, T, t) passed in for future use
 
     # Temperature - Dirichlet
-    T_dirichlet = _gatherBCs(mesh, t, bc_config["temperature_fixed"], 1)
+    T_dirichlet = _gatherBCs(mesh, t, bc_config["temperature_fixed"], 1, controls)
 
     # Pressure - Dirichlet
-    p_dirichlet = _gatherBCs(mesh, t, bc_config["pressure_fixed"], 1)
+    p_dirichlet = _gatherBCs(mesh, t, bc_config["pressure_fixed"], 1, controls)
 
     # Temperature - Neumann
-    T_neumann = _gatherBCs(mesh, t, bc_config["temperature_flux"], 2)
+    T_neumann = _gatherBCs(mesh, t, bc_config["temperature_flux"], 2, controls)
 
     # Pressure - Neumann
-    p_neumann = _gatherBCs(mesh, t, bc_config["fluid_flux"], 2)
+    p_neumann = _gatherBCs(mesh, t, bc_config["fluid_flux"], 2, controls)
 
     return {
         "T_dirichlet": T_dirichlet,

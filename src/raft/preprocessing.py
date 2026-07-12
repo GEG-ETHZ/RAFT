@@ -76,6 +76,7 @@ DEFAULTS: dict[str, Any] = {
         "buoyancy_on": 0,
         "steady_pressure": 0,
         "steady_temperature": 0,
+        "axisymmetric_on": 0,
         "rel_error_T": 1.0e-2,
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
@@ -109,8 +110,10 @@ def _apply_defaults(
 def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
     """Determine physics controls that are controlled through implicit inputs.
 
-    This primarily includes non-constant material properties.
+    This primarily includes non-constant material properties, but also includes
+    non-feasible combinations of settings.
     """
+    # Viscosity
     mu = config["material"]["fluid"]["viscosity"]
     if isinstance(mu, float):  # constant
         config["simulation"]["viscosity_nonconstant"] = 0
@@ -128,10 +131,17 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
                 f"""\nViscosity = {coeff[0]:.2e} * exp({coeff[1]:.2e} / T
                 + {coeff[2]:.2e} * T + {coeff[3]:.2e} * T^2 )"""
             )
-            print("Note that T is assumed in K.")
+            print("T is assumed in K.")
 
         config["material"]["fluid"]["viscosity"] = coeff
         config["simulation"]["viscosity_nonconstant"] = 1
+
+    # Axisymmetry
+    axisymmetric_on = config["simulation"]["axisymmetric_on"]
+    if axisymmetric_on and config["mesh"]["dimensions"] == 3:
+        config["simulation"]["axisymmetric_on"] = 0
+        if verbose:
+            print("Axisymmetry turned off, not valid in 3D analysis.")
 
     return config
 

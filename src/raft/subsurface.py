@@ -343,6 +343,7 @@ def main(  # noqa
     config, mesh = preprocessing(config_name, config_dir, verbose)
     material = config["material"]
     controls = config["simulation"]
+    BC_config = config["boundary_conditions"]
 
     # ----- Initialize simulation parameters
 
@@ -377,7 +378,7 @@ def main(  # noqa
 
     # --- Initial Conditions
     # Update Boundary Conditions for initial step
-    boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
+    boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
     q = np.zeros((mesh["nn"], 1))
     primary_variables["q"] = q
 
@@ -405,7 +406,7 @@ def main(  # noqa
             print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
 
         # Update Boundary Conditions
-        boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
+        boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
 
         # Perform time integration
         primary_variables, dt, converged, timestep_error = _perform_time_integration(
