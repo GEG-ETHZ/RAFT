@@ -78,17 +78,7 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
     return nodes, conn_list
 
 
-def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
-    """Find the nodes along the exterior for applying boundary conditions.
-
-    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
-    """
-    conn = mesh["conn"]
-    nodes = mesh["nodes"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
-    nsd = mesh["nsd"]
-
+def _get_element_face_lists(nne: int, nsd: int) -> dict[str, list[int]]:
     # Define element faces. Node numberings should have outwards pointing normals.
     if nne == 8:  # B8 elements
         faces = {
@@ -121,6 +111,20 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         }
     else:
         raise NotImplementedError(f"Boundary extraction for {nne}-node elements in {nsd} dimensions.")
+    return faces
+
+
+def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
+    """Find the nodes along the exterior for applying boundary conditions.
+
+    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
+    """
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
 
     # Loop through all elements, collect a list of faces in global coordinates,
     # then find unique faces.
@@ -129,9 +133,20 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     # dictionary structure: sorted_face: [count, original face]
     face_tracker: dict[tuple[int, ...], list[Any]] = {}
 
+    faces = _get_element_face_lists(nne[0], nsd)
+    counter = 0
+
     for elem in range(ne):
+        if elem > elem_indx[counter]:
+            # Update faces for new element type
+            counter += 1
+            faces = _get_element_face_lists(nne[counter], nsd)
+
+        # extract the element connectivity
+        elem_conn = conn[elem]
+
         for face_name, face_local in faces.items():
-            original_face = tuple(conn[elem, face_local])  # for normals later
+            original_face = tuple(elem_conn[i] for i in face_local)  # for normals later
             sorted_face = tuple(sorted(original_face))  # for uniqueness
             if sorted_face in face_tracker:
                 # Increment count
@@ -225,7 +240,7 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
     centroids = np.empty((len(conn), nodes.shape[1]))
     start = 0
     for i in range(len(elem_indx)):
-        end = start + elem_indx[i]
+        end = elem_indx[i] + 1
         block_conn = np.array(conn[start:end])
         centroids[start:end, :] = np.mean(nodes[block_conn, :], 1)
         start = end + 1
@@ -386,7 +401,7 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
             mesh["n_quadrature"].append(nq)
             mesh["element_type"].append(etype)
             counter += 1
-    mesh["elem_indx"].append(ne)  # add final element to end
+    mesh["elem_indx"].append(ne - 1)  # add final element to end
 
     # Import regions
     mesh = _import_regions(config_mesh, mesh)
