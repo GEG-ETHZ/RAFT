@@ -7,7 +7,7 @@ import numpy as np
 import numpy.typing as npt
 
 
-def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, list[list[int]]]:  # noqa
+def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, list[list[int]] | None]:  # noqa
     """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
 
     meshfile : name of mesh file

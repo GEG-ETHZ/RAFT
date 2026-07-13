@@ -26,7 +26,7 @@ def _make_sparse(
 
 def _assemble_global_matrices(
     vec: dict[str, npt.NDArray[np.float64]],
-    conn: npt.NDArray[np.int32],
+    conn: list[list[int]],
     nn: int,
     nne_list: list[int],
     elem_indx: list[int],
@@ -217,7 +217,6 @@ def integrate_linear_matrices(
         for e in region_lists[r]:
             new_type_idx = bisect.bisect_left(elem_indx, e)
             if new_type_idx != elem_type_counter:
-                # if e > elem_indx[elem_type_counter-1] or elem_type_counter == 0:
                 # Update for different element type
                 # Evaluate quadrature points and get weights and shape functions.
                 W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
@@ -538,7 +537,6 @@ def integrate_nonlinear_matrices(  # noqa
         for e in region_lists[r]:
             new_type_idx = bisect.bisect_left(elem_indx, e)
             if new_type_idx != elem_type_counter:
-                # if e > elem_indx[elem_type_counter-1] or elem_type_counter == 0:
                 # Update for different element type
                 # Evaluate quadrature points and get weights and shape functions.
                 W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
@@ -692,7 +690,6 @@ def integrate_NLpressure_matrices(
         for e in region_lists[r]:
             new_type_idx = bisect.bisect_left(elem_indx, e)
             if new_type_idx != elem_type_counter:
-                # if e > elem_indx[elem_type_counter-1] or elem_type_counter == 0:
                 # Update for different element type
                 # Evaluate quadrature points and get weights and shape functions.
                 W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
@@ -825,7 +822,9 @@ def integrate_boundary_flux_matrices(
         _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
         vec_counter = stop
 
-    matrices = _assemble_global_matrices(vec, conn_face_local, nn_face, nne_list, elem_indx, np.arange(0, ne))
+    matrices = _assemble_global_matrices(
+        vec, conn_face_local, nn_face, nne_list, elem_indx, np.arange(0, ne, dtype=np.int32)
+    )
     # Map local ordering back to global ordering using the input node_order
     local_idx = np.searchsorted(face_node_ids, np.asarray(node_order, dtype=np.int32))
     return {name: mat[local_idx, :][:, local_idx] for name, mat in matrices.items()}
