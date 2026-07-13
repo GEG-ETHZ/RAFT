@@ -211,15 +211,20 @@ Each boundary condition group must specify nodes using exactly one of the follow
     ├── outputs/
     ├── src/
     │   └── raft/
-    │       ├── __init__.py
-    │       ├── __main__.py
-    │       ├── subsurface.py
-    │       ├── preprocessing.py
-    │       ├── matrixassembly.py
-    │       ├── shapefunctions.py
-    │       ├── parseboundaryconditions.py
-    │       ├── postprocessing.py
-    │       └── writevtk.py
+    │       ├── __init__.py
+    │       ├── __main__.py
+    │       ├── matprops.py
+    │       ├── matrixassembly.py
+    │       ├── meshprocessing.py
+    │       ├── parseboundaryconditions.py
+    │       ├── postprocessing.py
+    │       ├── preprocessing.py
+    │       ├── py.typed
+    │       ├── shapefunctions.py
+    │       ├── solvers.py
+    │       ├── spyder_runfile.py
+    │       ├── subsurface.py
+    │       └── writevtk.py
     ├── tests/
     │   ├── __init__.py
     │   ├── test_simulation.py
