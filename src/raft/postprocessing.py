@@ -1,5 +1,6 @@
 """Postprocessing of FEM file."""
 
+import bisect
 import os
 from pathlib import Path
 from typing import Any
@@ -16,37 +17,8 @@ from .writevtk import write_mesh2vtk
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
 
 
-def compute_fluid_flux(  # noqa
-    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64], T: npt.NDArray[np.float64]
-) -> npt.NDArray[np.float64]:
-    """Computes fluid flux at each node using nodal averaging.
-
-    Returns nsd x nn array of fluxes at each node.
-    """
-    from .shapefunctions import GNMATRIX_FUNCS
-
-    nn = mesh["nn"]
-    nsd = mesh["nsd"]
-    nne = mesh["nne"]
-    regions = mesh["regions"]
-    conn = mesh["conn"]
-    nodes = mesh["nodes"]
-    etype = mesh["element_type"]
-    region_lists = mesh["region_lists"]
-    num_regions = mesh["num_regions"]
-
-    # Initialize output arrays
-    q = np.zeros((nsd, nn))
-    count = np.zeros(nn)
-
-    # Material properties - fluid
-    mu = mat["fluid"]["viscosity"]
-    mu_nonlinear = False
-    if isinstance(mu, np.ndarray):
-        mu_nonlinear = True
-        mu_coeff = mu
-
-    # Local coordinates (xi) based on element type
+def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
+    """Return element-local nodal coordinates (xi) used to extrapolate flux to the nodes, by element type."""
     if etype == "Q4":  # Q4 element
         xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
     elif etype == "Q9":  # Q9 element
@@ -102,12 +74,39 @@ def compute_fluid_flux(  # noqa
         )
     else:
         raise ValueError(f"Unsupported element type: {etype}")
+    return xi
 
-    getGN = GNMATRIX_FUNCS[etype]
-    GN_q_list = []
-    for n in range(nne):
-        GN_q_list.append(getGN(xi[n, :]))
-    GN_q = np.array(GN_q_list)
+
+def compute_fluid_flux(  # noqa
+    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64], T: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Computes fluid flux at each node using nodal averaging.
+
+    Returns nsd x nn array of fluxes at each node.
+    """
+    from .shapefunctions import GNMATRIX_FUNCS
+
+    nn = mesh["nn"]
+    nsd = mesh["nsd"]
+    nne_list = mesh["nne"]
+    regions = mesh["regions"]
+    conn = mesh["conn"]  # ragged list - each entry is that element's local node list
+    nodes = mesh["nodes"]
+    etype_list = mesh["element_type"]
+    region_lists = mesh["region_lists"]
+    num_regions = mesh["num_regions"]
+    elem_indx = mesh["elem_indx"]
+
+    # Initialize output arrays
+    q = np.zeros((nsd, nn))
+    count = np.zeros(nn)
+
+    # Material properties - fluid
+    mu = mat["fluid"]["viscosity"]
+    mu_nonlinear = False
+    if isinstance(mu, np.ndarray):
+        mu_nonlinear = True
+        mu_coeff = mu
 
     for r in range(num_regions):
         # solid properties - by region
@@ -115,8 +114,21 @@ def compute_fluid_flux(  # noqa
         # Check for region isotropy
         isotropic = bool(isinstance(kf, (float, int)))
 
+        # find element type of first element in region
+        elem_type_counter = bisect.bisect_left(elem_indx, region_lists[r][0])
+
         for e in region_lists[r]:
-            enodes = conn[e, :]  # element nodes
+            if e > elem_indx[elem_type_counter - 1] or elem_type_counter == 0:
+                # Update for different element type
+                etype = etype_list[elem_type_counter]
+                nne = nne_list[elem_type_counter]
+                getGN = GNMATRIX_FUNCS[etype]
+                xi = _get_nodal_parents_coords(etype)
+                GN_q_list = [getGN(xi[n, :]) for n in range(nne)]
+                GN_q = np.array(GN_q_list)
+                elem_type_counter += 1
+
+            enodes = conn[e]  # element nodes
             # material properties - element
             kf = mat["solid"]["permeability_eff"][regions[e]]
 
