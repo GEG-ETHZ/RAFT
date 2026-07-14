@@ -258,7 +258,159 @@ def _export_flow_logs(
     return
 
 
-def postprocessing(  # noqa
+def _sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.NDArray[np.float64]:
+    """Zero out values smaller than threshold to avoid noisy near-zero VTK output."""
+    data[np.abs(data) < threshold] = 0
+    return data
+
+
+def _prepare_output_directory(config: dict[str, Any]) -> str:
+    """Resolve this run's output directory, creating it if needed, and record it on config."""
+    base_path = config["simulation"].get("output_directory", _DEFAULT_OUTPUT_DIR)
+    config_stem = Path(config["config_name"]).stem
+    io_path = os.path.join(base_path, config_stem)
+    config["output_directory_full"] = io_path
+
+    if not os.path.exists(io_path):
+        os.makedirs(io_path)
+
+    return io_path
+
+
+def _build_point_scalars(
+    config: dict[str, Any],
+    mesh: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+) -> list[dict[str, Any]]:
+    """Build the per-node scalar fields (temperature, pressure, optional viscosity) for VTK export."""
+    scalardata_point = [
+        {"name": "T", "data": _sanitize(T.copy())},
+        {"name": "p", "data": _sanitize(p.copy())},
+    ]
+    if config["simulation"]["output_viscosity"]:
+        if config["simulation"]["viscosity_nonconstant"]:
+            mu, _ = get_viscosity(T, config["material"]["fluid"]["viscosity"])
+        else:
+            mu = config["material"]["fluid"]["viscosity"] * np.ones(mesh["nn"])
+        scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
+
+    return scalardata_point
+
+
+def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build one indicator scalar field per named BC group, for the initial-condition VTK snapshot.
+
+    Skips any group whose name ends in "_conn", since those are connectivity bookkeeping
+    entries rather than physical boundary groups and shouldn't be exported as fields.
+    """
+    scalardata_point = []
+    BCgroups = mesh["boundaries"]
+    for name in BCgroups:
+        if name.endswith("_conn"):
+            continue
+        label = "boundary_" + name
+        data = np.zeros(mesh["nn"])
+        data[np.asarray(list(BCgroups[name]))] = 1
+        scalardata_point.append({"name": label, "data": data})
+
+    return scalardata_point
+
+
+def _build_initial_cell_data(
+    mesh: dict[str, Any], material: dict[str, Any], nsd: int
+) -> list[dict[str, Any]]:
+    """Build per-element (cell) material property fields for the initial-condition VTK snapshot."""
+    indx = np.array(mesh["regions"])
+    # Extract and handle potential isotropic vs anisotropic permeability tensor
+    perm_x, perm_y, perm_z = _extract_cartesian_properties(material["solid"]["permeability_eff"], indx, nsd)
+    cond_x, cond_y, cond_z = _extract_cartesian_properties(material["solid"]["therm_cond_eff"], indx, nsd)
+
+    return [
+        {"name": "region", "data": mesh["regions"].copy()},
+        {"name": "porosity", "data": np.atleast_1d(np.asarray(material["solid"]["porosity"]))[indx]},
+        {
+            "name": "biot_coefficient",
+            "data": np.atleast_1d(np.asarray(material["solid"]["biot_coeff"]))[indx],
+        },
+        {
+            "name": "storage_modulus",
+            "data": np.atleast_1d(np.asarray(material["solid"]["storage_mod"]))[indx],
+        },
+        {
+            "name": "thermal_expansion_effective",
+            "data": np.atleast_1d(np.asarray(material["solid"]["therm_expansion_eff"]))[indx],
+        },
+        {
+            "name": "volumetric_heatcapacity",
+            "data": np.atleast_1d(np.asarray(material["solid"]["volumetric_heat_capacity_eff"]))[indx],
+        },
+        {
+            "name": "rotation_x",
+            "data": np.atleast_1d(np.asarray(material["solid"]["rotation_x"]))[indx],
+        },
+        {
+            "name": "rotation_y",
+            "data": np.atleast_1d(np.asarray(material["solid"]["rotation_y"]))[indx],
+        },
+        {
+            "name": "rotation_z",
+            "data": np.atleast_1d(np.asarray(material["solid"]["rotation_z"]))[indx],
+        },
+        {"name": "effective_permeability_x", "data": perm_x},
+        {"name": "effective_permeability_y", "data": perm_y},
+        {"name": "effective_permeability_z", "data": perm_z},
+        {"name": "effective_conductivity_x", "data": cond_x},
+        {"name": "effective_conductivity_y", "data": cond_y},
+        {"name": "effective_conductivity_z", "data": cond_z},
+    ]
+
+
+def _write_vtk_output(
+    n: int,
+    io_path: str,
+    mesh: dict[str, Any],
+    config: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    verbose: bool,
+) -> None:
+    """Compute fluxes and write one timestep's solution to VTK."""
+    if verbose:
+        print("     Writing to output file...")
+
+    nsd = mesh["nsd"]
+    filename = os.path.join(io_path, f"Solution.vtk.{n}")
+
+    # ----- Extract primary variables
+    p = primary_variables["p"][:, 0]
+    T = primary_variables["T"][:, 0]
+
+    # --- Calculate fluxes
+    # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
+    flux = compute_fluid_flux(mesh, config["material"], p, T)
+
+    scalardata_point = _build_point_scalars(config, mesh, p, T)
+    if n == 0:  # In the initial condition, also export BC groups
+        scalardata_point += _build_boundary_group_scalars(mesh)
+
+    vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
+
+    # In the initial condition, also export material properties and regions
+    scalardata_cell = _build_initial_cell_data(mesh, material, nsd) if n == 0 else []
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        mesh["nodes"],
+        mesh["conn"],
+        scalardata_point,
+        vectordata_point,
+        scalardata_cell,
+    )
+
+
+def postprocessing(
     n: int,
     mesh: dict[str, Any],
     config: dict[str, Any],
@@ -271,147 +423,13 @@ def postprocessing(  # noqa
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
     """
-    # --- Path Management
-    base_path = config["simulation"].get("output_directory", _DEFAULT_OUTPUT_DIR)
-    config_stem = Path(config["config_name"]).stem
-    io_path = os.path.join(base_path, config_stem)
-    config["output_directory_full"] = io_path
-    nsd = mesh["nsd"]
+    io_path = _prepare_output_directory(config)
+    output_now = (n % config["simulation"]["output_frequency"]) == 0
 
-    if not os.path.exists(io_path):
-        os.makedirs(io_path)
+    if output_now and config["simulation"]["output_vtk"]:
+        _write_vtk_output(n, io_path, mesh, config, material, primary_variables, verbose)
 
-    # --- Output vtk, frequency is controlled by user user input
-    if (n % config["simulation"]["output_frequency"]) == 0 and config["simulation"]["output_vtk"]:
-        if verbose:
-            print("     Writing to output file...")
-
-        # ---- File name
-        name = f"Solution.vtk.{n}"
-        filename = os.path.join(io_path, name)
-
-        # ----- Extract primary variables
-        p = primary_variables["p"][:, 0]
-        T = primary_variables["T"][:, 0]
-
-        # --- Calculate fluxes
-        # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
-        flux = compute_fluid_flux(mesh, config["material"], p, T)
-
-        # --- Sanitize and collect scalar data
-        def sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.NDArray[np.float64]:
-            data[np.abs(data) < threshold] = 0
-            return data
-
-        # Point Data
-        # --- Collect scalar data in a dictionary for export
-        scalardata_point = [
-            {"name": "T", "data": sanitize(T.copy())},
-            {"name": "p", "data": sanitize(p.copy())},
-        ]
-        if config["simulation"]["output_viscosity"]:
-            if config["simulation"]["viscosity_nonconstant"]:
-                mu, _ = get_viscosity(T, config["material"]["fluid"]["viscosity"])
-            else:
-                mu = config["material"]["fluid"]["viscosity"] * np.ones(mesh["nn"])
-            scalardata_point.append({"name": "viscosity", "data": sanitize(mu.copy())})
-
-        if n == 0:  # In the initial condition, also export BC groups
-            BCgroups = mesh["boundaries"]
-            for name in BCgroups:
-                label = "boundary_" + name
-                data = np.zeros(mesh["nn"])
-                data[np.asarray(list(BCgroups[name]))] = 1
-                scalardata_point.append({"name": label, "data": data})
-
-        # --- Vector data
-        vectordata_point = [{"name": "flux", "data": sanitize(flux.T)}]
-
-        # Cell Data
-        if n == 0:  # In the initial condition, export material properties and regions
-            indx = np.array(mesh["regions"])
-            # Extract and handle potential isotropic vs anisotropic permeability tensor
-            perm_x, perm_y, perm_z = _extract_cartesian_properties(
-                material["solid"]["permeability_eff"], indx, nsd
-            )
-            cond_x, cond_y, cond_z = _extract_cartesian_properties(
-                material["solid"]["therm_cond_eff"], indx, nsd
-            )
-
-            scalardata_cell = [
-                {"name": "region", "data": mesh["regions"].copy()},
-                {"name": "porosity", "data": np.atleast_1d(np.asarray(material["solid"]["porosity"]))[indx]},
-                {
-                    "name": "biot_coefficient",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["biot_coeff"]))[indx],
-                },
-                {
-                    "name": "storage_modulus",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["storage_mod"]))[indx],
-                },
-                {
-                    "name": "thermal_expansion_effective",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["therm_expansion_eff"]))[indx],
-                },
-                {
-                    "name": "volumetric_heatcapacity",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["volumetric_heat_capacity_eff"]))[
-                        indx
-                    ],
-                },
-                {
-                    "name": "rotation_x",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_x"]))[indx],
-                },
-                {
-                    "name": "rotation_y",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_y"]))[indx],
-                },
-                {
-                    "name": "rotation_z",
-                    "data": np.atleast_1d(np.asarray(material["solid"]["rotation_z"]))[indx],
-                },
-                {
-                    "name": "effective_permeability_x",
-                    "data": perm_x,
-                },
-                {
-                    "name": "effective_permeability_y",
-                    "data": perm_y,
-                },
-                {
-                    "name": "effective_permeability_z",
-                    "data": perm_z,
-                },
-                {
-                    "name": "effective_conductivity_x",
-                    "data": cond_x,
-                },
-                {
-                    "name": "effective_conductivity_y",
-                    "data": cond_y,
-                },
-                {
-                    "name": "effective_conductivity_z",
-                    "data": cond_z,
-                },
-            ]
-        else:
-            scalardata_cell = []
-
-        # ----- Export to vtk
-        write_mesh2vtk(
-            filename,
-            "TANGO",
-            mesh["nodes"],
-            mesh["conn"],
-            scalardata_point,
-            vectordata_point,
-            scalardata_cell,
-        )
-
-    # --- Output text files, frequency is controlled by user user input
-    if (n % config["simulation"]["output_frequency"]) == 0:
+    if output_now:
         _export_flow_logs(n, primary_variables, config, io_path, t)
 
     return config
