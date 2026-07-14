@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -24,7 +25,12 @@ def _make_sparse(
 
 
 def _assemble_global_matrices(
-    vec: dict[str, npt.NDArray[np.float64]], conn: npt.NDArray[np.int32], nn: int, nne: int
+    vec: dict[str, npt.NDArray[np.float64]],
+    conn: list[list[int]],
+    nn: int,
+    nne_list: list[int],
+    elem_indx: list[int],
+    elem_order: npt.NDArray[np.int32],  # sequence the values were written
 ) -> dict[str, csc_matrix]:
     """Assemble vector of rows and columns all at once and assemble sparse matrix."""
     # For vectorized sparse matrix assembly, we feed in 3 vectors:
@@ -33,9 +39,31 @@ def _assemble_global_matrices(
     # col_vec:each entry indicates the column that the entry in vec belongs to
     #
     # Rather than assemble the row and column vectors element by element,
-    # this function computes them in one go
-    row_vec = np.repeat(conn, nne, axis=1).ravel()
-    col_vec = np.tile(conn, (1, nne)).ravel()
+    # this function computes them in one go.
+    #
+    # conn is a ragged list, so use elem_indx to convert chunks to arrays
+    # nne for every raw element index
+    nne_of_elem = np.empty(elem_indx[-1] + 1, dtype=np.int32)
+    prev = -1
+    for end, nne in zip(elem_indx, nne_list):
+        nne_of_elem[prev + 1 : end + 1] = nne
+        prev = end
+
+    nne_seq = nne_of_elem[elem_order]
+
+    row_chunks, col_chunks = [], []
+    start = 0
+    for i in range(1, len(elem_order) + 1):
+        if i == len(elem_order) or nne_seq[i] != nne_seq[start]:
+            nne = nne_seq[start]
+            run = elem_order[start:i]
+            conn_run = np.asarray([conn[e] for e in run], dtype=np.int32)
+            row_chunks.append(np.repeat(conn_run, nne, axis=1).ravel())
+            col_chunks.append(np.tile(conn_run, (1, nne)).ravel())
+            start = i
+
+    row_vec = np.concatenate(row_chunks)
+    col_vec = np.concatenate(col_chunks)
 
     return {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec}
 
@@ -64,8 +92,17 @@ def _get_quad_points_and_shape_functions(
     return W, nq, np.array(N_q), np.asarray(GN_q)
 
 
-def _initiate_vectors(list_of_matrices: list[str], total_entries: int) -> dict[str, npt.NDArray[np.float64]]:
+def _initiate_vectors(
+    list_of_matrices: list[str], nne: list[int], elem_indx: list[int]
+) -> dict[str, npt.NDArray[np.float64]]:
     """Create the dictionary of vectorized matrix entries."""
+    # calculate the number of entries
+    prev = -1
+    total_entries = 0
+    for n, idx in zip(nne, elem_indx):
+        ne_i = idx - prev
+        total_entries += n**2 * ne_i
+        prev = idx
     return {name: np.zeros(total_entries) for name in list_of_matrices}
 
 
@@ -127,12 +164,14 @@ def integrate_linear_matrices(
     rho_f = mat["fluid"]["density"]
 
     # ----- mesh data
-    nn, ne, nne, nsd = mesh["nn"], mesh["ne"], mesh["nne"], mesh["nsd"]
+    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
     conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     region_lists = mesh["region_lists"]
     num_regions = mesh["num_regions"]
-    etype = mesh["element_type"]
+    etype_list = mesh["element_type"]
+    nq_list = mesh["n_quadrature"]
+    elem_indx = mesh["elem_indx"]
 
     # ----- gravity vector
     ng = np.zeros((nsd, 1))
@@ -145,7 +184,8 @@ def integrate_linear_matrices(
     # For the scalar pressure and temperature, there are nne * nne entries
     # per element.
     list_of_matrices = ["Kpp", "KM", "KpT", "KbT", "C", "KTT"] if mu_linear else ["KM", "KpT", "C", "KTT"]
-    vec = _initiate_vectors(list_of_matrices, ne * nne * nne)
+    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec_counter = 0  # vectorized storage index counter
 
     # Matrices to assemble:
     # Kpp = Pressure conductance matrix
@@ -154,9 +194,6 @@ def integrate_linear_matrices(
     # KpT =  Pressurization matrix
     # C = Thermal capacity matrix
     # KTT =  Thermal conductance matrix
-
-    # Evaluate quadrature points and get weights and shape functions.
-    W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(mesh["n_quadrature"], nsd, etype)
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
@@ -174,15 +211,28 @@ def integrate_linear_matrices(
         isotropic_cond = bool(isinstance(lambda_e, (float, int)))
         isotropic_perm = bool(isinstance(kf, (float, int)))
 
+        # find element type of first element in region
+        elem_type_counter = -1  # force an update on the first element
+
         for e in region_lists[r]:
-            enodes = conn[e, :]  # local element nodes
+            new_type_idx = bisect.bisect_left(elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                # Update for different element type
+                # Evaluate quadrature points and get weights and shape functions.
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    nq_list[new_type_idx], nsd, etype_list[new_type_idx]
+                )
+                nne = nne_list[new_type_idx]
+                elem_type_counter = new_type_idx
+
+            enodes = conn[e]  # local element nodes
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
                 # Add radial component to integrand for axisymmetry
-                r = N_q @ xI[:, 0]
-                wJe_q = wJe_q * r.T
+                r_coord = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r_coord.T
 
             # Element matrices
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -218,12 +268,12 @@ def integrate_linear_matrices(
                 element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, False)
 
             # ----- Assemble element contributions into global matrices
-            start = e * nne * nne  # vectorized index count start
-            stop = start + nne * nne  # vectorized index count end
-            _store_vectorized_element_matrix(vec, element_matrices, start, stop)
+            stop = vec_counter + nne * nne  # vectorized index count end
+            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+            vec_counter = stop
 
     return (
-        _assemble_global_matrices(vec, conn, nn, nne),
+        _assemble_global_matrices(vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])),
         mat,
         mesh,
     )
@@ -441,12 +491,14 @@ def integrate_nonlinear_matrices(  # noqa
     rho_f = mat["fluid"]["density"]
 
     # ----- mesh data
-    nn, ne, nne, nsd = mesh["nn"], mesh["ne"], mesh["nne"], mesh["nsd"]
-    conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
+    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
+    conn = mesh["conn"]  # connectivity
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     region_lists = mesh["region_lists"]
     num_regions = mesh["num_regions"]
-    etype = mesh["element_type"]
+    etype_list = mesh["element_type"]
+    nq_list = mesh["n_quadrature"]
+    elem_indx = mesh["elem_indx"]
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     list_of_matrices = ["KATT", "K_stab_TT"]
@@ -462,10 +514,8 @@ def integrate_nonlinear_matrices(  # noqa
     ng[nsd - 1] = 1.0  # gravity normal
     g = -9.81 * ng
 
-    vec = _initiate_vectors(list_of_matrices, ne * nne * nne)
-
-    # Evaluate quadrature points and get weights and shape functions.
-    W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(mesh["n_quadrature"], nsd, etype)
+    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
@@ -481,15 +531,28 @@ def integrate_nonlinear_matrices(  # noqa
         if mu_linear:
             advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
 
+        # find element type of first element in region
+        elem_type_counter = -1  # force an update on the first element
+
         for e in region_lists[r]:
-            enodes = conn[e, :]  # local element nodes
+            new_type_idx = bisect.bisect_left(elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                # Update for different element type
+                # Evaluate quadrature points and get weights and shape functions.
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    nq_list[new_type_idx], nsd, etype_list[new_type_idx]
+                )
+                nne = nne_list[new_type_idx]
+                elem_type_counter = new_type_idx
+
+            enodes = conn[e]  # local element nodes
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
                 # Add radial component to integrand for axisymmetry
-                r = N_q @ xI[:, 0]
-                wJe_q = wJe_q * r.T
+                r_coord = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r_coord.T
 
             # Element matrices initialize
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -567,12 +630,12 @@ def integrate_nonlinear_matrices(  # noqa
                     )
 
             # ----- Assemble element contributions into global matrices
-            start = e * nne * nne
-            stop = start + nne * nne
-            _store_vectorized_element_matrix(vec, element_matrices, start, stop)
+            stop = vec_counter + nne * nne  # vectorized index count end
+            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+            vec_counter = stop
 
     # ----- Return and convert to sparse matrix
-    return _assemble_global_matrices(vec, conn, nn, nne)
+    return _assemble_global_matrices(vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"]))
 
 
 def integrate_NLpressure_matrices(
@@ -590,12 +653,14 @@ def integrate_NLpressure_matrices(
     rho_f = mat["fluid"]["density"]
 
     # ----- mesh data
-    nn, ne, nne, nsd = mesh["nn"], mesh["ne"], mesh["nne"], mesh["nsd"]
-    conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
+    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
+    conn = mesh["conn"]  # connectivity
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     region_lists = mesh["region_lists"]
     num_regions = mesh["num_regions"]
-    etype = mesh["element_type"]
+    etype_list = mesh["element_type"]
+    nq_list = mesh["n_quadrature"]
+    elem_indx = mesh["elem_indx"]
     axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- gravity vector
@@ -606,13 +671,11 @@ def integrate_NLpressure_matrices(
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     list_of_matrices = ["Kpp", "KbT"]
 
-    vec = _initiate_vectors(list_of_matrices, ne * nne * nne)
+    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec_counter = 0  # vectorized storage index counter
 
     # Kpp = Pressure conductance matrix
     # KbT = Pressure buoyancy matrix - body
-
-    # Evaluate quadrature points and get weights and shape functions.
-    W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(mesh["n_quadrature"], nsd, etype)
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
@@ -621,15 +684,28 @@ def integrate_NLpressure_matrices(
 
         isotropic_perm = bool(isinstance(kf, (float, int)))
 
+        # find element type of first element in region
+        elem_type_counter = -1  # force an update on the first element
+
         for e in region_lists[r]:
-            enodes = conn[e, :]  # local element nodes
+            new_type_idx = bisect.bisect_left(elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                # Update for different element type
+                # Evaluate quadrature points and get weights and shape functions.
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    nq_list[new_type_idx], nsd, etype_list[new_type_idx]
+                )
+                nne = nne_list[new_type_idx]
+                elem_type_counter = new_type_idx
+
+            enodes = conn[e]  # local element nodes
             xI = nodes[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
                 # Add radial component to integrand for axisymmetry
-                r = N_q @ xI[:, 0]
-                wJe_q = wJe_q * r.T
+                r_coord = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r_coord.T
 
             # Element matrices
             element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -647,12 +723,12 @@ def integrate_NLpressure_matrices(
             element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, False)
 
             # ----- Assemble element contributions into global matrices
-            start = e * nne * nne
-            stop = start + nne * nne
-            _store_vectorized_element_matrix(vec, element_matrices, start, stop)
+            stop = vec_counter + nne * nne  # vectorized index count end
+            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+            vec_counter = stop
 
     # ----- Return and convert to sparse matrix
-    return _assemble_global_matrices(vec, conn, nn, nne)
+    return _assemble_global_matrices(vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"]))
 
 
 def integrate_boundary_flux_matrices(
@@ -665,6 +741,8 @@ def integrate_boundary_flux_matrices(
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
     etype = mesh["element_type"]
     axisymmetry = bool(controls["axisymmetric_on"])
+    elem_indx = [ne - 1]
+    nne_list = [nne]
 
     # ----- Local face numbering
     # Map each global node id in conn_face to a local index.
@@ -673,12 +751,10 @@ def integrate_boundary_flux_matrices(
     global_to_local = {int(g): i for i, g in enumerate(face_node_ids)}
     nn_face = len(face_node_ids)
 
-    conn_face_local = np.array(
-        [[global_to_local[int(n)] for n in enodes] for enodes in conn_face],
-        dtype=np.int32,
-    )  # conn_face_local is used for assembly then mapped back to global
+    conn_face_local = [[global_to_local[int(n)] for n in enodes] for enodes in conn_face]
+    # conn_face_local is used for assembly then mapped back to global
 
-    match etype:
+    match etype[-1]:
         case "B8":
             etype = "Q4"
             nq = 2
@@ -687,8 +763,10 @@ def integrate_boundary_flux_matrices(
             nq = 1
         case "T3":
             etype = "L2"
+            nq = 2
         case "Q4":
             etype = "L2"
+            nq = 2
         case _:
             raise NotImplementedError(f"Face elements of {etype}.")
 
@@ -698,14 +776,15 @@ def integrate_boundary_flux_matrices(
     # For the scalar pressure and temperature, there are nne * nne entries
     # per element.
     list_of_matrices = ["A"]
-    vec = _initiate_vectors(list_of_matrices, ne * nne * nne)
+    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec_counter = 0
 
     # Matrices to assemble:
     # A = area weight for flux distribution over the face
     integrand = np.asarray(1.0)
 
     # Evaluate quadrature points and get weights and shape functions.
-    W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(mesh["n_quadrature"], nsd, etype)
+    W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(nq, nsd, etype)
 
     # ----- Matrix integration element loop
     for e in range(ne):
@@ -726,8 +805,8 @@ def integrate_boundary_flux_matrices(
         wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
         if axisymmetry:
             # Add radial component to integrand for axisymmetry
-            r = N_q @ nodes[enodes, 0]
-            wJe_q = wJe_q * r.T
+            r_coord = N_q @ nodes[enodes, 0]
+            wJe_q = wJe_q * r_coord.T
 
         # Element matrices
         element_matrices = _initialize_element_matrices(list_of_matrices, nne)
@@ -739,12 +818,13 @@ def integrate_boundary_flux_matrices(
         element_matrices["A"] = _vectorized_quad_point_integration(N_q, integrand, N_q, abs(wJe_q), True)
 
         # ----- Assemble element contributions into global matrices
-        # Build global (row, col) index pairs for this element block once
-        start = e * nne * nne
-        stop = start + nne * nne
-        _store_vectorized_element_matrix(vec, element_matrices, start, stop)
+        stop = vec_counter + nne * nne  # vectorized index count end
+        _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+        vec_counter = stop
 
-    matrices = _assemble_global_matrices(vec, conn_face_local, nn_face, nne)
+    matrices = _assemble_global_matrices(
+        vec, conn_face_local, nn_face, nne_list, elem_indx, np.arange(0, ne, dtype=np.int32)
+    )
     # Map local ordering back to global ordering using the input node_order
     local_idx = np.searchsorted(face_node_ids, np.asarray(node_order, dtype=np.int32))
     return {name: mat[local_idx, :][:, local_idx] for name, mat in matrices.items()}

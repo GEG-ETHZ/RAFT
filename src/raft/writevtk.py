@@ -1,5 +1,6 @@
 """Write mesh data to vtk file."""
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -10,7 +11,7 @@ def write_mesh2vtk(  # noqa: C901
     filename: str,
     description: str,
     nodes: npt.NDArray[np.float64],
-    conn: npt.NDArray[np.float64],
+    conn: Sequence[Sequence[int]],
     scalar_data_point: list[dict[str, Any]] | None = None,
     vector_data_point: list[dict[str, Any]] | None = None,
     scalar_data_cell: list[dict[str, Any]] | None = None,
@@ -25,8 +26,11 @@ def write_mesh2vtk(  # noqa: C901
         String describing the model
     nodes : np.ndarray
         Nodal coordinates, shape (n, nsd)
-    conn : np.ndarray
-        Connectivity matrix, shape (ne, nne)
+    conn :  sequence of sequence of int
+        Ragged connectivity list - conn[e] is the list of node ids for element e.
+        Elements are allowed to have differing lengths so that a mesh can mix
+        element types (e.g. hex + tet), matching the ragged connectivity used
+        elsewhere.
     scalar_data : list of dict, optional
         Each entry is {'name': str, 'data': np.ndarray of shape (nn,)}
         Example: [{'name': 'd0x', 'data': array}, {'name': 'd0y', 'data': array}]
@@ -49,12 +53,12 @@ def write_mesh2vtk(  # noqa: C901
         scalar_data_cell = []
 
     nodes = np.array(nodes, dtype=float)
-    conn_int: npt.NDArray[np.int_] = np.asarray(conn, dtype=np.int_)
+    conn_list: list[npt.NDArray[np.int_]] = [np.asarray(enodes, dtype=np.int_) for enodes in conn]
 
     nn = nodes.shape[0]  # number of nodes
     nsd = nodes.shape[1]  # number of spatial dimensions
-    ne = conn_int.shape[0]  # number of elements
-    nne = conn_int.shape[1]  # nodes per element
+    ne = len(conn_list)  # number of elements
+    nne_per_elem = np.array([len(enodes) for enodes in conn_list])  # nodes per element, may vary
     ndp = len(scalar_data_point)  # number of scalar fields
     ndc = len(scalar_data_cell)  # number of scalar fields
 
@@ -105,31 +109,44 @@ def write_mesh2vtk(  # noqa: C901
                 [0, 0, 25],  # B27
             ]
         )
-        cell_type = cell_types[nne - 1, nsd - 1]
-        if cell_type == 0:
-            raise ValueError(f"WriteMesh2VTK: Element not supported (nsd={nsd}, nne={nne})")
-
-        if nne == 9 or nne == 27:
-            nodes_out, conn_int, scalar_data, vector_data = _strip_nodes(
-                nodes_out, conn_int, scalar_data_point, vector_data_point, nne
+        # cell type is looked up per element
+        cell_type_per_elem = cell_types[nne_per_elem - 1, nsd - 1]
+        bad = np.nonzero(cell_type_per_elem == 0)[0]
+        if bad.size:
+            e0 = int(bad[0])
+            raise ValueError(
+                f"WriteMesh2VTK: Element {e0} not supported (nsd={nsd}, nne={int(nne_per_elem[e0])})"
             )
+
+        # Paraview can't render Q9 or B27, so strip the middle nodes. Currently
+        # only perform this if the mesh is uniform, needs to be updated for
+        # mixed mode higher dimensionsal meshes.
+        uniform_nne = int(nne_per_elem[0]) if np.all(nne_per_elem == nne_per_elem[0]) else None
+        if uniform_nne in (9, 27):
+            conn_uniform = np.array(conn_list, dtype=np.int_)
+            nodes_out, conn_uniform, scalar_data_point, vector_data_point = _strip_nodes(
+                nodes_out, conn_uniform, scalar_data_point, vector_data_point, uniform_nne
+            )
+            conn_list = list(conn_uniform)
             nn = nodes_out.shape[0]
 
-        # Prepend node-count column to connectivity
-        conn_vtk = np.hstack([np.full((ne, 1), nne, dtype=int), conn_int])
-
+        # Begin writing
+        # nodes
         fid.write("DATASET UNSTRUCTURED_GRID\n")
         fid.write(f"POINTS {nn} float\n")
         for row in nodes_out:
             fid.write(f"{row[0]:f} {row[1]:f} {row[2]:f}\n")
 
-        fid.write(f"CELLS {ne} {(nne + 1) * ne}\n")
-        for row in conn_vtk:
-            fid.write(" ".join(str(v) for v in row) + "\n")
+        # connectivity
+        cells_size = int(sum(len(enodes) for enodes in conn_list)) + ne
+        fid.write(f"CELLS {ne} {cells_size}\n")
+        for enodes in conn_list:
+            fid.write(str(len(enodes)) + " " + " ".join(str(v) for v in enodes) + "\n")
 
+        # cell types
         fid.write(f"CELL_TYPES {ne}\n")
-        for _ in range(ne):
-            fid.write(f"{cell_type}\n")
+        for ct in cell_type_per_elem:
+            fid.write(f"{ct}\n")
 
         # --- Scalar point data ---
         if ndp > 0:
