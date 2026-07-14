@@ -365,22 +365,13 @@ def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
     return nq, etyp
 
 
-def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
-    """Load mesh and define mesh structures."""
-    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
-    [nodes, conn] = load_Gmsh(str(config_path), config_mesh["dimensions"])
-
-    if nodes is None or conn is None:
-        raise RuntimeError(f"Failed to load mesh from {config_path}")
-
-    mesh: dict[str, Any] = {
-        "nodes": nodes,
-        "conn": conn,
-    }
+def _exact_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
 
     # Extract key values
     mesh["nn"] = np.shape(nodes)[0]  # number of nodes
-    nsd = config_mesh["dimensions"]  # number of space dimensions
+    nsd = np.shape(nodes)[1]  # number of space dimensions
     ne = len(conn)  # number of elements
     mesh["nsd"] = nsd
     mesh["ne"] = ne
@@ -391,6 +382,7 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     mesh["n_quadrature"] = [nq]
     mesh["element_type"] = [etype]
 
+    # element type index
     counter = 0
     for e in range(1, len(conn)):
         nne = len(conn[e])
@@ -402,6 +394,27 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
             mesh["element_type"].append(etype)
             counter += 1
     mesh["elem_indx"].append(ne - 1)  # add final element to end
+
+    return mesh
+
+
+def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
+    """Load mesh and define mesh structures."""
+    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
+
+    nsd = config_mesh["dimensions"]  # number of space dimensions
+    # Load mesh
+    [nodes, conn] = load_Gmsh(str(config_path), nsd)
+
+    if nodes is None or conn is None:
+        raise RuntimeError(f"Failed to load mesh from {config_path}")
+
+    mesh: dict[str, Any] = {
+        "nodes": nodes,
+        "conn": conn,
+    }
+
+    mesh = _exact_key_mesh_values(mesh)
 
     # Import regions
     mesh = _import_regions(config_mesh, mesh)
