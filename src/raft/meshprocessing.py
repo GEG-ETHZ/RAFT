@@ -7,7 +7,7 @@ import numpy as np
 import numpy.typing as npt
 
 
-def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.int64] | None]:  # noqa
+def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, list[list[int]] | None]:  # noqa
     """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
 
     meshfile : name of mesh file
@@ -71,27 +71,14 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
 
         # Only append elements if they are not edge elements
         if edg == 0:
-            conn_list.append(temp_data_int[-nne:])
+            node_list = temp_data_int[-nne:]
+            node_list = [n - 1 for n in node_list]
+            conn_list.append(node_list)
 
-    # Convert list to numpy array
-    conn: npt.NDArray[np.int64] = (
-        np.array(conn_list, dtype=np.int64) if conn_list else np.empty((0, 0), dtype=np.int64)
-    )
-
-    return nodes, conn
+    return nodes, conn_list
 
 
-def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
-    """Find the nodes along the exterior for applying boundary conditions.
-
-    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
-    """
-    conn = mesh["conn"]
-    nodes = mesh["nodes"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
-    nsd = mesh["nsd"]
-
+def _get_element_face_lists(nne: int, nsd: int) -> dict[str, list[int]]:
     # Define element faces. Node numberings should have outwards pointing normals.
     if nne == 8:  # B8 elements
         faces = {
@@ -124,6 +111,20 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         }
     else:
         raise NotImplementedError(f"Boundary extraction for {nne}-node elements in {nsd} dimensions.")
+    return faces
+
+
+def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
+    """Find the nodes along the exterior for applying boundary conditions.
+
+    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
+    """
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
 
     # Loop through all elements, collect a list of faces in global coordinates,
     # then find unique faces.
@@ -132,9 +133,20 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     # dictionary structure: sorted_face: [count, original face]
     face_tracker: dict[tuple[int, ...], list[Any]] = {}
 
+    faces = _get_element_face_lists(nne[0], nsd)
+    counter = 0
+
     for elem in range(ne):
+        if elem > elem_indx[counter]:
+            # Update faces for new element type
+            counter += 1
+            faces = _get_element_face_lists(nne[counter], nsd)
+
+        # extract the element connectivity
+        elem_conn = conn[elem]
+
         for face_name, face_local in faces.items():
-            original_face = tuple(conn[elem, face_local])  # for normals later
+            original_face = tuple(elem_conn[i] for i in face_local)  # for normals later
             sorted_face = tuple(sorted(original_face))  # for uniqueness
             if sorted_face in face_tracker:
                 # Increment count
@@ -218,13 +230,20 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
     nsd = mesh["nsd"]
     nodes = mesh["nodes"]
     conn = mesh["conn"]
+    elem_indx = mesh["elem_indx"]
     tol = 1.0e-6
 
     # Step 1: Initialize all elements to region 0
     regions_list = np.array([0] * ne)
 
     # Step 2: Calculate all element centroids
-    centroids = np.mean(nodes[conn, :], 1)
+    centroids = np.empty((len(conn), nodes.shape[1]))
+    start = 0
+    for i in range(len(elem_indx)):
+        end = elem_indx[i] + 1
+        block_conn = np.array(conn[start:end])
+        centroids[start:end, :] = np.mean(nodes[block_conn, :], 1)
+        start = end + 1
     if nsd == 2:
         centroids = np.hstack((centroids, np.zeros((ne, 1))))
 
@@ -326,30 +345,11 @@ def _import_regions(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[s
     return mesh
 
 
-def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
-    """Load mesh and define mesh structures."""
-    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
-    [nodes, conn] = load_Gmsh(str(config_path), config_mesh["dimensions"])
-
-    if nodes is None or conn is None:
-        raise RuntimeError(f"Failed to load mesh from {config_path}")
-
-    mesh: dict[str, Any] = {
-        "nodes": nodes,
-        "conn": conn - 1,
-    }
-
-    # Extract key values
-    mesh["nn"] = np.shape(nodes)[0]  # number of nodes
-    mesh["ne"] = np.shape(conn)[0]  # number of elements
-    mesh["nne"] = np.shape(conn)[1]  # number of nodes per element
-    mesh["nsd"] = np.shape(nodes)[1]  # number of space dimensions
-
-    # Import regions
-    mesh = _import_regions(config_mesh, mesh)
-
+def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
+    etyp = ""
+    nq = 0
     # Define number of quadrature points
-    match (mesh["nsd"], mesh["nne"]):
+    match (nsd, nne):
         case (3, 8):  # B8
             nq, etyp = 2, "B8"
         case (3, 4):  # T4
@@ -362,20 +362,66 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
             nq, etyp = 3, "Q9"
         case (2, 3):  # T3
             nq, etyp = 1, "T3"
+    return nq, etyp
 
-    mesh["n_quadrature"] = nq
-    mesh["element_type"] = etyp
+
+def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
+    """Load mesh and define mesh structures."""
+    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
+    [nodes, conn] = load_Gmsh(str(config_path), config_mesh["dimensions"])
+
+    if nodes is None or conn is None:
+        raise RuntimeError(f"Failed to load mesh from {config_path}")
+
+    mesh: dict[str, Any] = {
+        "nodes": nodes,
+        "conn": conn,
+    }
+
+    # Extract key values
+    mesh["nn"] = np.shape(nodes)[0]  # number of nodes
+    nsd = config_mesh["dimensions"]  # number of space dimensions
+    ne = len(conn)  # number of elements
+    mesh["nsd"] = nsd
+    mesh["ne"] = ne
+
+    mesh["nne"] = [len(conn[0])]  # number of nodes per element - list
+    mesh["elem_indx"] = []  # indicates the index of the last element of each element type
+    nq, etype = _get_element_type(nsd, len(conn[0]))
+    mesh["n_quadrature"] = [nq]
+    mesh["element_type"] = [etype]
+
+    counter = 0
+    for e in range(1, len(conn)):
+        nne = len(conn[e])
+        if nne != mesh["nne"][counter]:
+            mesh["nne"].append(nne)
+            mesh["elem_indx"].append(e - 1)
+            nq, etype = _get_element_type(nsd, nne)
+            mesh["n_quadrature"].append(nq)
+            mesh["element_type"].append(etype)
+            counter += 1
+    mesh["elem_indx"].append(ne - 1)  # add final element to end
+
+    # Import regions
+    mesh = _import_regions(config_mesh, mesh)
 
     # Extract sets of exterior nodes
     mesh = _extract_exterior(mesh)
 
     if verbose:
+        # Join multiple element types with commas
+        elem_types_str = ", ".join(str(et) for et in mesh["element_type"])
+
+        # Compute the quadrature string breakdown for each type in the list
+        quad_pts_str = ", ".join(f"{nq}^{nsd} = {nq**nsd}" for nq in mesh["n_quadrature"])
+
         print("----- Mesh statistics")
         print(f"  File            : {config_mesh['file']}")
-        print(f"  Element type    : {etyp}")
-        print(f"  Dimensions      : {mesh['nsd']}D")
+        print(f"  Element type    : {elem_types_str}")
+        print(f"  Dimensions      : {nsd}D")
         print(f"  Nodes           : {mesh['nn']}")
         print(f"  Elements        : {mesh['ne']}")
-        print(f"  Quadrature pts  : {nq}^{mesh['nsd']} = {nq ** mesh['nsd']}\n")
+        print(f"  Quadrature pts  : {quad_pts_str}\n")
 
     return mesh
