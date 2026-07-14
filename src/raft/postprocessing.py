@@ -115,18 +115,19 @@ def compute_fluid_flux(  # noqa
         isotropic = bool(isinstance(kf, (float, int)))
 
         # find element type of first element in region
-        elem_type_counter = bisect.bisect_left(elem_indx, region_lists[r][0])
+        elem_type_counter = -1  # force an update on the first element
 
         for e in region_lists[r]:
-            if e > elem_indx[elem_type_counter - 1] or elem_type_counter == 0:
+            new_type_idx = bisect.bisect_left(elem_indx, e)
+            if new_type_idx != elem_type_counter:
                 # Update for different element type
-                etype = etype_list[elem_type_counter]
-                nne = nne_list[elem_type_counter]
+                etype = etype_list[new_type_idx]
+                nne = nne_list[new_type_idx]
                 getGN = GNMATRIX_FUNCS[etype]
                 xi = _get_nodal_parents_coords(etype)
                 GN_q_list = [getGN(xi[n, :]) for n in range(nne)]
                 GN_q = np.array(GN_q_list)
-                elem_type_counter += 1
+                elem_type_counter = new_type_idx
 
             enodes = conn[e]  # element nodes
             # material properties - element
