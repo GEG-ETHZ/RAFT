@@ -1,5 +1,6 @@
 """Import mesh, assign regions, extract relevant mesh properties."""
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -395,15 +396,72 @@ def _compute_node_levels(
 
     # Identify nodes directly on the physical fracture segment (phi = 0 and psi <= 0)
     on_frac_mask = (np.abs(phi) < tol) & (psi <= tol)
+    phi[on_frac_mask] = 0.0
     on_frac_nodes = set(np.where(on_frac_mask)[0])
 
     return phi, psi, s, on_frac_nodes
 
 
-def _create_fracture_nodes_conn(  # noqa
-    mesh: dict[str, Any], fracture: dict[str, Any], tol: float
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], list[int]]:
+@dataclass
+class FractureLevelSet:
+    """Geometry and nodal level-set data for a single 2D fracture.
 
+    Computed once per fracture via `_build_fracture_level_set` and shared across the
+    mesh-cutting helpers, instead of each helper recomputing it independently.
+    """
+
+    # Geometric properties (from _get_fracture_geometry_2D)
+    center_2d: npt.NDArray[np.float64]
+    half_length: float
+    theta: float
+    u: npt.NDArray[np.float64]  # tangent direction
+    n: npt.NDArray[np.float64]  # normal direction
+
+    # Nodal distance tolerance used to build the level set
+    tol: float
+
+    # Nodal level sets (from _compute_node_levels)
+    phi: npt.NDArray[np.float64]  # normal (signed) level set
+    psi: npt.NDArray[np.float64]  # tangential level set
+    s: npt.NDArray[np.float64]  # tangential projection
+    on_frac_nodes: set[int]  # nodes lying exactly on the fracture segment
+
+    phi_sign: npt.NDArray[np.float64]  # sign of phi
+
+
+def _build_fracture_level_set(
+    nodes: npt.NDArray[np.float64], fracture_spec: dict[str, Any], tol: float
+) -> FractureLevelSet:
+    """Compute fracture geometry and nodal level sets once for reuse across mesh-cutting steps."""
+    # Geometric properties
+    center_2d, half_length, theta, u, n = _get_fracture_geometry_2D(fracture_spec)
+
+    # Create a signed level set indicating nodal distance from the fracture
+    phi, psi, s, on_frac_nodes = _compute_node_levels(nodes, center_2d, u, n, half_length, tol)
+    # phi = normal level set
+    # psi = tangential level set
+
+    phi_sign = np.sign(phi)
+
+    return FractureLevelSet(
+        center_2d=center_2d,
+        half_length=half_length,
+        theta=theta,
+        u=u,
+        n=n,
+        tol=tol,
+        phi=phi,
+        psi=psi,
+        s=s,
+        on_frac_nodes=on_frac_nodes,
+        phi_sign=phi_sign,
+    )
+
+
+def _create_fracture_nodes_conn(  # noqa
+    mesh: dict[str, Any], frac_ls: FractureLevelSet
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], list[int]]:
+    """Create fracture nodes and connectivity."""
     conn = mesh["conn"]
     nodes = mesh["nodes"]
     nne = mesh["nne"]
@@ -411,19 +469,12 @@ def _create_fracture_nodes_conn(  # noqa
     nsd = mesh["nsd"]
     elem_indx = mesh["elem_indx"]
 
-    # Geometric properties
-    center_2d, half_length, theta, u, n = _get_fracture_geometry_2D(fracture)
-
-    # Create a signed level set indicating nodal distance from the fracture
-    phi, psi, s, on_frac_nodes = _compute_node_levels(nodes, center_2d, u, n, half_length, tol)
-    # phi = normal level set
-    # psi = tangential level set
-
-    # Perturb near-zero values to avoid sign issues with float
-    phi_perturbed = phi.copy()
-    for idx in range(len(phi)):
-        if idx not in on_frac_nodes and np.abs(phi_perturbed[idx]) < 1e-8:
-            phi_perturbed[idx] = 1e-8 if phi_perturbed[idx] >= 0 else -1e-8
+    center_2d = frac_ls.center_2d
+    half_length = frac_ls.half_length
+    u = frac_ls.u
+    tol = frac_ls.tol
+    psi = frac_ls.psi
+    phi = frac_ls.phi
 
     # list of all boundary faces in the mesh. Each key is a unique boundary.
     boundary_list = _get_all_edges(conn, ne, nne, nsd, elem_indx)
@@ -431,8 +482,8 @@ def _create_fracture_nodes_conn(  # noqa
     frac_nodes = np.empty((0, 2))  # Initialize
 
     for boundary in boundary_list:
-        phi_a = phi_perturbed[boundary[0]]
-        phi_b = phi_perturbed[boundary[1]]
+        phi_a = phi[boundary[0]]
+        phi_b = phi[boundary[1]]
         psi_a = psi[boundary[0]]
         psi_b = psi[boundary[1]]
         nodes_a = nodes[boundary[0], :]
@@ -492,6 +543,33 @@ def _create_fracture_nodes_conn(  # noqa
     return frac_nodes, frac_conn, tip_nodes
 
 
+# def _split_elements(
+#     mesh: dict[str, Any],
+#     frac_ls: FractureLevelSet,
+#     frac_nodes: npt.NDArray[np.float64],
+#     frac_conn: npt.NDArray[np.int64],
+#     tip_nodes: list[int],
+# ) -> dict[str, Any]:
+#     """Loop through the fracture elements, find the cut elements, and split them accordingly."""
+#     conn = mesh["conn"]
+#     nodes = mesh["nodes"]
+#     nne = mesh["nne"]
+#     ne = mesh["ne"]
+#     nsd = mesh["nsd"]
+#     elem_indx = mesh["elem_indx"]
+
+#     phi_sign = frac_ls.phi_sign
+
+#     # Create a sublist for all elements with a change in sign
+#     matrix_elements_to_cut = []
+#     for e in range(ne):
+#         asdf = 0  # to be continued...
+
+#     # Loop through all fracture elements
+
+#     return mesh
+
+
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
     """Create mesh cutting for fracture elements."""
     fracture_specs = config_mesh["fractures"]
@@ -515,11 +593,14 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
     # Loop through each fracture specification
     for fracture in fracture_specs:
+        # Compute fracture geometry and nodal level sets once, shared by both helpers below
+        frac_ls = _build_fracture_level_set(nodes, fracture, tol)
+
         # Create fracture nodes and connectivity
-        frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, fracture, tol)
+        frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
 
         # Loop through elements and check whether the new nodes lie within each element, then split
-        # mesh = _split_elements(mesh, frac_nodes, frac_conn, tip_nodes)
+        # mesh = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
 
         # Loop through all elements
         # If element is cut (nodal level set values do not have the same sign)
