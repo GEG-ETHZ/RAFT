@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+import scipy as sp
 
 
 def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, list[list[int]] | None]:  # noqa
@@ -114,21 +115,9 @@ def _get_element_face_lists(nne: int, nsd: int) -> dict[str, list[int]]:
     return faces
 
 
-def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
-    """Find the nodes along the exterior for applying boundary conditions.
-
-    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
-    """
-    conn = mesh["conn"]
-    nodes = mesh["nodes"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
-    nsd = mesh["nsd"]
-    elem_indx = mesh["elem_indx"]
-
-    # Loop through all elements, collect a list of faces in global coordinates,
-    # then find unique faces.
-
+def _get_all_edges(
+    conn: list[list[int]], ne: int, nne: list[int], nsd: int, elem_indx: list[int]
+) -> dict[tuple[int, ...], list[Any]]:
     # use dictionary to track faces and keep original order for calculating normals.
     # dictionary structure: sorted_face: [count, original face]
     face_tracker: dict[tuple[int, ...], list[Any]] = {}
@@ -154,8 +143,26 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
             else:
                 # Store count and original
                 face_tracker[sorted_face] = [1, original_face]
+    return face_tracker
 
-    # sory through the faces and extract all unique faces
+
+def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
+    """Find the nodes along the exterior for applying boundary conditions.
+
+    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
+    """
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
+
+    # Loop through all elements, collect a list of faces in global coordinates,
+    # then find unique faces.
+    face_tracker = _get_all_edges(conn, ne, nne, nsd, elem_indx)
+
+    # sort through the faces and extract all unique faces
     boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
@@ -345,6 +352,194 @@ def _import_regions(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[s
     return mesh
 
 
+def _get_fracture_geometry_2D(
+    fracture_spec: dict[str, Any],
+) -> tuple[npt.NDArray[np.float64], float, float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Extract geometric parameters from a 2D fracture specification."""
+    center = fracture_spec["values"][0]  # [xc, yc, zc]
+    center_2d = np.array([center[0], center[1]], dtype=np.float64)
+
+    # Extents: for line/ellipse, first value is half-length
+    half_length = fracture_spec["values"][1][0]
+
+    # Angles: first value is theta (degrees) with respect to x-axis
+    angle_deg = fracture_spec["values"][2][0]
+    theta = np.deg2rad(angle_deg)
+
+    # Unit vectors
+    u = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)  # Tangent direction
+    n = np.array([-np.sin(theta), np.cos(theta)], dtype=np.float64)  # Normal direction
+
+    return center_2d, half_length, theta, u, n
+
+
+def _compute_node_levels(
+    nodes: npt.NDArray[np.float64],
+    center_2d: npt.NDArray[np.float64],
+    u: npt.NDArray[np.float64],
+    n: npt.NDArray[np.float64],
+    half_length: float,
+    tol: float = 1e-8,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], set[int]]:
+    """Compute the normal (phi) and tangential (psi) level sets,
+
+    along with tangent projection (s) for all nodes, identifying indices
+    that lie exactly on the fracture line segment.
+    """
+    # Signed level set
+    phi = np.dot(nodes[:, :2] - center_2d, n)
+    s = np.dot(nodes[:, :2] - center_2d, u)
+
+    # Tangential level set (negative inside the crack, positive past the tips)
+    psi = np.abs(s) - half_length
+
+    # Identify nodes directly on the physical fracture segment (phi = 0 and psi <= 0)
+    on_frac_mask = (np.abs(phi) < tol) & (psi <= tol)
+    on_frac_nodes = set(np.where(on_frac_mask)[0])
+
+    return phi, psi, s, on_frac_nodes
+
+
+def _create_fracture_nodes_conn(  # noqa
+    mesh: dict[str, Any], fracture: dict[str, Any], tol: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], list[int]]:
+
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
+
+    # Geometric properties
+    center_2d, half_length, theta, u, n = _get_fracture_geometry_2D(fracture)
+
+    # Create a signed level set indicating nodal distance from the fracture
+    phi, psi, s, on_frac_nodes = _compute_node_levels(nodes, center_2d, u, n, half_length, tol)
+    # phi = normal level set
+    # psi = tangential level set
+
+    # Perturb near-zero values to avoid sign issues with float
+    phi_perturbed = phi.copy()
+    for idx in range(len(phi)):
+        if idx not in on_frac_nodes and np.abs(phi_perturbed[idx]) < 1e-8:
+            phi_perturbed[idx] = 1e-8 if phi_perturbed[idx] >= 0 else -1e-8
+
+    # list of all boundary faces in the mesh. Each key is a unique boundary.
+    boundary_list = _get_all_edges(conn, ne, nne, nsd, elem_indx)
+
+    frac_nodes = np.empty((0, 2))  # Initialize
+
+    for boundary in boundary_list:
+        phi_a = phi_perturbed[boundary[0]]
+        phi_b = phi_perturbed[boundary[1]]
+        psi_a = psi[boundary[0]]
+        psi_b = psi[boundary[1]]
+        nodes_a = nodes[boundary[0], :]
+        nodes_b = nodes[boundary[1], :]
+        if np.sign(phi_a) != np.sign(phi_b):
+            nodes_c = (phi_a * nodes_b - phi_b * nodes_a) / (phi_a - phi_b)
+            # check tangential level set
+            psi_c = psi_a - (psi_b - psi_a) * np.linalg.norm(nodes_a - nodes_c) / np.linalg.norm(
+                nodes_a - nodes_b
+            )
+            if psi_c < 0:
+                # If within bounds, add new node
+                d_a = np.linalg.norm(nodes_c - nodes_a)
+                d_b = np.linalg.norm(nodes_c - nodes_b)
+                if d_a < tol:
+                    new_node = nodes_a
+                elif d_b < tol:
+                    new_node = nodes_b
+                else:
+                    new_node = nodes_c
+
+                frac_nodes = np.vstack((frac_nodes, new_node))
+
+    # Now check tip elements
+    tips = [-1.0, 1.0]
+    tip_nodes = []  # Track which ones are tip nodes for special treatment
+    for i in tips:
+        tip_coords = center_2d + half_length * u * i
+
+        # Check if tip_coords already exists
+        d = np.linalg.norm(frac_nodes - tip_coords, axis=1)
+        if np.any(d < tol):
+            # Node already exists, track node
+            tip_nodes.append(int(np.argmin(d)))
+            continue
+
+        # Check if tip_coords is outside the bounds
+        hull = sp.spatial.ConvexHull(nodes)
+        A, b = (
+            hull.equations[:, :-1],
+            hull.equations[:, -1:],
+        )  # extract the equations defining the 0-level set
+        # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
+        # If Ax + b < 0, then the point is within the polyhedron.
+        node_in_region = np.all(tip_coords @ A.T + b.T < tol)
+        if not node_in_region:
+            # Tip is outside the domain
+            continue
+
+        # Otherwise, add new node
+        frac_nodes = np.vstack((frac_nodes, tip_coords))
+        tip_nodes.append(int(np.size(frac_nodes, 0)) - 1)
+
+    # Now create connectivity
+    indx = np.argsort(frac_nodes @ u)
+    frac_conn = np.vstack((indx[0:-1], indx[1:])).T
+    return frac_nodes, frac_conn, tip_nodes
+
+
+def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
+    """Create mesh cutting for fracture elements."""
+    fracture_specs = config_mesh["fractures"]
+    nsd = config_mesh["dimensions"]
+    nodes = mesh["nodes"]
+
+    if nsd != 2:
+        print("3D fractures not yet supported.")
+        return mesh
+    # Initialize
+    # frac_matrix_conn = []  # List of fracture-matrix connectivity [[top, bottom], [top, bottom],...]
+    # frac_frac_conn = []  # 1D fracture elements [node 1, node 2; node 2, node 3; ...]
+    #  conn_new = conn.copy()
+    # nodes_new = nodes.copy()
+
+    # Set node distance tolerance based on domain size
+
+    d_max = np.amax(nodes, 0)
+    L = (d_max.prod()) ** (1 / nsd)
+    tol = L * 0.005
+
+    # Loop through each fracture specification
+    for fracture in fracture_specs:
+        # Create fracture nodes and connectivity
+        frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, fracture, tol)
+
+        # Loop through elements and check whether the new nodes lie within each element, then split
+        # mesh = _split_elements(mesh, frac_nodes, frac_conn, tip_nodes)
+
+        # Loop through all elements
+        # If element is cut (nodal level set values do not have the same sign)
+        # cut element:
+        # Case 1: fully cut element
+        # Lookup geometric cut cases for Q4 and T3 elements for new mapping.
+        # Add three new nodes for top, fracture, and bottom to nodes.
+        # Update connectivity of existing elements, and add new element
+        # connectivity to the list, including fracture elements
+        # store top and bottom element connectivity
+        # Case 2: boundary cut element
+        # subdivide the element into small elements sharing the tip node
+        # Case 3: boundary-boundary element
+        # new nodes needed if they don't already exist
+        # no new elements required
+        # Case 4: no element crossing
+
+    return mesh
+
+
 def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
     etyp = ""
     nq = 0
@@ -415,6 +610,8 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     }
 
     mesh = _exact_key_mesh_values(mesh)
+    if "fractures" in config_mesh:
+        mesh = _create_fracture_mesh(config_mesh, mesh)
 
     # Import regions
     mesh = _import_regions(config_mesh, mesh)

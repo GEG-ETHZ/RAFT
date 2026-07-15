@@ -1,17 +1,13 @@
 # RAFT — Reservoir Analysis for TANGO
 
-A finite element method (FEM) simulator for coupled subsurface fluid flow and
-heat transport in geothermal reservoirs, specifically developed for native
-coupling with TANGO. RAFT solves pressure and temperature fields over time
-using a one-pass linearized extrapolation time integration scheme . Pressure
-and temperature are decoupled by lagging temperature and then extrapolating
-it to the current timestep.
+A finite element method (FEM) simulator for coupled subsurface fluid flow and heat transport in geothermal reservoirs, specifically developed for native coupling with TANGO. RAFT solves pressure and temperature fields over time using a one-pass linearized extrapolation time integration scheme . Pressure and temperature are decoupled by lagging temperature and then extrapolating it to the current timestep. It also contains a fully-coupled solver.
 
  Physical processes include:
  - Fluid flow
      - Darcy flow
      - Pressurization
      - Buoyancy$^1$
+     - Temperature-dependent viscosity
  - Heat flow
      - Diffusion
      - Advection (Streamline Upwind Pretrov Galerkin (SUPG) stabilization)
