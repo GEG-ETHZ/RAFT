@@ -512,8 +512,13 @@ def _create_fracture_nodes_conn(  # noqa
     tip_nodes = []  # Track which ones are tip nodes for special treatment
     for i in tips:
         tip_coords = center_2d + half_length * u * i
+        # Check if tip_coords already exists in mesh
+        d = np.linalg.norm(nodes - tip_coords, axis=1)
+        indx = np.argmin(d)
+        if d[indx] < tol:
+            tip_coords = nodes[indx, :]
 
-        # Check if tip_coords already exists
+        # Check if fracture node at tip_coords already exists
         d = np.linalg.norm(frac_nodes - tip_coords, axis=1)
         if np.any(d < tol):
             # Node already exists, track node
@@ -543,31 +548,215 @@ def _create_fracture_nodes_conn(  # noqa
     return frac_nodes, frac_conn, tip_nodes
 
 
-# def _split_elements(
-#     mesh: dict[str, Any],
-#     frac_ls: FractureLevelSet,
-#     frac_nodes: npt.NDArray[np.float64],
-#     frac_conn: npt.NDArray[np.int64],
-#     tip_nodes: list[int],
-# ) -> dict[str, Any]:
-#     """Loop through the fracture elements, find the cut elements, and split them accordingly."""
-#     conn = mesh["conn"]
-#     nodes = mesh["nodes"]
-#     nne = mesh["nne"]
-#     ne = mesh["ne"]
-#     nsd = mesh["nsd"]
-#     elem_indx = mesh["elem_indx"]
+def _sort_boundary_coords(
+    node_labels: list[int] | npt.NDArray[np.int64],
+    nodes: npt.NDArray[np.float64],
+) -> list[int]:
+    """Sorts a list of node labels in counter-clockwise (CCW) order
+    based on their angles relative to their collective centroid.
+    """
+    # Quick return if sorting is trivial or empty
+    if len(node_labels) <= 1:
+        return list(node_labels)
 
-#     phi_sign = frac_ls.phi_sign
+    # Convert input labels to a NumPy array for fast vector indexing
+    labels_arr = np.asarray(node_labels, dtype=np.int64)
 
-#     # Create a sublist for all elements with a change in sign
-#     matrix_elements_to_cut = []
-#     for e in range(ne):
-#         asdf = 0  # to be continued...
+    # Extract 2D coordinates for the given subset of nodes
+    coords = nodes[labels_arr]
 
-#     # Loop through all fracture elements
+    # Calculate the collective centroid of the subset
+    centroid = np.mean(coords, axis=0)
 
-#     return mesh
+    # Translate coordinates to be relative to the centroid
+    rel_coords = coords - centroid
+
+    # Compute polar angles in the range [-pi, pi]
+    # np.arctan2(y, x) handles quadrant signs automatically
+    angles = np.arctan2(rel_coords[:, 1], rel_coords[:, 0])
+
+    # Sort the original labels based on ascending angle values
+    sorted_indices = np.argsort(angles)
+    sorted_labels = labels_arr[sorted_indices]
+
+    return sorted_labels.tolist()
+
+
+def _split_elements(  # noqa
+    mesh: dict[str, Any],
+    frac_ls: FractureLevelSet,
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64],
+    tip_nodes: list[int],
+) -> dict[str, Any]:
+    """Loop through the fracture elements, find the cut elements, and split them accordingly."""
+    conn = mesh["conn"]
+    nodes = mesh["nodes"]
+    nne = mesh["nne"]  # noqa
+    ne = mesh["ne"]
+    nn = mesh["nn"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]  # noqa
+
+    phi_sign = frac_ls.phi_sign
+    psi = frac_ls.psi
+    tol = frac_ls.tol
+
+    ne_f = np.size(frac_conn, 0)
+
+    new_nodes = []  # noqa
+    new_elem = []
+    new_node_index = nn
+
+    # ---- Create a sublist for all elements with a change in sign
+    matrix_elements_to_cut = []
+    for e in range(ne):
+        enodes = conn[e]
+        signs = phi_sign[enodes]
+
+        # A true interior cut requires both positive and negative signs.
+        # This excludes all vertex-touching and edge-aligned cases.
+        if np.any(signs > 0) and np.any(signs < 0):  # noqa
+            # The element crosses the normal level set
+            if np.any(psi[enodes] < tol):
+                # The element crosses or is in the tangential level set
+                matrix_elements_to_cut.append(e)
+
+    elements_to_delete = matrix_elements_to_cut.copy()  # noqa # Keep a list to delete these elements at the end
+    matrix_elements_to_cut = np.array(matrix_elements_to_cut)
+
+    # ---- Sort the elements by distance from the fracture element to find
+    # the corresponding matrix parent element and prevent excessive looping
+    centroids = np.empty((len(matrix_elements_to_cut), nodes.shape[1]))
+    for i in range(len(matrix_elements_to_cut)):
+        enodes = conn[matrix_elements_to_cut[i]]
+        centroids[i, :] = np.mean(nodes[enodes, :], 0)
+
+    # ---- Loop through all fracture elements
+    for e_f in range(ne_f):
+        f_nodes = frac_conn[e_f, :]
+        f_coords = frac_nodes[f_nodes, :]
+        f_center = np.mean(f_coords, 0)
+        tip_element = np.any(f_nodes == tip_nodes)
+
+        d = np.linalg.norm(centroids - f_center, axis=1)
+        indx = np.argsort(d)
+
+        for i in indx:
+            e_m = matrix_elements_to_cut[i]
+            m_nodes = conn[e_m]
+            m_coords = nodes[m_nodes]
+            hull = sp.spatial.ConvexHull(m_coords)
+            A, b = (
+                hull.equations[:, :-1],
+                hull.equations[:, -1:],
+            )  # extract the equations defining the 0-level set
+            # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
+            # If Ax + b < 0, then the point is within the polyhedron.
+            elem_in_region = np.all(f_coords @ A.T + b.T < tol)
+            if elem_in_region:
+                # The fracture element is within the matrix element domain,
+                # this is the element to cut.
+
+                # Pop it out of the list to check next time
+                matrix_elements_to_cut = np.delete(matrix_elements_to_cut, i)
+                centroids = np.delete(centroids, i, 0)
+                # Continue on to cutting
+                break
+
+        # ---- Create new nodes
+        # If the node is already on the fracture path, we're going to
+        # replace it with a new node
+        m_nodes_orig = m_nodes.copy()
+        m_nodes = [node for node in m_nodes if phi_sign[node] != 0.0]
+        shifted_nodes = []
+        frac_normal = frac_ls.n
+        shift_dist = 0.5 * tol if tip_element else 0.0
+
+        for i in range(len(f_nodes)):
+            if np.any(f_nodes[i] == tip_nodes):
+                # For tip nodes, add one node
+                nodes = np.vstack((nodes, f_coords[i, :]))
+                m_nodes.append(new_node_index)
+                new_node_index += 1
+                phi_sign = np.hstack((phi_sign, 0.0))
+                psi = np.hstack((psi, 0.0))
+            else:
+                # Positive side shift
+                pos_coord = f_coords[i, :] + shift_dist * frac_normal
+                nodes = np.vstack((nodes, pos_coord))
+                m_nodes.append(new_node_index)
+                shifted_nodes.append((new_node_index, f_coords[i, :]))  # Store to revert
+                new_node_index += 1
+                phi_sign = np.hstack((phi_sign, 1.0))
+                psi = np.hstack((psi, -1.0))
+
+                # Negative side shift
+                neg_coord = f_coords[i, :] - shift_dist * frac_normal
+                nodes = np.vstack((nodes, neg_coord))
+                m_nodes.append(new_node_index)
+                shifted_nodes.append((new_node_index, f_coords[i, :]))  # Store to revert
+                new_node_index += 1
+                phi_sign = np.hstack((phi_sign, -1.0))
+                psi = np.hstack((psi, -1.0))
+
+        # ---- Triangulate by grouping nodes according to sign
+        m_node_signs = phi_sign[m_nodes]
+        # Create node groups for triangulation grouped by side
+        m_nodes_pos = [node for node, sign in zip(m_nodes, m_node_signs) if sign >= 0]
+        m_nodes_neg = [node for node, sign in zip(m_nodes, m_node_signs) if sign <= 0]
+        m_node_groups = [m_nodes_pos, m_nodes_neg]
+        if tip_element:
+            # Create an additional group to cover the region beyond the tip
+            # that the fracture does not actually cut through: the tip node
+            # plus the nodes of the parent element's far face -- the face
+            # that crosses the normal level set (phi = 0, i.e. has nodes on
+            # both sides) but whose nodes lie entirely past the tip along
+            # the fracture (psi >= tol, so the crack never reaches them).
+            tip_group = []
+            # add the tip node
+            tip_local_idx = np.where(m_node_signs == 0)[0]
+            tip_group.extend(np.array(m_nodes)[tip_local_idx].tolist())
+
+            # Add the nodes from the opposing face cut by the normal level set
+            faces = _get_element_face_lists(len(m_nodes_orig), nsd)
+            for face_local in faces.values():
+                face_nodes = [m_nodes_orig[i] for i in face_local]
+                crosses_phi = np.any(phi_sign[face_nodes] > 0) and np.any(phi_sign[face_nodes] < 0)
+                beyond_tip = np.all(psi[face_nodes] >= tol)
+                if crosses_phi and beyond_tip:
+                    tip_group.extend(n for n in face_nodes if n not in tip_group)
+
+            if len(tip_group) > 1:
+                m_node_groups.append(tip_group)
+
+        # Perform Delaunay triangulation
+        for group in m_node_groups:
+            if len(group) < 5:
+                # Keep as a Q4/T3, sort to ensure new nodes are CCW ordered
+                global_conn = _sort_boundary_coords(group, nodes[group, :])
+
+            else:
+                # Perform triangulation
+                tri = sp.spatial.Delaunay(nodes[group, :])
+                group = np.array(group)
+                local_conn = np.array(tri.simplices.tolist())
+                global_conn = group[local_conn]
+
+            new_elem.append(global_conn)
+
+        # ---- Restore shifted nodes back to their original degenerate coordinates
+        for node_idx, original_coord in shifted_nodes:
+            nodes[node_idx, :] = original_coord
+
+    # ---- Loop through all nodes and remove duplicates where phi_sign and nodal coordinates are equal.
+    # Also remove elements where phi_sign = 0 that are not tip nodes.
+    # Create a mapping of old node numbering to new node numbering.
+    # Prioritize keeping the later numbered node.
+
+    # ---- Update connectivity matrices with new elements and new node numberings.
+
+    return mesh
 
 
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
@@ -600,23 +789,9 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
         frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
 
         # Loop through elements and check whether the new nodes lie within each element, then split
-        # mesh = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
+        mesh = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
 
-        # Loop through all elements
-        # If element is cut (nodal level set values do not have the same sign)
-        # cut element:
-        # Case 1: fully cut element
-        # Lookup geometric cut cases for Q4 and T3 elements for new mapping.
-        # Add three new nodes for top, fracture, and bottom to nodes.
-        # Update connectivity of existing elements, and add new element
-        # connectivity to the list, including fracture elements
-        # store top and bottom element connectivity
-        # Case 2: boundary cut element
-        # subdivide the element into small elements sharing the tip node
-        # Case 3: boundary-boundary element
-        # new nodes needed if they don't already exist
-        # no new elements required
-        # Case 4: no element crossing
+        # Loop through elements and map top and bottom connectivity.
 
     return mesh
 
@@ -641,7 +816,7 @@ def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
     return nq, etyp
 
 
-def _exact_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
+def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     nodes = mesh["nodes"]
     conn = mesh["conn"]
 
@@ -690,7 +865,7 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
         "conn": conn,
     }
 
-    mesh = _exact_key_mesh_values(mesh)
+    mesh = _extract_key_mesh_values(mesh)
     if "fractures" in config_mesh:
         mesh = _create_fracture_mesh(config_mesh, mesh)
 

@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[25.5, 37.5, 0.0], [10.0, 5.0], [90,0]]
+          values: [[25.5, 37.5, 0.0], [22.0, 5.0], [90,0]]
           aperture: 1.0e-3
           nusselt: 5.0
 
