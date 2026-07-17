@@ -491,7 +491,7 @@ def _create_fracture_nodes_conn(  # noqa
         if np.sign(phi_a) != np.sign(phi_b):
             nodes_c = (phi_a * nodes_b - phi_b * nodes_a) / (phi_a - phi_b)
             # check tangential level set
-            psi_c = psi_a - (psi_b - psi_a) * np.linalg.norm(nodes_a - nodes_c) / np.linalg.norm(
+            psi_c = psi_a + (psi_b - psi_a) * np.linalg.norm(nodes_a - nodes_c) / np.linalg.norm(
                 nodes_a - nodes_b
             )
             if psi_c < 0:
@@ -506,6 +506,8 @@ def _create_fracture_nodes_conn(  # noqa
                     new_node = nodes_c
 
                 frac_nodes = np.vstack((frac_nodes, new_node))
+
+    frac_nodes = np.unique(frac_nodes, axis=0)
 
     # Now check tip elements
     tips = [-1.0, 1.0]
@@ -550,7 +552,7 @@ def _create_fracture_nodes_conn(  # noqa
 
 def _sort_boundary_coords(
     node_labels: list[int] | npt.NDArray[np.int64],
-    nodes: npt.NDArray[np.float64],
+    coords: npt.NDArray[np.float64],
 ) -> list[int]:
     """Sorts a list of node labels in counter-clockwise (CCW) order
     based on their angles relative to their collective centroid.
@@ -561,9 +563,6 @@ def _sort_boundary_coords(
 
     # Convert input labels to a NumPy array for fast vector indexing
     labels_arr = np.asarray(node_labels, dtype=np.int64)
-
-    # Extract 2D coordinates for the given subset of nodes
-    coords = nodes[labels_arr]
 
     # Calculate the collective centroid of the subset
     centroid = np.mean(coords, axis=0)
@@ -588,15 +587,13 @@ def _split_elements(  # noqa
     frac_nodes: npt.NDArray[np.float64],
     frac_conn: npt.NDArray[np.int64],
     tip_nodes: list[int],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], FractureLevelSet]:
     """Loop through the fracture elements, find the cut elements, and split them accordingly."""
     conn = mesh["conn"]
     nodes = mesh["nodes"]
-    nne = mesh["nne"]  # noqa
     ne = mesh["ne"]
     nn = mesh["nn"]
     nsd = mesh["nsd"]
-    elem_indx = mesh["elem_indx"]  # noqa
 
     phi_sign = frac_ls.phi_sign
     psi = frac_ls.psi
@@ -604,7 +601,6 @@ def _split_elements(  # noqa
 
     ne_f = np.size(frac_conn, 0)
 
-    new_nodes = []  # noqa
     new_elem = []
     new_node_index = nn
 
@@ -663,6 +659,10 @@ def _split_elements(  # noqa
                 centroids = np.delete(centroids, i, 0)
                 # Continue on to cutting
                 break
+
+        if not elem_in_region:
+            # fracture element lies along a boundary
+            continue
 
         # ---- Create new nodes
         # If the node is already on the fracture path, we're going to
@@ -723,7 +723,7 @@ def _split_elements(  # noqa
             for face_local in faces.values():
                 face_nodes = [m_nodes_orig[i] for i in face_local]
                 crosses_phi = np.any(phi_sign[face_nodes] > 0) and np.any(phi_sign[face_nodes] < 0)
-                beyond_tip = np.all(psi[face_nodes] >= tol)
+                beyond_tip = np.any(psi[face_nodes] >= tol)
                 if crosses_phi and beyond_tip:
                     tip_group.extend(n for n in face_nodes if n not in tip_group)
 
@@ -734,29 +734,90 @@ def _split_elements(  # noqa
         for group in m_node_groups:
             if len(group) < 5:
                 # Keep as a Q4/T3, sort to ensure new nodes are CCW ordered
-                global_conn = _sort_boundary_coords(group, nodes[group, :])
+                global_conn = [_sort_boundary_coords(group, nodes[group, :])]
 
             else:
                 # Perform triangulation
                 tri = sp.spatial.Delaunay(nodes[group, :])
                 group = np.array(group)
                 local_conn = np.array(tri.simplices.tolist())
-                global_conn = group[local_conn]
+                global_conn = group[local_conn].tolist()
 
-            new_elem.append(global_conn)
+            new_elem.extend(global_conn)
 
         # ---- Restore shifted nodes back to their original degenerate coordinates
         for node_idx, original_coord in shifted_nodes:
             nodes[node_idx, :] = original_coord
 
-    # ---- Loop through all nodes and remove duplicates where phi_sign and nodal coordinates are equal.
-    # Also remove elements where phi_sign = 0 that are not tip nodes.
-    # Create a mapping of old node numbering to new node numbering.
-    # Prioritize keeping the later numbered node.
+    # Delete the old elements
+    for e in matrix_elements_to_cut.tolist():
+        elements_to_delete.remove(e)  # these elements weren't cut
 
-    # ---- Update connectivity matrices with new elements and new node numberings.
+    elements_to_delete.sort(reverse=True)
+    for e in elements_to_delete:
+        conn.pop(e)
 
-    return mesh
+    # Add new elements to the connectivity list
+    conn.extend(new_elem)
+
+    # ---- Handle edge case: elements with nodes that fall on the fracture
+    # exactly but are not cut by the fracture.
+    # Find all matrix tip nodes
+    matrix_tip_nodes = []
+    for i in tip_nodes:
+        tip_coords = frac_nodes[i, :]
+        d = np.linalg.norm(nodes - tip_coords, axis=1)
+        matrix_tip_nodes.extend((np.where(d < tol)[0]).tolist())
+    tip_node_set = set(matrix_tip_nodes)
+    zero_ls_nodes = [n for n in np.where(phi_sign == 0.0)[0].tolist() if n not in tip_node_set]
+
+    for node in zero_ls_nodes:
+        elems_with_node = [e for e, enodes in enumerate(conn) if node in enodes]
+        last_side_sign = None
+
+        for e in elems_with_node:
+            enodes = conn[e]
+            #
+            other_signs = [phi_sign[n2] for n2 in enodes if n2 != node and phi_sign[n2] != 0.0]
+            if not other_signs:
+                continue  # nothing to disambiguate against; leave this occurrence alone
+            side_sign = 1.0 if max(set(other_signs), key=other_signs.count) > 0 else -1.0
+            last_side_sign = side_sign
+
+            nodes = np.vstack((nodes, nodes[node, :]))
+            phi_sign = np.hstack((phi_sign, side_sign))
+            psi = np.hstack((psi, psi[node]))
+            conn[e] = [new_node_index if n2 == node else n2 for n2 in enodes]
+            new_node_index += 1
+
+        # Fold the original zero-sign node into one of its own duplicates so
+        # the dedup pass below removes it rather than leaving it dangling.
+        if last_side_sign is not None:
+            phi_sign[node] = last_side_sign
+
+    # ---- Loop through nodes and remove duplicates where phi_sign and nodal coordinates are equal.
+    # Add phi_sign as a nodal coordinate
+    nodes_old = np.hstack((nodes, phi_sign.reshape(-1, 1)))
+
+    # Round nodes to avoid truncation errors
+    decimals = 9
+    nodes_rounded = np.round(nodes_old, decimals=decimals)
+
+    # Map unique nodes
+    nodes_new, nodes_map = np.unique(nodes_rounded, axis=0, return_inverse=True)
+
+    # New list of nodes
+    nodes = nodes_new[:, 0:nsd]
+
+    # Update connectivity
+    conn = [nodes_map[sublist].tolist() for sublist in conn]
+
+    # ---- Update mesh and levels set
+    frac_ls.phi_sign = nodes_new[:, -1]
+    mesh["nodes"] = nodes
+    mesh["conn"] = conn
+
+    return mesh, frac_ls
 
 
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
