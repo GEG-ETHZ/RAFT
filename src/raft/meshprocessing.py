@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -516,9 +516,9 @@ def _create_fracture_nodes_conn(  # noqa
         tip_coords = center_2d + half_length * u * i
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
-        indx = np.argmin(d)
-        if d[indx] < tol:
-            tip_coords = nodes[indx, :]
+        nearest_indx = int(np.argmin(d))
+        if d[nearest_indx] < tol:
+            tip_coords = nodes[nearest_indx, :]
 
         # Check if fracture node at tip_coords already exists
         d = np.linalg.norm(frac_nodes - tip_coords, axis=1)
@@ -578,7 +578,7 @@ def _sort_boundary_coords(
     sorted_indices = np.argsort(angles)
     sorted_labels = labels_arr[sorted_indices]
 
-    return sorted_labels.tolist()
+    return cast(list[int], sorted_labels.tolist())
 
 
 def _split_elements(  # noqa
@@ -619,13 +619,13 @@ def _split_elements(  # noqa
                 matrix_elements_to_cut.append(e)
 
     elements_to_delete = matrix_elements_to_cut.copy()  # noqa # Keep a list to delete these elements at the end
-    matrix_elements_to_cut = np.array(matrix_elements_to_cut)
+    matrix_elements_to_cut_arr = np.array(matrix_elements_to_cut)
 
     # ---- Sort the elements by distance from the fracture element to find
     # the corresponding matrix parent element and prevent excessive looping
-    centroids = np.empty((len(matrix_elements_to_cut), nodes.shape[1]))
-    for i in range(len(matrix_elements_to_cut)):
-        enodes = conn[matrix_elements_to_cut[i]]
+    centroids = np.empty((len(matrix_elements_to_cut_arr), nodes.shape[1]))
+    for i in range(len(matrix_elements_to_cut_arr)):
+        enodes = conn[matrix_elements_to_cut_arr[i]]
         centroids[i, :] = np.mean(nodes[enodes, :], 0)
 
     # ---- Loop through all fracture elements
@@ -639,7 +639,7 @@ def _split_elements(  # noqa
         indx = np.argsort(d)
 
         for i in indx:
-            e_m = matrix_elements_to_cut[i]
+            e_m = matrix_elements_to_cut_arr[i]
             m_nodes = conn[e_m]
             m_coords = nodes[m_nodes]
             hull = sp.spatial.ConvexHull(m_coords)
@@ -655,7 +655,7 @@ def _split_elements(  # noqa
                 # this is the element to cut.
 
                 # Pop it out of the list to check next time
-                matrix_elements_to_cut = np.delete(matrix_elements_to_cut, i)
+                matrix_elements_to_cut_arr = np.delete(matrix_elements_to_cut_arr, i)
                 centroids = np.delete(centroids, i, 0)
                 # Continue on to cutting
                 break
@@ -739,9 +739,9 @@ def _split_elements(  # noqa
             else:
                 # Perform triangulation
                 tri = sp.spatial.Delaunay(nodes[group, :])
-                group = np.array(group)
+                group_arr = np.array(group)
                 local_conn = np.array(tri.simplices.tolist())
-                global_conn = group[local_conn].tolist()
+                global_conn = group_arr[local_conn].tolist()
 
             new_elem.extend(global_conn)
 
@@ -750,7 +750,7 @@ def _split_elements(  # noqa
             nodes[node_idx, :] = original_coord
 
     # Delete the old elements
-    for e in matrix_elements_to_cut.tolist():
+    for e in matrix_elements_to_cut_arr.tolist():
         elements_to_delete.remove(e)  # these elements weren't cut
 
     elements_to_delete.sort(reverse=True)
@@ -815,9 +815,120 @@ def _split_elements(  # noqa
     # ---- Update mesh and levels set
     frac_ls.phi_sign = nodes_new[:, -1]
     mesh["nodes"] = nodes
-    mesh["conn"] = conn
+    mesh["conn"] = sorted(conn, key=len)  # Resort conn by node length
 
     return mesh, frac_ls
+
+
+def _create_global_fracture_connectivities(  # noqa
+    mesh: dict[str, Any],
+    frac_ls: FractureLevelSet,
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64],
+) -> dict[str, Any]:
+    """Assemble the mesh and connectivities needed for the fractures.
+
+    Called once per fracture (see the loop in `_create_fracture_mesh`), so results are
+    appended to any existing `mesh["fracture_mesh"]` rather than overwriting it, letting
+    multiple fractures accumulate into a single combined fracture mesh. A `region_list`
+    entry is also recorded per fracture -- mirroring `mesh["region_lists"]` for matrix
+    regions -- giving the list of fracture-element indices belonging to each fracture.
+    """
+    ne_f = np.size(frac_conn, 0)
+
+    if "fracture_mesh" not in mesh:
+        # First fracture: initialize empty accumulator structures
+        mesh["fracture_mesh"] = {
+            "nodes": np.empty((0, frac_nodes.shape[1])),
+            "conn": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
+            "conn_global": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
+            "matrix_conn": [],
+            "region_list": [],
+            "nn": 0,
+            "ne": 0,
+        }
+    frac_mesh = mesh["fracture_mesh"]
+
+    # Number of fracture nodes/elements already accumulated from prior fractures,
+    # used to offset this fracture's own (locally-zero-based) connectivity.
+    prior_nn = frac_mesh["nn"]
+    prior_ne = frac_mesh["ne"]
+
+    # Local fracture nodes
+    frac_mesh["nodes"] = np.vstack((frac_mesh["nodes"], frac_nodes))
+    # Local fracture connectivity, offset past the already-accumulated fracture nodes
+    frac_mesh["conn"] = np.vstack((frac_mesh["conn"], frac_conn + prior_nn))
+    # Number of fracture nodes
+    frac_mesh["nn"] = prior_nn + np.size(frac_nodes, 0)
+    # Number of fracture elements
+    frac_mesh["ne"] = prior_ne + ne_f
+
+    # Append the fracture nodes to the global nodes
+    nodes = mesh["nodes"]
+    nn = np.size(nodes, 0)
+    nodes = np.vstack((nodes, frac_nodes))
+    mesh["nodes"] = nodes
+
+    # Fracture global connectivity
+    frac_mesh["conn_global"] = np.vstack((frac_mesh["conn_global"], frac_conn + nn))
+
+    # Record which fracture-element indices (in the combined, accumulated numbering)
+    # belong to this fracture.
+    frac_mesh["region_list"].append(np.arange(prior_ne, prior_ne + ne_f))
+
+    # Create fracture-matrix connectivity
+    conn = mesh["conn"]
+    matrix_nodes = mesh["nodes"][:nn]  # matrix-side node coordinates (pre-fracture-node append)
+    phi_sign = frac_ls.phi_sign
+    tol = frac_ls.tol
+
+    # Build a node -> matrix-element lookup once, so each fracture element can find
+    # its matching matrix elements by set intersection rather than a full O(ne) scan.
+    node_to_elems: dict[int, set[int]] = {}
+    for e, enodes in enumerate(conn):
+        for node in enodes:
+            node_to_elems.setdefault(node, set()).add(e)
+
+    frac_matrix_conn = []
+    for e_f in range(ne_f):
+        f_coords = frac_nodes[frac_conn[e_f, :]]
+
+        # For each node of the fracture element, find the coincident matrix-side
+        # nodes on the positive (phi_sign > 0) and negative (phi_sign < 0) side,
+        # then intersect the sets of elements touching those nodes across all
+        # nodes of the fracture element. Since a fracture element's face is only
+        # ever shared by a single positive-side and a single negative-side matrix
+        # element, each intersection collapses to exactly one element.
+        pos_candidates: set[int] | None = None
+        neg_candidates: set[int] | None = None
+
+        for coord in f_coords:
+            d = np.linalg.norm(matrix_nodes - coord, axis=1)
+            coincident = np.where(d < tol)[0]
+
+            pos_nodes = coincident[phi_sign[coincident] > 0]
+            neg_nodes = coincident[phi_sign[coincident] < 0]
+
+            pos_elems: set[int] = set()
+            for node in pos_nodes:
+                pos_elems |= node_to_elems.get(int(node), set())
+
+            neg_elems: set[int] = set()
+            for node in neg_nodes:
+                neg_elems |= node_to_elems.get(int(node), set())
+
+            pos_candidates = pos_elems if pos_candidates is None else pos_candidates & pos_elems
+            neg_candidates = neg_elems if neg_candidates is None else neg_candidates & neg_elems
+
+        pos_elem = pos_candidates.pop() if pos_candidates else None
+        neg_elem = neg_candidates.pop() if neg_candidates else None
+
+        # append to frac_matrix_conn as [positive side, negative side]
+        frac_matrix_conn.append([pos_elem, neg_elem])
+
+    frac_mesh["matrix_conn"].extend(frac_matrix_conn)
+
+    return mesh
 
 
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
@@ -830,10 +941,6 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
         print("3D fractures not yet supported.")
         return mesh
     # Initialize
-    # frac_matrix_conn = []  # List of fracture-matrix connectivity [[top, bottom], [top, bottom],...]
-    # frac_frac_conn = []  # 1D fracture elements [node 1, node 2; node 2, node 3; ...]
-    #  conn_new = conn.copy()
-    # nodes_new = nodes.copy()
 
     # Set node distance tolerance based on domain size
 
@@ -850,9 +957,13 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
         frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
 
         # Loop through elements and check whether the new nodes lie within each element, then split
-        mesh = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
+        mesh, frac_ls = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
 
-        # Loop through elements and map top and bottom connectivity.
+        # Assemble global fracture connectivity and matrix-fracture connectivity
+        mesh = _create_global_fracture_connectivities(mesh, frac_ls, frac_nodes, frac_conn)
+
+    # Re-evaluate key values
+    mesh = _extract_key_mesh_values(mesh)
 
     return mesh
 
