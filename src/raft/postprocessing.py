@@ -21,8 +21,6 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
     """Return element-local nodal coordinates (xi) used to extrapolate flux to the nodes, by element type."""
     if etype == "Q4":  # Q4 element
         xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1]])
-    elif etype == "Q9":  # Q9 element
-        xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0], [0, 0]])
     elif etype == "B8":  # B8 element
         xi = np.array(
             [
@@ -40,6 +38,10 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
         xi = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
     elif etype == "T3":
         xi = np.array([[0, 0], [1, 0], [0, 1]])
+    elif etype == "L2":
+        xi = np.array([-1], [1])
+    elif etype == "Q9":  # Q9 element
+        xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0], [0, 0]])
     elif etype == "B27":  # B27 element
         xi = np.array(
             [

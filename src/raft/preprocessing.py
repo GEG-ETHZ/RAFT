@@ -143,6 +143,9 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
         if verbose:
             print("Axisymmetry turned off, not valid in 3D analysis.")
 
+    # Fractures
+    config["simulation"]["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
+
     return config
 
 
@@ -166,6 +169,7 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
         print(f"\n ----- Configuration parameters for {config_name}")
 
     _apply_defaults(config, DEFAULTS, verbose=verbose)
+
     _determine_physics_controls(config, verbose)
 
     if verbose:

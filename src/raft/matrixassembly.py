@@ -15,13 +15,20 @@ from .matprops import get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
+def _get_gravity(nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ng = np.zeros((nsd, 1))
+    ng[nsd - 1] = 1.0  # gravity normal
+    return -9.81 * ng, ng
+
+
 def _make_sparse(
     vals: npt.NDArray[np.float64],
     row_vec: npt.NDArray[np.int32],
     col_vec: npt.NDArray[np.int32],
-    nn: int,
+    nn_1: int,
+    nn_2: int,
 ) -> csc_matrix:
-    return csc_matrix((vals, (row_vec, col_vec)), shape=(nn, nn))
+    return csc_matrix((vals, (row_vec, col_vec)), shape=(nn_1, nn_2))
 
 
 def _assemble_global_matrices(
@@ -65,7 +72,7 @@ def _assemble_global_matrices(
     row_vec = np.concatenate(row_chunks)
     col_vec = np.concatenate(col_chunks)
 
-    return {name: _make_sparse(vec[name], row_vec, col_vec, nn) for name in vec}
+    return {name: _make_sparse(vec[name], row_vec, col_vec, nn, nn) for name in vec}
 
 
 def _get_quad_points_and_shape_functions(
@@ -117,9 +124,11 @@ def _store_vectorized_element_matrix(
         vec[name][start:stop] = Ee.ravel()
 
 
-def _initialize_element_matrices(list_of_matrices: list[str], nne: int) -> dict[str, npt.NDArray[np.float64]]:
-    """Create a dict of zero-initialized (nne, nne) element matrices, keyed by name."""
-    return {name: np.zeros((nne, nne)) for name in list_of_matrices}
+def _initialize_element_matrices(
+    list_of_matrices: list[str], nne_1: int, nne_2: int
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Create a dict of zero-initialized (nne_1, nne_2) element matrices, keyed by name."""
+    return {name: np.zeros((nne_1, nne_2)) for name in list_of_matrices}
 
 
 def _vectorized_quad_point_integration(
@@ -149,6 +158,288 @@ def _vectorized_quad_point_integration(
     return result
 
 
+def _get_parent_coordinates(  # noqa
+    etype: str, nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Determine the parent coordinates of a physical point in an isoparametric element.
+
+    Assumes that the point is on the element boundary.
+    """
+    parent_coords = np.empty((np.size(nodes, 1), 1, np.size(goal_pts, -1)))
+
+    if etype == "Q4":
+        edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+        x_nodes = nodes[:, 0]
+        y_nodes = nodes[:, 1]
+        tol = 1.0e-7
+
+        for gp in range(np.size(goal_pts, 2)):
+            target = goal_pts[gp]
+            x_target = target[0][0]
+            y_target = target[0][1]
+            for idx, (i, j) in enumerate(edges):
+                dx = x_nodes[j] - x_nodes[i]
+                dy = y_nodes[j] - y_nodes[i]
+
+                # Use the larger projection direction to avoid division by zero
+                # on perfectly horizontal or vertical edges.
+                if abs(dx) >= abs(dy):
+                    t = 2.0 * (x_target - x_nodes[i]) / dx - 1.0
+                    # Check if the actual y matches the expected y along this line segment
+                    y_expected = y_nodes[i] + 0.5 * (t + 1.0) * dy
+                    is_collinear = abs(y_target - y_expected) < tol
+                else:
+                    t = 2.0 * (y_target - y_nodes[i]) / dy - 1.0
+                    # Check if the actual x matches the expected x along this line segment
+                    x_expected = x_nodes[i] + 0.5 * (t + 1.0) * dx
+                    is_collinear = abs(x_target - x_expected) < tol
+
+                # 2. The point must be collinear AND fall within the segment endpoints [-1, 1]
+                if is_collinear and (-1.0 - tol <= t <= 1.0 + tol):
+                    t = max(-1.0, min(1.0, t))  # Clean up minor numerical fuzz
+
+                    # Map the 1D parameter 't' back to 2D parent space based on the edge index
+                    if idx == 0:  # Edge 1-2: η = -1
+                        xi = t
+                        eta = -1.0
+                        break
+                    elif idx == 1:  # Edge 2-3: ξ = 1
+                        xi = 1.0
+                        eta = t
+                        break
+                    elif idx == 2:  # Edge 3-4: η = 1 (t runs opposite to ξ direction)
+                        xi = -t
+                        eta = 1.0
+                        break
+                    elif idx == 3:  # Edge 4-1: ξ = -1 (t runs opposite to η direction)
+                        xi = -1.0
+                        eta = -t
+                        break
+
+            parent_coords[gp] = np.array([xi, eta])
+
+    elif etype == "T3":
+        # Direct mapping
+        x1 = nodes[0, 0]
+        x2 = nodes[1, 0]
+        x3 = nodes[2, 0]
+        y1 = nodes[0, 1]
+        y2 = nodes[1, 1]
+        y3 = nodes[2, 1]
+
+        # Determinant (2x the physical area of the triangle)
+        D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+
+        for gp in range(np.size(goal_pts, 2)):
+            target = goal_pts[gp]
+            x_target = target[0][0]
+            y_target = target[0][1]
+            xi = ((y3 - y1) * (x_target - x1) - (x3 - x1) * (y_target - y1)) / D
+            eta = (-(y2 - y1) * (x_target - x1) + (x2 - x1) * (y_target - y1)) / D
+            parent_coords[gp] = np.array([xi, eta])
+
+    return parent_coords
+
+
+def _create_fracture_coupling_vectors(
+    conn_f: list[list[int]], conn_fm: list[list[int]], conn_m: list[list[int]]
+) -> tuple[int, npt.NDArray[np.int32], npt.NDArray[np.int32]]:
+    """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
+    count_vec = 0
+    row_list = []
+    col_list = []
+
+    ne_f = len(conn_f)
+    for e_f in range(ne_f):
+        e_nodes_f = conn_f[e_f]
+        nne_f = len(e_nodes_f)
+        for f in range(2):
+            e_m = conn_fm[e_f][f]
+            e_nodes_m = conn_m[e_m]
+            nne_m = len(e_nodes_m)
+
+            row_list.append(
+                np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
+            )
+            col_list.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
+            count_vec += nne_f * nne_m
+
+    row_vec = np.concatenate(row_list).astype(np.int32)
+    col_vec = np.concatenate(col_list).astype(np.int32)
+    return count_vec, row_vec, col_vec
+
+
+def integrate_linear_fracture_matrices(  # noqa
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    controls: dict[str, Any],
+) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any]]:
+    """Integrate the linear matrices associated with the lower dimensional fractures."""
+    # ----- integration controls
+    mu_linear = not bool(controls["viscosity_nonconstant"])
+    axisymmetry = bool(controls["axisymmetric_on"])
+
+    # ----- fluid properties, universal
+    if mu_linear:
+        mu = mat["fluid"]["viscosity"]
+        alpha_f = mat["fluid"]["therm_expansion"]
+    rho_f = mat["fluid"]["density"]
+    lambda_f = mat["fluid"]["therm_cond"]
+    comp_f0 = 1.0 / mat["fluid"]["bulk_mod"]
+    cp_f = mat["fluid"]["specific_heat"]
+
+    # ----- mesh data
+    # Matrix data
+    nn_m, nsd = mesh["nn"], mesh["nsd"]
+    conn_m = mesh["conn"]  # (ne, nne)  - connectivity matrix
+    nodes_m = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    etype_list_m = mesh["element_type"]
+    elem_indx_m = mesh["elem_indx"]
+
+    # Fracture data
+    fmesh = mesh["fracture_mesh"]
+    nn_f, nne_list_f = fmesh["nn"], fmesh["nne"]
+    conn_f = fmesh["conn"]  # (ne, nne)  - connectivity matrix
+    nodes_f = fmesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    etype_list_f = fmesh["element_type"]
+    elem_indx_f = fmesh["elem_indx"]
+    nq_list = fmesh["n_quadrature"]
+    fracture_lists = fmesh["region_list"]
+    num_fractures = len(fracture_lists)
+    conn_fm = fmesh["matrix_conn"]
+
+    # ----- gravity vector
+    g, ng = _get_gravity(nsd)
+
+    # Reduce nsd for fracture
+    nsd -= 1
+
+    # ----- Vectorized matrix assembly
+    # Assemble lists of rows, columns, and entries and then assemble the sparse
+    # matrix all at once.
+    # For the scalar pressure and temperature, there are nne_1 * nne_2 entries
+    # per element. For the coupled matrices, because the assembly is ragged,
+    # we will  assemble them once and then save them for future use.
+    list_of_matrices = ["KM", "KpT", "C", "KTT"]
+    if mu_linear:
+        list_of_matrices.extend(["KbT", "Kpp"])
+
+    vec = _initiate_vectors(list_of_matrices, nne_list_f, elem_indx_f)
+    vec_counter = 0  # vectorized storage index counter
+
+    list_of_coupled_matrices = ["Kpp_fm", "KTT_fm"]
+    vec_count, row_vec_coupling, col_vec_coupling = _create_fracture_coupling_vectors(conn_f, conn_fm, conn_m)
+    mesh["fracture_mesh"]["vectorized_matrix_assembly_rows"] = row_vec_coupling
+    mesh["fracture_mesh"]["vectorized_matrix_assembly_cols"] = col_vec_coupling
+    # Initialize the matrices
+    vec_coupled = {name: np.zeros(vec_count) for name in list_of_coupled_matrices}
+    vec_counter_coupled = 0
+
+    # Matrices to assemble:
+    # Kpp = Pressure conductance matrix
+    # KbT = Pressure buoyancy matrix - body
+    # KM =  Pressure storage matrix
+    # KpT =  Pressurization matrix
+    # C = Thermal capacity matrix
+    # KTT =  Thermal conductance matrix
+    # Kpp_fm = Pressure fracture-matrix coupling
+    # KTT_fm = Temperature fracture-matrix coupling
+
+    # ----- Matrix integration element loop
+    for r in range(num_fractures):
+        # fracture properties - by region
+        w = mat["fracture"]["aperture"][r]
+        nusselt = mat["fracture"]["nusselt"][r]
+
+        # Derived fracture properties
+        kf_l = w**3 / 12  # longitudinal permeability
+        kf_p = w / 12  # transverse permeability
+        h = nusselt * lambda_f / 2 / w  # heat transfer coefficient
+        comp_f = comp_f0 * w  # integrated compressibility
+        m_e = rho_f * cp_f * w
+
+        u = fmesh["fracture_tangent"][r]
+        # Project the mesh nodes into local coordinates
+        nodes_local = (nodes_f @ u).reshape(-1, 1)
+
+        if mu_linear:
+            kf_b = ng.T @ np.dot(kf_l, ng) / mu * alpha_f * rho_f @ g.T @ u  # local gravity component
+
+        # find element type of first element in region
+        elem_type_counter = -1  # force an update on the first element
+
+        for e in fracture_lists[r]:
+            # get fracture shape functions
+            new_type_idx = bisect.bisect_left(elem_indx_f, e)
+            if new_type_idx != elem_type_counter:
+                # Update for different element type
+                # Evaluate quadrature points and get weights and shape functions.
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    nq_list[new_type_idx], nsd, etype_list_f[new_type_idx]
+                )
+                nne_f = nne_list_f[new_type_idx]
+                elem_type_counter = new_type_idx
+                Q, _ = getquadrature(nq_list[new_type_idx], nsd, etype_list_f[new_type_idx])
+
+            enodes = conn_f[e]  # local element nodes
+            xI = nodes_local[enodes, :]
+            B_q, detJe_q = getB(GN_q, xI, nsd)
+            wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
+            if axisymmetry:
+                # Add radial component to integrand for axisymmetry
+                r_coord = N_q @ xI[:, 0]
+                wJe_q = wJe_q * r_coord.T
+
+            # Element matrices
+            element_matrices = _initialize_element_matrices(list_of_matrices, nne_f, nne_f)
+
+            element_matrices["KM"] = _vectorized_quad_point_integration(N_q, comp_f, N_q, wJe_q, True)
+            element_matrices["C"] = _vectorized_quad_point_integration(N_q, m_e, N_q, wJe_q, True)
+            element_matrices["KTT"] = _vectorized_quad_point_integration(B_q, lambda_f, B_q, wJe_q, True)
+            if mu_linear:
+                element_matrices["Kpp"] = _vectorized_quad_point_integration(B_q, kf_l / mu, B_q, wJe_q, True)
+                element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, True)
+
+            # ----- Assemble element contributions into global matrices
+            stop = vec_counter + nne_f * nne_f  # vectorized index count end
+            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+            vec_counter = stop
+
+            # ---- Loop over faces for matrix coupling
+            matrix_elements = conn_fm[e]
+            for e_m in matrix_elements:
+                enodes_m = conn_m[e_m]
+                nne_m = len(enodes_m)
+                element_matrices = _initialize_element_matrices(list_of_coupled_matrices, nne_m, nne_f)
+
+                etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
+                getN_m = NMATRIX_FUNCS[etype]
+                Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes, :])
+                N_qm_list = []
+                for q in range(np.size(Q, -1)):
+                    xi = Q[q, :].flatten()
+                    N_qm_list.append(getN_m(xi))
+                N_qm = np.array(N_qm_list)
+                element_matrices["Kpp_fm"] = _vectorized_quad_point_integration(N_qm, kf_p, N_q, wJe_q, True)
+                element_matrices["KTT_fm"] = _vectorized_quad_point_integration(N_qm, h, N_q, wJe_q, True)
+                # ----- Assemble element contributions into global matrices
+                stop = vec_counter_coupled + nne_m * nne_f  # vectorized index count end
+                _store_vectorized_element_matrix(vec_coupled, element_matrices, vec_counter_coupled, stop)
+                vec_counter_coupled = stop
+
+    # Assemble element matrices
+    integrated_matrices = _assemble_global_matrices(
+        vec, conn_f, nn_f, nne_list_f, elem_indx_f, np.concatenate(fracture_lists)
+    )
+    # Assemble coupled matrices
+    for name in vec_coupled:
+        integrated_matrices[name] = _make_sparse(
+            vec_coupled[name], row_vec_coupling, col_vec_coupling, nn_m, nn_f
+        )
+
+    return (integrated_matrices, mesh)
+
+
 def integrate_linear_matrices(
     mesh: dict[str, Any], mat: dict[str, Any], controls: dict[str, Any]
 ) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
@@ -156,6 +447,7 @@ def integrate_linear_matrices(
     # ----- integration controls
     mu_linear = not bool(controls["viscosity_nonconstant"])
     axisymmetry = bool(controls["axisymmetric_on"])
+    fracture_on = bool(controls["fracture_on"])
 
     # ----- fluid properties, universal
     if mu_linear:
@@ -174,9 +466,7 @@ def integrate_linear_matrices(
     elem_indx = mesh["elem_indx"]
 
     # ----- gravity vector
-    ng = np.zeros((nsd, 1))
-    ng[nsd - 1] = 1.0  # gravity normal
-    g = -9.81 * ng
+    g, ng = _get_gravity(nsd)
 
     # ----- Vectorized matrix assembly
     # Assemble lists of rows, columns, and entries and then assemble the sparse
@@ -235,7 +525,7 @@ def integrate_linear_matrices(
                 wJe_q = wJe_q * r_coord.T
 
             # Element matrices
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne)
+            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
 
             # Vectorized integrand computation
             # N_q: [nq, 1, nne]
@@ -272,8 +562,14 @@ def integrate_linear_matrices(
             _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
             vec_counter = stop
 
+    integrated_matrices = _assemble_global_matrices(
+        vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])
+    )
+    if fracture_on:
+        integrated_fracture_matrices = integrate_linear_fracture_matrices(mesh, mat, controls)  # noqa
+        # Assemble the connected fracture-matrix matrices
     return (
-        _assemble_global_matrices(vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])),
+        integrated_matrices,
         mat,
         mesh,
     )
@@ -510,9 +806,7 @@ def integrate_nonlinear_matrices(  # noqa
         alpha_f = mat["fluid"]["therm_expansion"]
 
     # ----- gravity vector
-    ng = np.zeros((nsd, 1))
-    ng[nsd - 1] = 1.0  # gravity normal
-    g = -9.81 * ng
+    g, ng = _get_gravity(nsd)
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
@@ -555,7 +849,7 @@ def integrate_nonlinear_matrices(  # noqa
                 wJe_q = wJe_q * r_coord.T
 
             # Element matrices initialize
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne)
+            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
 
             Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
             pe = p[enodes].reshape(-1, 1)  # element nodal pressures
@@ -664,9 +958,7 @@ def integrate_NLpressure_matrices(
     axisymmetry = bool(controls["axisymmetric_on"])
 
     # ----- gravity vector
-    ng = np.zeros((nsd, 1))
-    ng[nsd - 1] = 1.0  # gravity normal
-    g = -9.81 * ng
+    g, ng = _get_gravity(nsd)
 
     # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     list_of_matrices = ["Kpp", "KbT"]
@@ -708,7 +1000,7 @@ def integrate_NLpressure_matrices(
                 wJe_q = wJe_q * r_coord.T
 
             # Element matrices
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne)
+            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
 
             # vectorized integration
             Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
@@ -809,7 +1101,7 @@ def integrate_boundary_flux_matrices(
             wJe_q = wJe_q * r_coord.T
 
         # Element matrices
-        element_matrices = _initialize_element_matrices(list_of_matrices, nne)
+        element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
         # Boundary faces may be misordered relative to their global position,
         # relative in negative jacobians.
         # This shouldn't be an issue because all elements are defined with the same

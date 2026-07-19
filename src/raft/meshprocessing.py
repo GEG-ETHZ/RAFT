@@ -991,6 +991,7 @@ def _create_global_fracture_connectivities(  # noqa
             "region_list": [],  # In the fractures, regions correspond to the fracture number.
             "nn": 0,
             "ne": 0,
+            "fracture_tangent": [],
         }
     frac_mesh = mesh["fracture_mesh"]
 
@@ -1007,7 +1008,8 @@ def _create_global_fracture_connectivities(  # noqa
     frac_mesh["nn"] = prior_nn + np.size(frac_nodes, 0)
     # Number of fracture elements
     frac_mesh["ne"] = prior_ne + ne_f
-
+    # Fracture unit vector
+    frac_mesh["fracture_tangent"].append(frac_ls.u)
     # Append the fracture nodes to the global nodes
     nodes = mesh["nodes"]
     nn = np.size(nodes, 0)
@@ -1109,6 +1111,7 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
     # Re-evaluate key values
     mesh = _extract_key_mesh_values(mesh)
+    mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
 
     return mesh
 
@@ -1129,7 +1132,9 @@ def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
         case (2, 9):  # Q9
             nq, etyp = 3, "Q9"
         case (2, 3):  # T3
-            nq, etyp = 1, "T3"
+            nq, etyp = 2, "T3"
+        case (2, 2):  # L2
+            nq, etyp = 2, "L2"
     return nq, etyp
 
 
