@@ -9,7 +9,7 @@ Lf = 22;
 Disturb = 0.2;
 L2 = 5;
 
-nL = 25;
+nL = 5;
 nW = 7;
 nH = 7;
 

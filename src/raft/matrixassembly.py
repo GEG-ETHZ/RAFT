@@ -245,9 +245,13 @@ def _create_fracture_coupling_vectors(
     conn_f: list[list[int]], conn_fm: list[list[int]], conn_m: list[list[int]]
 ) -> tuple[int, npt.NDArray[np.int32], npt.NDArray[np.int32]]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
-    count_vec = 0
-    row_list = []
-    col_list = []
+    count_vec_fm = 0  # Fracture-matrix off-diagonal counts
+    row_list_fm = []
+    col_list_fm = []
+
+    count_vec_mm = 0  # Matrix-matrix on-diagonal counts
+    row_list_mm = []
+    col_list_mm = []
 
     ne_f = len(conn_f)
     for e_f in range(ne_f):
@@ -258,15 +262,25 @@ def _create_fracture_coupling_vectors(
             e_nodes_m = conn_m[e_m]
             nne_m = len(e_nodes_m)
 
-            row_list.append(
+            row_list_fm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
             )
-            col_list.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
-            count_vec += nne_f * nne_m
+            col_list_fm.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
 
-    row_vec = np.concatenate(row_list).astype(np.int32)
-    col_vec = np.concatenate(col_list).astype(np.int32)
-    return count_vec, row_vec, col_vec
+            row_list_mm.append(
+                np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
+            )
+            col_list_mm.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_m)).ravel())
+
+            count_vec_fm += nne_f * nne_m
+            count_vec_mm += nne_m * nne_m
+
+    row_vec_fm = np.concatenate(row_list_fm).astype(np.int32)
+    col_vec_fm = np.concatenate(col_list_fm).astype(np.int32)
+    row_vec_mm = np.concatenate(row_list_mm).astype(np.int32)
+    col_vec_mm = np.concatenate(col_list_mm).astype(np.int32)
+
+    return count_vec_fm, row_vec_fm, col_vec_fm, count_vec_mm, row_vec_mm, col_vec_mm
 
 
 def integrate_linear_fracture_matrices(  # noqa
@@ -324,16 +338,27 @@ def integrate_linear_fracture_matrices(  # noqa
     if mu_linear:
         list_of_matrices.extend(["KbT", "Kpp"])
 
+    # Coupling matrices
+    # _mm : matrix-matrix on-diagonal contribution
+    # _fm : fracture-matrix off-diagonal contribution
+
     vec = _initiate_vectors(list_of_matrices, nne_list_f, elem_indx_f)
     vec_counter = 0  # vectorized storage index counter
 
-    list_of_coupled_matrices = ["Kpp_fm", "KTT_fm"]
-    vec_count, row_vec_coupling, col_vec_coupling = _create_fracture_coupling_vectors(conn_f, conn_fm, conn_m)
-    mesh["fracture_mesh"]["vectorized_matrix_assembly_rows"] = row_vec_coupling
-    mesh["fracture_mesh"]["vectorized_matrix_assembly_cols"] = col_vec_coupling
+    list_of_fm_matrices = ["Kpp_fm", "KTT_fm"]
+    list_of_mm_matrices = ["Kpp_mm", "KTT_mm"]
+    vec_count_fm, row_vec_fm, col_vec_fm, vec_count_mm, row_vec_mm, col_vec_mm = (
+        _create_fracture_coupling_vectors(conn_f, conn_fm, conn_m)
+    )
+    mesh["fracture_mesh"]["vec_matx_asmbl_rows_fm"] = row_vec_fm
+    mesh["fracture_mesh"]["vec_matx_asmbl_cols_fm"] = col_vec_fm
+    mesh["fracture_mesh"]["vec_matx_asmbl_rows_mm"] = row_vec_mm
+    mesh["fracture_mesh"]["vec_matx_asmbl_cols_mm"] = col_vec_mm
     # Initialize the matrices
-    vec_coupled = {name: np.zeros(vec_count) for name in list_of_coupled_matrices}
-    vec_counter_coupled = 0
+    vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
+    vec_counter_fm = 0
+    vec_mm = {name: np.zeros(vec_count_mm) for name in list_of_mm_matrices}
+    vec_counter_mm = 0
 
     # Matrices to assemble:
     # Kpp = Pressure conductance matrix
@@ -400,17 +425,13 @@ def integrate_linear_fracture_matrices(  # noqa
                 element_matrices["Kpp"] = _vectorized_quad_point_integration(B_q, kf_l / mu, B_q, wJe_q, True)
                 element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, True)
 
-            # ----- Assemble element contributions into global matrices
-            stop = vec_counter + nne_f * nne_f  # vectorized index count end
-            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
-            vec_counter = stop
-
             # ---- Loop over faces for matrix coupling
             matrix_elements = conn_fm[e]
             for e_m in matrix_elements:
                 enodes_m = conn_m[e_m]
                 nne_m = len(enodes_m)
-                element_matrices = _initialize_element_matrices(list_of_coupled_matrices, nne_m, nne_f)
+                element_matrices_fm = _initialize_element_matrices(list_of_fm_matrices, nne_m, nne_f)
+                element_matrices_mm = _initialize_element_matrices(list_of_mm_matrices, nne_m, nne_m)
 
                 etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
                 getN_m = NMATRIX_FUNCS[etype]
@@ -420,22 +441,47 @@ def integrate_linear_fracture_matrices(  # noqa
                     xi = Q[q, :].flatten()
                     N_qm_list.append(getN_m(xi))
                 N_qm = np.array(N_qm_list)
-                element_matrices["Kpp_fm"] = _vectorized_quad_point_integration(N_qm, kf_p, N_q, wJe_q, True)
-                element_matrices["KTT_fm"] = _vectorized_quad_point_integration(N_qm, h, N_q, wJe_q, True)
-                # ----- Assemble element contributions into global matrices
-                stop = vec_counter_coupled + nne_m * nne_f  # vectorized index count end
-                _store_vectorized_element_matrix(vec_coupled, element_matrices, vec_counter_coupled, stop)
-                vec_counter_coupled = stop
+                # Off-diagonal _fm contributions
+                element_matrices_fm["KTT_fm"] = _vectorized_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
+                # _ff contributions
+                element_matrices["KTT"] += _vectorized_quad_point_integration(N_q, h, N_q, wJe_q, True)
+                # _mm contribution
+                element_matrices_mm["KTT_mm"] = _vectorized_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
+                if mu_linear:
+                    element_matrices_fm["Kpp_fm"] = _vectorized_quad_point_integration(
+                        N_qm, kf_p / mu, N_q, wJe_q, True
+                    )
+                    element_matrices["Kpp"] += _vectorized_quad_point_integration(
+                        N_q, -kf_p / mu, N_q, wJe_q, True
+                    )
+                    element_matrices_mm["Kpp_mm"] = _vectorized_quad_point_integration(
+                        N_qm, -kf_p / mu, N_qm, wJe_q, True
+                    )
 
-    # Assemble element matrices
+                # ----- Assemble frac-matrix element contributions into global matrices
+                stop = vec_counter_fm + nne_m * nne_f  # vectorized index count end
+                _store_vectorized_element_matrix(vec_fm, element_matrices_fm, vec_counter_fm, stop)
+                vec_counter_fm = stop
+                # ----- Assemble matrix-matrix element contributions into global matrices
+                stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
+                _store_vectorized_element_matrix(vec_mm, element_matrices_mm, vec_counter_mm, stop)
+                vec_counter_mm = stop
+
+            # ----- Assemble frac-frac element contributions into global matrices
+            stop = vec_counter + nne_f * nne_f  # vectorized index count end
+            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
+            vec_counter = stop
+
+    # Assemble element matrices - _ff
     integrated_matrices = _assemble_global_matrices(
         vec, conn_f, nn_f, nne_list_f, elem_indx_f, np.concatenate(fracture_lists)
     )
-    # Assemble coupled matrices
-    for name in vec_coupled:
-        integrated_matrices[name] = _make_sparse(
-            vec_coupled[name], row_vec_coupling, col_vec_coupling, nn_m, nn_f
-        )
+    # Assemble coupled matrices - _fm
+    for name in vec_fm:
+        integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn_f)
+    # Assemble coupled matrices - _mm
+    for name in vec_mm:
+        integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
 
     return (integrated_matrices, mesh)
 
@@ -451,10 +497,15 @@ def _stack_coupled_matrices(
         fracture_matrix = fracture_matrices[name].tocoo()
         matrix_matrix = body_matrices[name].tocoo()
 
+        # Off-diagonal coupling matrix
         if name + "_fm" in fracture_matrices:
             diag_matrix = fracture_matrices[name + "_fm"].tocoo()
         else:
             diag_matrix = csc_matrix((nn_m, nn_f)).tocoo()
+
+        # on-diagonal contribution
+        if name + "_mm" in fracture_matrices:
+            matrix_matrix += fracture_matrices[name + "_mm"].tocoo()
 
         row1 = hstack([matrix_matrix, diag_matrix])
         row2 = hstack([diag_matrix.T, fracture_matrix])
