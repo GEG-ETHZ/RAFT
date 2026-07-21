@@ -1012,7 +1012,7 @@ def _create_global_fracture_connectivities(  # noqa
     frac_mesh["fracture_tangent"].append(frac_ls.u)
 
     # Fracture global connectivity
-    nn = mesh["nn"] + prior_nn
+    nn = np.size(mesh["nodes"], 0) + prior_nn
     frac_mesh["conn_global"] = np.vstack((frac_mesh["conn_global"], frac_conn + nn))
 
     # Record which fracture-element indices (in the combined, accumulated numbering)

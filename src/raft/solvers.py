@@ -151,7 +151,7 @@ def lin_extrap_time_integration(
     steady_temp = sim_control["steady_temperature"]
     mu_nonlinear = sim_control["viscosity_nonconstant"]
     # extract mesh characteristics
-    nn = mesh["nn"]
+    nn = mesh["nn_total"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
