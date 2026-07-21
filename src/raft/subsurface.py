@@ -359,8 +359,8 @@ def main(  # noqa
 
     ## Initialize vectors
     primary_variables = {}  # storage structure for all primary variables and results
-    p_dofs = np.arange(0, mesh["nn"])
-    T_dofs = np.arange(0, mesh["nn"])
+    p_dofs = np.arange(0, mesh["nn_total"])
+    T_dofs = np.arange(0, mesh["nn_total"])
     primary_variables["p_dofs"] = p_dofs
     primary_variables["T_dofs"] = T_dofs
     # Vectors of primary DoFs - ndof x 4
@@ -379,7 +379,7 @@ def main(  # noqa
     # --- Initial Conditions
     # Update Boundary Conditions for initial step
     boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
-    q = np.zeros((mesh["nn"], 1))
+    q = np.zeros((mesh["nn_total"], 1))
     primary_variables["q"] = q
 
     [primary_variables, material] = _assign_initial_conditions(

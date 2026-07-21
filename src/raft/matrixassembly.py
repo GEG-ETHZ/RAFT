@@ -566,8 +566,9 @@ def integrate_linear_matrices(
         vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])
     )
     if fracture_on:
-        integrated_fracture_matrices = integrate_linear_fracture_matrices(mesh, mat, controls)  # noqa
+        integrated_fracture_matrices, mesh = integrate_linear_fracture_matrices(mesh, mat, controls)  # noqa
         # Assemble the connected fracture-matrix matrices
+
     return (
         integrated_matrices,
         mat,

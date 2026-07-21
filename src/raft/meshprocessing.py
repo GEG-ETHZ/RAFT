@@ -1010,13 +1010,9 @@ def _create_global_fracture_connectivities(  # noqa
     frac_mesh["ne"] = prior_ne + ne_f
     # Fracture unit vector
     frac_mesh["fracture_tangent"].append(frac_ls.u)
-    # Append the fracture nodes to the global nodes
-    nodes = mesh["nodes"]
-    nn = np.size(nodes, 0)
-    nodes = np.vstack((nodes, frac_nodes))
-    mesh["nodes"] = nodes
 
     # Fracture global connectivity
+    nn = mesh["nn"] + prior_nn
     frac_mesh["conn_global"] = np.vstack((frac_mesh["conn_global"], frac_conn + nn))
 
     # Record which fracture-element indices (in the combined, accumulated numbering)
@@ -1112,6 +1108,7 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     # Re-evaluate key values
     mesh = _extract_key_mesh_values(mesh)
     mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
+    mesh["nn_total"] = mesh["nn"] + mesh["fracture_mesh"]["nn"]
 
     return mesh
 
@@ -1144,6 +1141,9 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
 
     # Extract key values
     mesh["nn"] = np.shape(nodes)[0]  # number of nodes
+    mesh["nn_total"] = mesh[
+        "nn"
+    ]  # nn is the number of matrix nodes, nn_total includes fracture nodes as well.
     nsd = np.shape(nodes)[1]  # number of space dimensions
     ne = len(conn)  # number of elements
     mesh["nsd"] = nsd
