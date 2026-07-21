@@ -243,7 +243,9 @@ def _get_parent_coordinates(  # noqa
 
 def _create_fracture_coupling_vectors(
     conn_f: list[list[int]], conn_fm: list[list[int]], conn_m: list[list[int]]
-) -> tuple[int, npt.NDArray[np.int32], npt.NDArray[np.int32]]:
+) -> tuple[
+    int, npt.NDArray[np.int32], npt.NDArray[np.int32], int, npt.NDArray[np.int32], npt.NDArray[np.int32]
+]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
     count_vec_fm = 0  # Fracture-matrix off-diagonal counts
     row_list_fm = []
@@ -505,9 +507,9 @@ def _stack_coupled_matrices(
 
         # on-diagonal contribution
         if name + "_mm" in fracture_matrices:
-            matrix_matrix += fracture_matrices[name + "_mm"].tocoo()
+            matrix_matrix = matrix_matrix + fracture_matrices[name + "_mm"].tocoo()
 
-        row1 = hstack([matrix_matrix, diag_matrix])
+        row1 = hstack([matrix_matrix.tocoo(), diag_matrix])
         row2 = hstack([diag_matrix.T, fracture_matrix])
         body_matrices[name] = vstack([row1, row2]).tocsc()
     return body_matrices
