@@ -342,8 +342,11 @@ def main(  # noqa
     # ----- Load config and mesh
     config, mesh = preprocessing(config_name, config_dir, verbose)
     material = config["material"]
-    controls = config["simulation"]
     BC_config = config["boundary_conditions"]
+    controls = config["simulation"]
+    # Copy config name and directory to controls
+    controls["config_name"] = config["config_name"]
+    controls["config_dir"] = config["config_dir"]
 
     # ----- Initialize simulation parameters
 
@@ -397,7 +400,7 @@ def main(  # noqa
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    postprocessing(n, mesh, config, material, primary_variables, t, verbose)
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
     n += 1
 
     # ---- Time integration
@@ -431,7 +434,7 @@ def main(  # noqa
         if converged:
             if verbose:
                 print("     Postprocessing...")
-            postprocessing(n, mesh, config, material, primary_variables, t, verbose)
+            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
             n += 1
             primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
             primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
@@ -439,7 +442,9 @@ def main(  # noqa
         # Check end condition
         if t > t_end:
             if verbose:
-                print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
+                print(
+                    "Simulation complete. Output files are stored in: \n" + controls["output_directory_full"]
+                )
             break
 
     return primary_variables, mesh

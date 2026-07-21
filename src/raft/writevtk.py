@@ -81,7 +81,7 @@ def write_mesh2vtk(  # noqa: C901
         cell_types = np.array(
             [
                 [0, 0, 0],
-                [3, 0, 0],  # L2
+                [3, 3, 0],  # L2
                 [21, 5, 0],  # L3, T3
                 [4, 9, 10],  # L4, Q4, T4
                 [0, 0, 14],  # T5
@@ -164,9 +164,10 @@ def write_mesh2vtk(  # noqa: C901
             fid.write(f"VECTORS {field['name']} float\n")
             data = np.asarray(field["data"])
 
-            if nsd == 2:
+            nsv = np.size(data, axis=1)
+            if nsd != 3:
                 # append zeros to vectors
-                data = np.hstack([data, np.zeros((nn, 1))])
+                data = np.hstack([data, np.zeros((nn, 3 - nsv))])
 
             for j in range(nn):
                 fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {data[j, 2]:.4e} \n")

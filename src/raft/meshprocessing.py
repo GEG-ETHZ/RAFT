@@ -988,10 +988,11 @@ def _create_global_fracture_connectivities(  # noqa
             "conn": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
             "conn_global": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
             "matrix_conn": [],
-            "region_list": [],  # In the fractures, regions correspond to the fracture number.
+            "region_lists": [],  # In the fractures, regions correspond to the fracture number.
             "nn": 0,
             "ne": 0,
             "fracture_tangent": [],
+            "fracture_normal": [],
         }
     frac_mesh = mesh["fracture_mesh"]
 
@@ -1008,8 +1009,9 @@ def _create_global_fracture_connectivities(  # noqa
     frac_mesh["nn"] = prior_nn + np.size(frac_nodes, 0)
     # Number of fracture elements
     frac_mesh["ne"] = prior_ne + ne_f
-    # Fracture unit vector
+    # Fracture unit vectors
     frac_mesh["fracture_tangent"].append(frac_ls.u)
+    frac_mesh["fracture_normal"].append(frac_ls.n)
 
     # Fracture global connectivity
     nn = np.size(mesh["nodes"], 0) + prior_nn
@@ -1017,7 +1019,7 @@ def _create_global_fracture_connectivities(  # noqa
 
     # Record which fracture-element indices (in the combined, accumulated numbering)
     # belong to this fracture.
-    frac_mesh["region_list"].append(np.arange(prior_ne, prior_ne + ne_f))
+    frac_mesh["region_lists"].append(np.arange(prior_ne, prior_ne + ne_f))
 
     # Create fracture-matrix connectivity
     conn = mesh["conn"]

@@ -39,7 +39,7 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
     elif etype == "T3":
         xi = np.array([[0, 0], [1, 0], [0, 1]])
     elif etype == "L2":
-        xi = np.array([-1], [1])
+        xi = np.array([[-1.0], [1.0]])
     elif etype == "Q9":  # Q9 element
         xi = np.array([[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [1, 0], [0, 1], [-1, 0], [0, 0]])
     elif etype == "B27":  # B27 element
@@ -80,7 +80,11 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
 
 
 def compute_fluid_flux(  # noqa
-    mesh: dict[str, Any], mat: dict[str, Any], p: npt.NDArray[np.float64], T: npt.NDArray[np.float64]
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    isfracture: bool,
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
@@ -91,13 +95,17 @@ def compute_fluid_flux(  # noqa
     nn = mesh["nn"]
     nsd = mesh["nsd"]
     nne_list = mesh["nne"]
-    regions = mesh["regions"]
     conn = mesh["conn"]  # ragged list - each entry is that element's local node list
     nodes = mesh["nodes"]
     etype_list = mesh["element_type"]
-    region_lists = mesh["region_lists"]
-    num_regions = mesh["num_regions"]
     elem_indx = mesh["elem_indx"]
+    region_lists = mesh["region_lists"]
+    if isfracture:
+        num_regions = len(region_lists)
+        nsd -= 1  # reduce dofs
+        nodes_global = nodes
+    else:
+        num_regions = mesh["num_regions"]
 
     # Initialize output arrays
     q = np.zeros((nsd, nn))
@@ -111,10 +119,18 @@ def compute_fluid_flux(  # noqa
         mu_coeff = mu
 
     for r in range(num_regions):
-        # solid properties - by region
-        kf = mat["solid"]["permeability_eff"][r]
-        # Check for region isotropy
-        isotropic = bool(isinstance(kf, (float, int)))
+        if isfracture:
+            w = mat["fracture"]["aperture"][r]
+            kf = w**3 / 12  # longitudinal permeability
+            isotropic = True
+            u = mesh["fracture_tangent"][r]
+            # Project the mesh nodes into local coordinates
+            nodes = (nodes_global @ u).reshape(-1, 1)
+        else:
+            # solid properties - by region
+            kf = mat["solid"]["permeability_eff"][r]
+            # Check for region isotropy
+            isotropic = bool(isinstance(kf, (float, int)))
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -132,8 +148,6 @@ def compute_fluid_flux(  # noqa
                 elem_type_counter = new_type_idx
 
             enodes = conn[e]  # element nodes
-            # material properties - element
-            kf = mat["solid"]["permeability_eff"][regions[e]]
 
             xI = nodes[enodes, :nsd]  # element physical coordinates
             B_q = getB(GN_q, xI, nsd)[0]
@@ -196,7 +210,8 @@ def _extract_cartesian_properties(
 def _export_flow_logs(
     n: int,
     primary_variables: dict[str, Any],
-    config: dict[str, Any],
+    controls: dict[str, Any],  # noqa
+    BC_config: dict[str, Any],
     io_path: str,
     t: float,
 ) -> None:
@@ -215,7 +230,7 @@ def _export_flow_logs(
     bc_types_to_log = ("pressure_fixed", "fluid_flux")
     tagged_groups: list[dict[str, Any]] = []
     for bc_type in bc_types_to_log:
-        for entry in config["boundary_conditions"].get(bc_type, []):
+        for entry in BC_config.get(bc_type, []):
             if "tag" in entry:
                 tagged_groups.append(entry)
 
@@ -266,12 +281,12 @@ def _sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.ND
     return data
 
 
-def _prepare_output_directory(config: dict[str, Any]) -> str:
+def _prepare_output_directory(controls: dict[str, Any]) -> str:
     """Resolve this run's output directory, creating it if needed, and record it on config."""
-    base_path = config["simulation"].get("output_directory", _DEFAULT_OUTPUT_DIR)
-    config_stem = Path(config["config_name"]).stem
+    base_path = controls.get("output_directory", _DEFAULT_OUTPUT_DIR)
+    config_stem = Path(controls["config_name"]).stem
     io_path = os.path.join(base_path, config_stem)
-    config["output_directory_full"] = io_path
+    controls["output_directory_full"] = io_path
 
     if not os.path.exists(io_path):
         os.makedirs(io_path)
@@ -280,8 +295,9 @@ def _prepare_output_directory(config: dict[str, Any]) -> str:
 
 
 def _build_point_scalars(
-    config: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
+    mat: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
 ) -> list[dict[str, Any]]:
@@ -290,11 +306,11 @@ def _build_point_scalars(
         {"name": "T", "data": _sanitize(T.copy())},
         {"name": "p", "data": _sanitize(p.copy())},
     ]
-    if config["simulation"]["output_viscosity"]:
-        if config["simulation"]["viscosity_nonconstant"]:
-            mu, _ = get_viscosity(T, config["material"]["fluid"]["viscosity"])
+    if controls["output_viscosity"]:
+        if controls["viscosity_nonconstant"]:
+            mu, _ = get_viscosity(T, mat["fluid"]["viscosity"])
         else:
-            mu = config["material"]["fluid"]["viscosity"] * np.ones(mesh["nn"])
+            mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
     return scalardata_point
@@ -368,31 +384,66 @@ def _build_initial_cell_data(
     ]
 
 
-def _write_vtk_output(
+def _build_fracture_cell_data(
+    mesh_fracture: dict[str, Any], material: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Build per-element aperture and heat transfer coefficient fields for the fracture VTK output.
+
+    Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar
+    aperture and Nusselt number. The heat transfer coefficient is computed as
+    h = nusselt * lambda_f / 2 / aperture, where lambda_f is the fluid thermal conductivity.
+    """
+    region_lists = mesh_fracture["region_lists"]
+    num_regions = len(region_lists)
+
+    apertures = material["fracture"]["aperture"]
+    nusselts = material["fracture"]["nusselt"]
+    lambda_f = material["fluid"]["therm_cond"]
+
+    nelem = len(mesh_fracture["conn"])
+    aperture_cell = np.zeros(nelem)
+    h_cell = np.zeros(nelem)
+
+    for r in range(num_regions):
+        w = apertures[r]
+        nu = nusselts[r]
+        h = nu * lambda_f / 2 / w
+
+        elems = region_lists[r]
+        aperture_cell[elems] = w
+        h_cell[elems] = h
+
+    return [
+        {"name": "aperture", "data": _sanitize(aperture_cell)},
+        {"name": "heat_transfer_coefficient", "data": _sanitize(h_cell)},
+    ]
+
+
+def _write_matrix_output(
     n: int,
     io_path: str,
     mesh: dict[str, Any],
-    config: dict[str, Any],
+    controls: dict[str, Any],  # noqa
     material: dict[str, Any],
     primary_variables: dict[str, Any],
     verbose: bool,
 ) -> None:
-    """Compute fluxes and write one timestep's solution to VTK."""
+    """Compute fluxes and write one solution to VTK for the matrix."""
     if verbose:
-        print("     Writing to output file...")
+        print("     Writing matrix to output file...")
 
+    nn = mesh["nn"]
     nsd = mesh["nsd"]
-    filename = os.path.join(io_path, f"Solution.vtk.{n}")
+    filename = os.path.join(io_path, f"Matrix.vtk.{n}")
 
     # ----- Extract primary variables
-    p = primary_variables["p"][:, 0]
-    T = primary_variables["T"][:, 0]
+    p = primary_variables["p"][0:nn, 0]
+    T = primary_variables["T"][0:nn, 0]
 
     # --- Calculate fluxes
-    # Assumes compute_fluid_flux is ported from ComputeFluidFlux.m
-    flux = compute_fluid_flux(mesh, config["material"], p, T)
+    flux = compute_fluid_flux(mesh, material, p, T, False)
 
-    scalardata_point = _build_point_scalars(config, mesh, p, T)
+    scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
     if n == 0:  # In the initial condition, also export BC groups
         scalardata_point += _build_boundary_group_scalars(mesh)
 
@@ -412,11 +463,53 @@ def _write_vtk_output(
     )
 
 
+def _write_fracture_output(
+    n: int,
+    io_path: str,
+    mesh: dict[str, Any],
+    controls: dict[str, Any],  # noqa
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    verbose: bool,
+) -> None:
+    """Compute fluxes and write one solution to VTK for the fracture."""
+    if verbose:
+        print("     Writing fractures to output file...")
+
+    nn = mesh["nn"]
+    nn_tot = mesh["nn_total"]
+    filename = os.path.join(io_path, f"Fracture.vtk.{n}")
+
+    # ----- Extract primary variables
+    p = primary_variables["p"][nn:(nn_tot), 0]
+    T = primary_variables["T"][nn:(nn_tot), 0]
+
+    # --- Calculate fluxes
+    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True)
+
+    scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
+
+    vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
+
+    scalardata_cell = _build_fracture_cell_data(mesh["fracture_mesh"], material)
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        mesh["fracture_mesh"]["nodes"],
+        mesh["fracture_mesh"]["conn"],
+        scalardata_point,
+        vectordata_point,
+        scalardata_cell,
+    )
+
+
 def postprocessing(
     n: int,
     mesh: dict[str, Any],
-    config: dict[str, Any],
+    controls: dict[str, Any],
     material: dict[str, Any],
+    BC_config: dict[str, Any],
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,
@@ -425,13 +518,16 @@ def postprocessing(
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
     """
-    io_path = _prepare_output_directory(config)
-    output_now = (n % config["simulation"]["output_frequency"]) == 0
+    io_path = _prepare_output_directory(controls)
+    output_now = (n % controls["output_frequency"]) == 0
 
-    if output_now and config["simulation"]["output_vtk"]:
-        _write_vtk_output(n, io_path, mesh, config, material, primary_variables, verbose)
+    if output_now and controls["output_vtk"]:
+        _write_matrix_output(n, io_path, mesh, controls, material, primary_variables, verbose)
+
+    if output_now and controls["output_vtk"] and controls["fracture_on"]:
+        _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, verbose)
 
     if output_now:
-        _export_flow_logs(n, primary_variables, config, io_path, t)
+        _export_flow_logs(n, primary_variables, controls, BC_config, io_path, t)
 
-    return config
+    return controls

@@ -304,7 +304,7 @@ def integrate_linear_fracture_matrices(  # noqa
     etype_list_f = fmesh["element_type"]
     elem_indx_f = fmesh["elem_indx"]
     nq_list = fmesh["n_quadrature"]
-    fracture_lists = fmesh["region_list"]
+    fracture_lists = fmesh["region_lists"]
     num_fractures = len(fracture_lists)
     conn_fm = fmesh["matrix_conn"]
 
@@ -829,7 +829,7 @@ def integrate_nonlinear_fracture_matrices(  # noqa
     etype_list_f = fmesh["element_type"]
     elem_indx_f = fmesh["elem_indx"]
     nq_list = fmesh["n_quadrature"]
-    fracture_lists = fmesh["region_list"]
+    fracture_lists = fmesh["region_lists"]
     num_fractures = len(fracture_lists)
     conn_global = fmesh["conn_global"]
 
