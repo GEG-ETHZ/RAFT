@@ -211,6 +211,37 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         boundaries[f"{max_component}_{side}"].update(face)
         boundaries[f"{max_component}_{side}_conn"].append(list(face))
 
+    # Remove fracture faces from exterior sets
+    if "fracture_mesh" in mesh:
+        matrix_conn = mesh["fracture_mesh"]["matrix_conn"]
+        # Find the fracture node faces by sorted node tuple so they can
+        # be matched against what's already in `boundaries`.
+        fracture_faces: set[tuple[int, ...]] = set()
+        faces_by_nne = {n: _get_element_face_lists(n, nsd) for n in set(nne)}
+
+        for pos_elem, neg_elem in matrix_conn:
+            for elem in (pos_elem, neg_elem):
+                if elem is None:
+                    continue
+                elem_conn = conn[elem]
+                for face_local in faces_by_nne[len(elem_conn)].values():
+                    sorted_face = tuple(sorted(elem_conn[i] for i in face_local))
+                    if face_tracker.get(sorted_face, [0])[0] == 1:
+                        fracture_faces.add(sorted_face)
+
+        # Strip fracture faces from each boundary's connectivity, then rebuild
+        # the node set from whatever faces remain.
+        for key in ("x", "y", "z"):
+            for side in ("min", "max"):
+                conn_key = f"{key}_{side}_conn"
+                if conn_key not in boundaries:
+                    continue
+                boundaries[conn_key] = [
+                    face for face in boundaries[conn_key] if tuple(sorted(face)) not in fracture_faces
+                ]
+                boundaries[f"{key}_{side}"] = {n for face in boundaries[conn_key] for n in face}
+
+    # Combine boundary sets
     mesh["boundaries"] = boundaries
 
     x_all = boundaries["x_max"] | boundaries["x_min"]
