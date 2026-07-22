@@ -244,7 +244,15 @@ def _get_parent_coordinates(  # noqa
 def _create_fracture_coupling_vectors(
     conn_f: list[list[int]], conn_fm: list[list[int]], conn_m: list[list[int]]
 ) -> tuple[
-    int, npt.NDArray[np.int32], npt.NDArray[np.int32], int, npt.NDArray[np.int32], npt.NDArray[np.int32]
+    int,
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    int,
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    int,
+    npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
 ]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
     count_vec_ff = 0  # Fracture-fracture on-diagonal counts
@@ -320,12 +328,11 @@ def _integrate_fracture_matrix_coupling(
     h: float | None = None,
     include_pressure: bool,
     include_thermal: bool,
-) -> list[tuple[int, dict, dict, dict]]:
+) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling contribution to its neighboring matrix elements.
 
-    `mu_q` may be a constant (linear viscosity) or a per-quadrature-point array (nonlinear
-    viscosity) — the integration itself doesn't change either way, which is what lets the
-    same function serve both, and any future nonlinearity that only changes what `mu_q` is.
+    `mu_q` may be a constant (linear viscosity) or
+    a per-quadrature-point array (nonlinear viscosity).
     """
     conn_m = mesh["conn"]
     nodes_m = mesh["nodes"]
@@ -333,7 +340,7 @@ def _integrate_fracture_matrix_coupling(
     elem_indx_m = mesh["elem_indx"]
     conn_fm = mesh["fracture_mesh"]["matrix_conn"]
 
-    entries: list[tuple[int, dict, dict]] = []
+    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
     for e_m in conn_fm[e]:
         enodes_m = conn_m[e_m]
@@ -364,22 +371,15 @@ def _integrate_fracture_matrix_coupling(
     return entries
 
 
-def _stack_coupled_matrices(
+def _stack_fracture_matrices(
     body_matrices: dict[str, csc_matrix[Any]],
     fracture_matrices: dict[str, csc_matrix[Any]],
     nn_m: int,
     nn_f: int,
 ) -> dict[str, csc_matrix[Any]]:
-    """Stack the fracture and matrix matrices along with their off-diagonal coupling matrices.
-
-    Not every matrix exists on both sides (e.g. `KpT` is bulk-only), so the fracture-domain
-    diagonal block and the `_fm`/`_mm`/`_ff` coupling blocks all default to zero when absent,
-    rather than assuming `fracture_matrices` has an entry for every name in `body_matrices`.
-    `_mm` corrects the matrix's own diagonal; `_ff` (symmetrically) corrects the fracture's
-    own diagonal - both are the coupling's self-interaction terms, computed alongside the
-    off-diagonal `_fm` term but added in here rather than during element integration.
-    """
+    """Stack the fracture and matrix matrices along with their off-diagonal coupling matrices."""
     for name in body_matrices:
+        # On-diagonal fracture matrix
         if name in fracture_matrices:
             fracture_matrix = fracture_matrices[name].tocoo()
         else:
@@ -389,8 +389,6 @@ def _stack_coupled_matrices(
         if name + "_ff" in fracture_matrices:
             fracture_matrix = fracture_matrix + fracture_matrices[name + "_ff"].tocoo()
 
-        matrix_matrix = body_matrices[name].tocoo()
-
         # Off-diagonal coupling matrix
         if name + "_fm" in fracture_matrices:
             diag_matrix = fracture_matrices[name + "_fm"].tocoo()
@@ -398,6 +396,7 @@ def _stack_coupled_matrices(
             diag_matrix = csc_matrix((nn_m, nn_f)).tocoo()
 
         # on-diagonal correction to the matrix's own block
+        matrix_matrix = body_matrices[name].tocoo()
         if name + "_mm" in fracture_matrices:
             matrix_matrix = matrix_matrix + fracture_matrices[name + "_mm"].tocoo()
 
@@ -493,7 +492,7 @@ def integrate_linear_matrices(  # noqa
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
-    # ----- Matrix integration element loop
+    # ---- Matrix integration element loop
     for r in range(num_regions):
         if is_fracture:
             # fracture properties - by region, derived from aperture and Nusselt number
@@ -507,7 +506,7 @@ def integrate_linear_matrices(  # noqa
             lambda_e = lambda_f
             isotropic_perm = True
             isotropic_cond = True
-            u = fmesh["fracture_tangent"][r]
+            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
             nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
             if mu_linear:
                 kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T @ u  # local gravity component
@@ -565,15 +564,14 @@ def integrate_linear_matrices(  # noqa
                     N_q, kf_b, B_q, wJe_q, is_fracture
                 )
 
-            # ----- Assemble element contributions into global matrices
+            # ---- Assemble element contributions into global matrices
             stop = vec_counter + nne * nne  # vectorized index count end
             _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
             vec_counter = stop
 
-            # ----- Fracture-matrix coupling: KTT_ff/Kpp_ff are integrated as their own
-            # matrix (assembled separately below) and added onto the fracture diagonal by
-            # _stack_coupled_matrices, alongside collecting the off-diagonal _fm/_mm terms
+            # ---- Fractures
             if is_fracture:
+                # Coupling matrices
                 coupling_entries = _integrate_fracture_matrix_coupling(
                     e,
                     enodes,
@@ -604,19 +602,21 @@ def integrate_linear_matrices(  # noqa
     )
 
     if is_fracture:
+        # Assemble the coupling matrices
+        nn_m = mesh["nn"]
         for name in vec_ff:
             integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
         for name in vec_fm:
-            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
         for name in vec_mm:
-            integrated_matrices[name] = _make_sparse(
-                vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
-            )
+            integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices, mat, mesh
 
     if fracture_on:
+        # Recursion call
         integrated_fracture_matrices, _, _ = integrate_linear_matrices(mesh, mat, controls, is_fracture=True)
-        integrated_matrices = _stack_coupled_matrices(
+        # Combine fracture and matrix matrices into one
+        integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
     return (
@@ -838,12 +838,7 @@ def integrate_nonlinear_matrices(  # noqa
     Kpp, KbT, KpT_mu_p, KpT_mu_b, KATT_mu, K_stab_TT_mu = viscosity-nonlinear corrections, see helpers below.
 
     When called normally (`is_fracture=False`) and `fracture_on`, this recurses once onto
-    the fracture mesh (`is_fracture=True`). `KTT` isn't part of this flavor's matrices (it's
-    held fixed from the linear assembly), so only the pressure coupling (`Kpp_fm`/`Kpp_mm`,
-    responsive to nonlinear viscosity via the fracture-side temperature) is relevant here.
-
-    Requires `integrate_linear_matrices` to have run at least once first when `fracture_on`
-    (reuses its cached `_fm`/`_mm` row/col index vectors rather than re-deriving them).
+    the fracture mesh (`is_fracture=True`).
     """
     p = primary_variables["p"][:, 0]
     T = primary_variables["T"][:, 0]
@@ -876,17 +871,20 @@ def integrate_nonlinear_matrices(  # noqa
         conn_global = fmesh["conn_global"]
 
         if mu_nonlinear:
-            list_of_ff_matrices = ["Kpp_ff"]
             # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
             # fracture pass rather than re-derived here every timestep/Newton iteration.
-            row_vec_fm = fmesh["vec_matx_asmbl_rows_fm"]
-            col_vec_fm = fmesh["vec_matx_asmbl_cols_fm"]
-            row_vec_mm = fmesh["vec_matx_asmbl_rows_mm"]
-            col_vec_mm = fmesh["vec_matx_asmbl_cols_mm"]
-            vec_ff = _initiate_vectors(list_of_ff_matrices, nne_list, elem_indx)
-            vec_counter_ff = 0
+            row_vec_ff = fmesh["vec_mat_asmbl"]["rows_ff"]
+            col_vec_ff = fmesh["vec_mat_asmbl"]["cols_ff"]
+            row_vec_fm = fmesh["vec_mat_asmbl"]["rows_fm"]
+            col_vec_fm = fmesh["vec_mat_asmbl"]["cols_fm"]
+            row_vec_mm = fmesh["vec_mat_asmbl"]["rows_mm"]
+            col_vec_mm = fmesh["vec_mat_asmbl"]["cols_mm"]
+
+            vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
             vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
+
+            vec_counter_ff = 0
             vec_counter_fm = 0
             vec_counter_mm = 0
     else:
@@ -909,7 +907,7 @@ def integrate_nonlinear_matrices(  # noqa
             isotropic_cond = True
             isotropic_perm = True
             lambda_e = mat["fluid"]["therm_cond"]
-            u = fmesh["fracture_tangent"][r]
+            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
             nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
             if mu_nonlinear:
                 kf_p = w / 12  # transverse permeability, coupling only
@@ -1024,11 +1022,10 @@ def integrate_nonlinear_matrices(  # noqa
                         )
                     )
 
-            # ----- Fracture-matrix pressure coupling: Kpp_ff is integrated as its own matrix
-            # (assembled separately below) and added onto the fracture diagonal by
-            # _stack_coupled_matrices, alongside collecting the off-diagonal Kpp_fm/Kpp_mm terms
+            # ----- Fracture-matrix pressure coupling
             if is_fracture and mu_nonlinear:
-                ff_correction, coupling_entries = _integrate_fracture_matrix_coupling(
+                # Coupling matrices
+                coupling_entries = _integrate_fracture_matrix_coupling(
                     e,
                     enodes,
                     nodes_f,
@@ -1040,10 +1037,11 @@ def integrate_nonlinear_matrices(  # noqa
                     include_pressure=True,
                     include_thermal=False,
                 )
-                stop_ff = vec_counter_ff + nne * nne  # vectorized index count end
-                _store_vectorized_element_matrix(vec_ff, ff_correction, vec_counter_ff, stop_ff)
-                vec_counter_ff = stop_ff
-                for nne_m, fm_matrices, mm_matrices in coupling_entries:
+
+                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                    stop = vec_counter_ff + nne * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
+                    vec_counter_ff = stop
                     stop = vec_counter_fm + nne_m * nne  # vectorized index count end
                     _store_vectorized_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
                     vec_counter_fm = stop
@@ -1063,22 +1061,23 @@ def integrate_nonlinear_matrices(  # noqa
 
     if is_fracture:
         if mu_nonlinear:
-            integrated_matrices.update(
-                _assemble_global_matrices(vec_ff, conn, nn, nne_list, elem_indx, np.concatenate(region_lists))
-            )
+            # Assemble the coupling matrices
+            nn_m = mesh["nn"]
+            for name in vec_ff:
+                integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
             for name in vec_fm:
-                integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+                integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
             for name in vec_mm:
-                integrated_matrices[name] = _make_sparse(
-                    vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
-                )
+                integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
 
     if fracture_on:
+        # Recursion call
         integrated_fracture_matrices = integrate_nonlinear_matrices(
             mesh, mat, primary_variables, controls, is_fracture=True
         )
-        integrated_matrices = _stack_coupled_matrices(
+        # Combine fracture and matrix matrices into one
+        integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
 
@@ -1095,7 +1094,7 @@ def integrate_NLpressure_matrices(  # noqa
 ) -> dict[str, Any]:
     """Integrate the non-linear-viscosity pressure/buoyancy matrices (Kpp, KbT) inside
     the time integration loop - a lighter-weight alternative to `integrate_nonlinear_matrices`
-    for solvers (e.g. `lin_extrap_time_integration`) that only need the pressure system.
+    for solvers that only need the pressure system.
 
     When called normally (`is_fracture=False`) and `fracture_on`, this recurses once onto
     the fracture mesh (`is_fracture=True`), integrating the `Kpp_fm`/`Kpp_mm` pressure
@@ -1123,14 +1122,18 @@ def integrate_NLpressure_matrices(  # noqa
 
         # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
         # fracture pass rather than re-derived here every timestep.
-        row_vec_fm = fmesh["vec_matx_asmbl_rows_fm"]
-        col_vec_fm = fmesh["vec_matx_asmbl_cols_fm"]
-        row_vec_mm = fmesh["vec_matx_asmbl_rows_mm"]
-        col_vec_mm = fmesh["vec_matx_asmbl_cols_mm"]
-        vec_ff = _initiate_vectors(["Kpp_ff"], nne_list, elem_indx)
-        vec_counter_ff = 0
+        row_vec_ff = fmesh["vec_mat_asmbl"]["rows_ff"]
+        col_vec_ff = fmesh["vec_mat_asmbl"]["cols_ff"]
+        row_vec_fm = fmesh["vec_mat_asmbl"]["rows_fm"]
+        col_vec_fm = fmesh["vec_mat_asmbl"]["cols_fm"]
+        row_vec_mm = fmesh["vec_mat_asmbl"]["rows_mm"]
+        col_vec_mm = fmesh["vec_mat_asmbl"]["cols_mm"]
+
+        vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
         vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
         vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
+
+        vec_counter_ff = 0
         vec_counter_fm = 0
         vec_counter_mm = 0
     else:
@@ -1149,7 +1152,7 @@ def integrate_NLpressure_matrices(  # noqa
             kf = w**3 / 12  # longitudinal permeability
             kf_p = w / 12  # transverse permeability, coupling only
             isotropic_perm = True
-            u = fmesh["fracture_tangent"][r]
+            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
             nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
         else:
             kf = mat["solid"]["permeability_eff"][r]
@@ -1193,11 +1196,10 @@ def integrate_NLpressure_matrices(  # noqa
                 N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm, is_fracture
             )
 
-            # ----- Fracture-matrix pressure coupling: Kpp_ff is integrated as its own matrix
-            # (assembled separately below) and added onto the fracture diagonal by
-            # _stack_coupled_matrices, alongside collecting the off-diagonal Kpp_fm/Kpp_mm terms
+            # ----- Fracture-matrix pressure coupling
             if is_fracture:
-                ff_correction, coupling_entries = _integrate_fracture_matrix_coupling(
+                # Coupling matrices
+                coupling_entries = _integrate_fracture_matrix_coupling(
                     e,
                     enodes,
                     nodes_f,
@@ -1209,10 +1211,10 @@ def integrate_NLpressure_matrices(  # noqa
                     include_pressure=True,
                     include_thermal=False,
                 )
-                stop_ff = vec_counter_ff + nne * nne  # vectorized index count end
-                _store_vectorized_element_matrix(vec_ff, ff_correction, vec_counter_ff, stop_ff)
-                vec_counter_ff = stop_ff
-                for nne_m, fm_matrices, mm_matrices in coupling_entries:
+                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                    stop = vec_counter_ff + nne * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
+                    vec_counter_ff = stop
                     stop = vec_counter_fm + nne_m * nne  # vectorized index count end
                     _store_vectorized_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
                     vec_counter_fm = stop
@@ -1231,22 +1233,23 @@ def integrate_NLpressure_matrices(  # noqa
     )
 
     if is_fracture:
-        integrated_matrices.update(
-            _assemble_global_matrices(vec_ff, conn, nn, nne_list, elem_indx, np.concatenate(region_lists))
-        )
+        # Assemble the coupling matrices
+        nn_m = mesh["nn"]
+        for name in vec_ff:
+            integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
         for name in vec_fm:
-            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
         for name in vec_mm:
-            integrated_matrices[name] = _make_sparse(
-                vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
-            )
+            integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
 
     if fracture_on:
+        # Recursion call
         integrated_fracture_matrices = integrate_NLpressure_matrices(
             mesh, mat, primary_variables, controls, is_fracture=True
         )
-        integrated_matrices = _stack_coupled_matrices(
+        # Combine fracture and matrix matrices into one
+        integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
 

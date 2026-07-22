@@ -34,7 +34,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity:  1.0e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity:  [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
@@ -42,7 +42,7 @@ material:
     nusselt: [5.0]
 
 initial_conditions:
-  assignment: "BC_compatible"
+  assignment: "constant"
   T_ini: 286
   p_ini: 1.0e+5
   T_grad: 0.1
