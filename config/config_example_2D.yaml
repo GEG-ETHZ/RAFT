@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[25.5, 37.5, 0.0], [37.5, 5.0], [90,0]]
+          values: [[25.5, 37.5, 0.0], [15, 5.0], [90,0]]
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
@@ -18,11 +18,11 @@ material:
       bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
       density: [20, 20, 20]             # kg/m^3
       therm_cond: [3.0, 3.0, 1.0]          # W/mK
-      specific_heat: [8, 90, 10]        # J/kgK
+      specific_heat: [85, 90, 10]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [1.0e-15,   1.0e-19]       # m^2
+      permeability: [1.0e-16,   1.0e-19]       # m^2
       rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
@@ -42,7 +42,7 @@ material:
     nusselt: [5.0]
 
 initial_conditions:
-  assignment: "constant"
+  assignment: "BC_compatible"
   T_ini: 286
   p_ini: 1.0e+5
   T_grad: 0.1
@@ -58,7 +58,7 @@ boundary_conditions:
           values: [1.0e5]
           tag: "inflow"
         - faces: [y_max]
-          values: [2.0e5]
+          values: [1.0e5]
 
 
 
@@ -66,17 +66,17 @@ boundary_conditions:
       - faces: [y_min]
         values: [286]
       - faces: [y_max]
-        values: [310]
-      # - coords: [[25, 40]]
-      #   values: [[300, 500], 10]
-      #   function: "ramp"
+        values: [286]
+      - coords: [[30, 40]]
+        values: [[300, 500], 10]
+        function: "ramp"
 
 
   fluid_flux:
-        # - coords: [[25, 40]]
-        #   values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
-        #   function: "table"
-        #   tag: "wellbore"
+        - coords: [[30, 40]]
+          values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
+          function: "table"
+          tag: "wellbore"
         # - faces: [x_max]
         #   values: [-0.000001]
 
@@ -86,10 +86,10 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 5000000.0
+  t_end: 50000.0
   timestep: 100.0
   timestep_min: 100.0
-  timestep_max: 100000.0
+  timestep_max: 100.0
   solver_type: "linearized"
 
   # Output
@@ -102,7 +102,7 @@ simulation:
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  buoyancy_on: 0
+  buoyancy_on: 1
   steady_pressure: 0
   steady_temperature: 0
   axisymmetric_on: 0

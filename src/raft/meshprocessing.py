@@ -1111,6 +1111,7 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     mesh = _extract_key_mesh_values(mesh)
     mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
     mesh["nn_total"] = mesh["nn"] + mesh["fracture_mesh"]["nn"]
+    mesh["nodes_total"] = np.vstack([mesh["nodes"], mesh["fracture_mesh"]["nodes"]])
 
     return mesh
 
@@ -1141,11 +1142,15 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     nodes = mesh["nodes"]
     conn = mesh["conn"]
 
+    # nodes_total includes matrix and fracture nodes for places where all
+    # nodes are necessary. Updated when creating fractures.
+    mesh["nodes_total"] = nodes
+
     # Extract key values
+    # nn is the number of matrix nodes, nn_total includes fracture nodes as well.
     mesh["nn"] = np.shape(nodes)[0]  # number of nodes
-    mesh["nn_total"] = mesh[
-        "nn"
-    ]  # nn is the number of matrix nodes, nn_total includes fracture nodes as well.
+    mesh["nn_total"] = mesh["nn"]
+
     nsd = np.shape(nodes)[1]  # number of space dimensions
     ne = len(conn)  # number of elements
     mesh["nsd"] = nsd

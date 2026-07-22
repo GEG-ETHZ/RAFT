@@ -99,6 +99,8 @@ def _assign_initial_gradient(
 ) -> npt.NDArray[np.float64]:
     """Gradient calculation for initial conditions based on arbitrary direction."""
     s = direction / np.linalg.norm(direction)  # unit vector in gradient direction
+    nsd = np.size(nodes, 1)
+    s = s[0:nsd]
 
     x = np.dot(nodes, s)
     x_min = np.min(x)
@@ -139,10 +141,10 @@ def _assign_ic_gradient(
 ) -> dict[str, Any]:
     """Apply linear-gradient initial conditions."""
     T = _assign_initial_gradient(
-        mesh["nodes"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
+        mesh["nodes_total"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
     )
     p = _assign_initial_gradient(
-        mesh["nodes"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
+        mesh["nodes_total"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
     )
 
     primary_variables["p"][:, :] = _broadcast_to_history(p)
@@ -165,7 +167,7 @@ def _assign_ic_bc_compatible(
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
     sim_control_SS = _build_steady_state_controls(sim_control)
-    material["T_0"] = np.zeros((mesh["nn"],))
+    material["T_0"] = np.zeros((mesh["nn_total"],))
 
     if sim_control_SS["viscosity_nonconstant"]:
         # viscosity is a function of temperature, fully coupled steady-state
