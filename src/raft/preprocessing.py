@@ -295,9 +295,9 @@ def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -
     defined by coordinates into node groups.
     """
     BC_dict = config["boundary_conditions"]
-    nodes = mesh["nodes"]
+    nodes = mesh["nodes_total"]
     if np.size(nodes, 1) < 3:
-        nodes = np.hstack((nodes, np.zeros((mesh["nn"], 1))))
+        nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
 
     for BC_type in BC_dict:
         for group in BC_dict[BC_type]:
@@ -307,7 +307,10 @@ def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -
                     if np.size(xi, 0) != 3:
                         xi.append(0.0)
                     d = np.linalg.norm(nodes - xi, axis=1)
-                    closest_node = np.argmin(d).astype(int)
+                    # In the case of duplicate nodes, take the highest node number.
+                    # This prioritizes fracture nodes over matrix nodes.
+                    d_min = np.min(d)
+                    closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
                     BCnodes.append(closest_node)
                 group["nodes"] = BCnodes
 
