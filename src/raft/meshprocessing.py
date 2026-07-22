@@ -972,7 +972,7 @@ def _split_elements(
     for e_f in range(ne_f):
         f_nodes = frac_conn[e_f, :]
         f_coords = frac_nodes[f_nodes, :]
-        tip_element = bool(np.any(f_nodes == tip_nodes))
+        tip_element = bool(np.any(f_nodes == tip_nodes)) if len(tip_nodes) > 0 else False
 
         e_m, matrix_elements_to_cut_arr, centroids = _find_parent_element(
             f_coords, matrix_elements_to_cut_arr, centroids, conn, state.nodes, tol

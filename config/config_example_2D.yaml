@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[30, 37.5, 0.0], [15, 5.0], [0,0]]
+          values: [[25.5, 37.5, 0.0], [45, 5.0], [10,0]]
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
@@ -67,13 +67,13 @@ boundary_conditions:
       #   values: [286]
       - faces: [y_max]
         values: [286]
-      - coords: [[28, 1]]
+      - coords: [[30, 25]]
         values: [[300, 500], 10]
         function: "ramp"
 
 
   fluid_flux:
-        - coords: [[25.5, 20]]
+        - coords: [[30, 25]]
           values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
           function: "table"
           tag: "wellbore"
