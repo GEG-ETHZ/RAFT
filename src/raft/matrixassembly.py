@@ -133,7 +133,7 @@ def _initialize_element_matrices(
 
 def _vectorized_quad_point_integration(
     left_matrix: npt.NDArray[np.float64],
-    integrand: npt.NDArray[np.float64],
+    integrand: npt.NDArray[np.float64] | float,
     right_matrix: npt.NDArray[np.float64],
     weights: npt.NDArray[np.float64],
     scalar: bool,
@@ -326,13 +326,13 @@ def _integrate_fracture_matrix_coupling(
     kf_p: float | None = None,
     mu_q: npt.NDArray[np.float64] | float | None = None,
     h: float | None = None,
-    include_pressure: bool,
-    include_thermal: bool,
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling contribution to its neighboring matrix elements.
 
     `mu_q` may be a constant (linear viscosity) or
     a per-quadrature-point array (nonlinear viscosity).
+    Thermal coupling is included when `h` is provided; pressure coupling is included
+    when both `kf_p` and `mu_q` are provided.
     """
     conn_m = mesh["conn"]
     nodes_m = mesh["nodes"]
@@ -355,12 +355,12 @@ def _integrate_fracture_matrix_coupling(
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
-        if include_thermal:
+        if h is not None:
             ff_matrices["KTT_ff"] = _vectorized_quad_point_integration(N_q, h, N_q, wJe_q, True)
             fm_matrices["KTT_fm"] = _vectorized_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
             mm_matrices["KTT_mm"] = _vectorized_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
 
-        if include_pressure:
+        if kf_p is not None and mu_q is not None:
             kf_p_mu = kf_p / mu_q
             ff_matrices["Kpp_ff"] = _vectorized_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
             fm_matrices["Kpp_fm"] = _vectorized_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
@@ -582,8 +582,6 @@ def integrate_linear_matrices(  # noqa
                     kf_p=kf_p,
                     mu_q=(mu if mu_linear else None),
                     h=h,
-                    include_pressure=mu_linear,
-                    include_thermal=True,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
@@ -1034,8 +1032,6 @@ def integrate_nonlinear_matrices(  # noqa
                     mesh,
                     kf_p=kf_p,
                     mu_q=mu_q,
-                    include_pressure=True,
-                    include_thermal=False,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
@@ -1208,8 +1204,6 @@ def integrate_NLpressure_matrices(  # noqa
                     mesh,
                     kf_p=kf_p,
                     mu_q=mu_q,
-                    include_pressure=True,
-                    include_thermal=False,
                 )
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
                     stop = vec_counter_ff + nne * nne  # vectorized index count end
