@@ -247,6 +247,10 @@ def _create_fracture_coupling_vectors(
     int, npt.NDArray[np.int32], npt.NDArray[np.int32], int, npt.NDArray[np.int32], npt.NDArray[np.int32]
 ]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
+    count_vec_ff = 0  # Fracture-fracture on-diagonal counts
+    row_list_ff = []
+    col_list_ff = []
+
     count_vec_fm = 0  # Fracture-matrix off-diagonal counts
     row_list_fm = []
     col_list_fm = []
@@ -264,228 +268,100 @@ def _create_fracture_coupling_vectors(
             e_nodes_m = conn_m[e_m]
             nne_m = len(e_nodes_m)
 
+            # ff
+            row_list_ff.append(
+                np.repeat(np.array(e_nodes_f, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
+            )
+            col_list_ff.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_f)).ravel())
+            count_vec_ff += nne_f * nne_f
+            # fm
             row_list_fm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
             )
             col_list_fm.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
-
+            count_vec_fm += nne_f * nne_m
+            # mm
             row_list_mm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
             )
             col_list_mm.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_m)).ravel())
-
-            count_vec_fm += nne_f * nne_m
             count_vec_mm += nne_m * nne_m
 
+    row_vec_ff = np.concatenate(row_list_ff).astype(np.int32)
+    col_vec_ff = np.concatenate(col_list_ff).astype(np.int32)
     row_vec_fm = np.concatenate(row_list_fm).astype(np.int32)
     col_vec_fm = np.concatenate(col_list_fm).astype(np.int32)
     row_vec_mm = np.concatenate(row_list_mm).astype(np.int32)
     col_vec_mm = np.concatenate(col_list_mm).astype(np.int32)
 
-    return count_vec_fm, row_vec_fm, col_vec_fm, count_vec_mm, row_vec_mm, col_vec_mm
+    return (
+        count_vec_ff,
+        row_vec_ff,
+        col_vec_ff,
+        count_vec_fm,
+        row_vec_fm,
+        col_vec_fm,
+        count_vec_mm,
+        row_vec_mm,
+        col_vec_mm,
+    )
 
 
-def integrate_linear_fracture_matrices(  # noqa
+def _integrate_fracture_matrix_coupling(
+    e: int,
+    enodes_f: list[int],
+    nodes_f: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
+    wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
-    mat: dict[str, Any],
-    controls: dict[str, Any],
-) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any]]:
-    """Integrate the linear matrices associated with the lower dimensional fractures."""
-    # ----- integration controls
-    mu_linear = not bool(controls["viscosity_nonconstant"])
-    axisymmetry = bool(controls["axisymmetric_on"])
+    *,
+    kf_p: float | None = None,
+    mu_q: npt.NDArray[np.float64] | float | None = None,
+    h: float | None = None,
+    include_pressure: bool,
+    include_thermal: bool,
+) -> list[tuple[int, dict, dict, dict]]:
+    """Integrate one fracture element's coupling contribution to its neighboring matrix elements.
 
-    # ----- fluid properties, universal
-    if mu_linear:
-        mu = mat["fluid"]["viscosity"]
-        alpha_f = mat["fluid"]["therm_expansion"]
-    rho_f = mat["fluid"]["density"]
-    lambda_f = mat["fluid"]["therm_cond"]
-    comp_f0 = 1.0 / mat["fluid"]["bulk_mod"]
-    cp_f = mat["fluid"]["specific_heat"]
-
-    # ----- mesh data
-    # Matrix data
-    nn_m, nsd = mesh["nn"], mesh["nsd"]
-    conn_m = mesh["conn"]  # (ne, nne)  - connectivity matrix
-    nodes_m = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
+    `mu_q` may be a constant (linear viscosity) or a per-quadrature-point array (nonlinear
+    viscosity) — the integration itself doesn't change either way, which is what lets the
+    same function serve both, and any future nonlinearity that only changes what `mu_q` is.
+    """
+    conn_m = mesh["conn"]
+    nodes_m = mesh["nodes"]
     etype_list_m = mesh["element_type"]
     elem_indx_m = mesh["elem_indx"]
+    conn_fm = mesh["fracture_mesh"]["matrix_conn"]
 
-    # Fracture data
-    fmesh = mesh["fracture_mesh"]
-    nn_f, nne_list_f = fmesh["nn"], fmesh["nne"]
-    conn_f = fmesh["conn"]  # (ne, nne)  - connectivity matrix
-    nodes_f = fmesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    etype_list_f = fmesh["element_type"]
-    elem_indx_f = fmesh["elem_indx"]
-    nq_list = fmesh["n_quadrature"]
-    fracture_lists = fmesh["region_lists"]
-    num_fractures = len(fracture_lists)
-    conn_fm = fmesh["matrix_conn"]
+    entries: list[tuple[int, dict, dict]] = []
 
-    # ----- gravity vector
-    g, ng = _get_gravity(nsd)
+    for e_m in conn_fm[e]:
+        enodes_m = conn_m[e_m]
+        nne_m = len(enodes_m)
 
-    # Reduce nsd for fracture
-    nsd -= 1
+        etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
+        getN_m = NMATRIX_FUNCS[etype]
+        Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes_f, :])
+        N_qm = np.array([getN_m(Q[q, :].flatten()) for q in range(np.size(Q, -1))])
 
-    # ----- Vectorized matrix assembly
-    # Assemble lists of rows, columns, and entries and then assemble the sparse
-    # matrix all at once.
-    # For the scalar pressure and temperature, there are nne_1 * nne_2 entries
-    # per element. For the coupled matrices, because the assembly is ragged,
-    # we will  assemble them once and then save them for future use.
-    list_of_matrices = ["KM", "KpT", "C", "KTT"]
-    if mu_linear:
-        list_of_matrices.extend(["KbT", "Kpp"])
+        ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
-    # Coupling matrices
-    # _mm : matrix-matrix on-diagonal contribution
-    # _fm : fracture-matrix off-diagonal contribution
+        if include_thermal:
+            ff_matrices["KTT_ff"] = _vectorized_quad_point_integration(N_q, h, N_q, wJe_q, True)
+            fm_matrices["KTT_fm"] = _vectorized_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
+            mm_matrices["KTT_mm"] = _vectorized_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
 
-    vec = _initiate_vectors(list_of_matrices, nne_list_f, elem_indx_f)
-    vec_counter = 0  # vectorized storage index counter
+        if include_pressure:
+            kf_p_mu = kf_p / mu_q
+            ff_matrices["Kpp_ff"] = _vectorized_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vectorized_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
+            mm_matrices["Kpp_mm"] = _vectorized_quad_point_integration(N_qm, -kf_p_mu, N_qm, wJe_q, True)
 
-    list_of_fm_matrices = ["Kpp_fm", "KTT_fm"]
-    list_of_mm_matrices = ["Kpp_mm", "KTT_mm"]
-    vec_count_fm, row_vec_fm, col_vec_fm, vec_count_mm, row_vec_mm, col_vec_mm = (
-        _create_fracture_coupling_vectors(conn_f, conn_fm, conn_m)
-    )
-    mesh["fracture_mesh"]["vec_matx_asmbl_rows_fm"] = row_vec_fm
-    mesh["fracture_mesh"]["vec_matx_asmbl_cols_fm"] = col_vec_fm
-    mesh["fracture_mesh"]["vec_matx_asmbl_rows_mm"] = row_vec_mm
-    mesh["fracture_mesh"]["vec_matx_asmbl_cols_mm"] = col_vec_mm
-    # Initialize the matrices
-    vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
-    vec_counter_fm = 0
-    vec_mm = {name: np.zeros(vec_count_mm) for name in list_of_mm_matrices}
-    vec_counter_mm = 0
+        entries.append((nne_m, ff_matrices, fm_matrices, mm_matrices))
 
-    # Matrices to assemble:
-    # Kpp = Pressure conductance matrix
-    # KbT = Pressure buoyancy matrix - body
-    # KM =  Pressure storage matrix
-    # KpT =  Pressurization matrix
-    # C = Thermal capacity matrix
-    # KTT =  Thermal conductance matrix
-    # Kpp_fm = Pressure fracture-matrix coupling
-    # KTT_fm = Temperature fracture-matrix coupling
-
-    # ----- Matrix integration element loop
-    for r in range(num_fractures):
-        # fracture properties - by region
-        w = mat["fracture"]["aperture"][r]
-        nusselt = mat["fracture"]["nusselt"][r]
-
-        # Derived fracture properties
-        kf_l = w**3 / 12  # longitudinal permeability
-        kf_p = w / 12  # transverse permeability
-        h = nusselt * lambda_f / 2 / w  # heat transfer coefficient
-        comp_f = comp_f0 * w  # integrated compressibility
-        m_e = rho_f * cp_f * w
-
-        u = fmesh["fracture_tangent"][r]
-        # Project the mesh nodes into local coordinates
-        nodes_local = (nodes_f @ u).reshape(-1, 1)
-
-        if mu_linear:
-            kf_b = ng.T @ np.dot(kf_l, ng) / mu * alpha_f * rho_f @ g.T @ u  # local gravity component
-
-        # find element type of first element in region
-        elem_type_counter = -1  # force an update on the first element
-
-        for e in fracture_lists[r]:
-            # get fracture shape functions
-            new_type_idx = bisect.bisect_left(elem_indx_f, e)
-            if new_type_idx != elem_type_counter:
-                # Update for different element type
-                # Evaluate quadrature points and get weights and shape functions.
-                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
-                    nq_list[new_type_idx], nsd, etype_list_f[new_type_idx]
-                )
-                nne_f = nne_list_f[new_type_idx]
-                elem_type_counter = new_type_idx
-                Q, _ = getquadrature(nq_list[new_type_idx], nsd, etype_list_f[new_type_idx])
-
-            enodes = conn_f[e]  # local element nodes
-            xI = nodes_local[enodes, :]
-            B_q, detJe_q = getB(GN_q, xI, nsd)
-            wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
-            if axisymmetry:
-                # Add radial component to integrand for axisymmetry
-                r_coord = N_q @ xI[:, 0]
-                wJe_q = wJe_q * r_coord.T
-
-            # Element matrices
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne_f, nne_f)
-
-            element_matrices["KM"] = _vectorized_quad_point_integration(N_q, comp_f, N_q, wJe_q, True)
-            element_matrices["C"] = _vectorized_quad_point_integration(N_q, m_e, N_q, wJe_q, True)
-            element_matrices["KTT"] = _vectorized_quad_point_integration(B_q, lambda_f, B_q, wJe_q, True)
-            if mu_linear:
-                element_matrices["Kpp"] = _vectorized_quad_point_integration(B_q, kf_l / mu, B_q, wJe_q, True)
-                element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, True)
-
-            # ---- Loop over faces for matrix coupling
-            matrix_elements = conn_fm[e]
-            for e_m in matrix_elements:
-                enodes_m = conn_m[e_m]
-                nne_m = len(enodes_m)
-                element_matrices_fm = _initialize_element_matrices(list_of_fm_matrices, nne_m, nne_f)
-                element_matrices_mm = _initialize_element_matrices(list_of_mm_matrices, nne_m, nne_m)
-
-                etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
-                getN_m = NMATRIX_FUNCS[etype]
-                Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes, :])
-                N_qm_list = []
-                for q in range(np.size(Q, -1)):
-                    xi = Q[q, :].flatten()
-                    N_qm_list.append(getN_m(xi))
-                N_qm = np.array(N_qm_list)
-                # Off-diagonal _fm contributions
-                element_matrices_fm["KTT_fm"] = _vectorized_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
-                # _ff contributions
-                element_matrices["KTT"] += _vectorized_quad_point_integration(N_q, h, N_q, wJe_q, True)
-                # _mm contribution
-                element_matrices_mm["KTT_mm"] = _vectorized_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
-                if mu_linear:
-                    element_matrices_fm["Kpp_fm"] = _vectorized_quad_point_integration(
-                        N_qm, kf_p / mu, N_q, wJe_q, True
-                    )
-                    element_matrices["Kpp"] += _vectorized_quad_point_integration(
-                        N_q, -kf_p / mu, N_q, wJe_q, True
-                    )
-                    element_matrices_mm["Kpp_mm"] = _vectorized_quad_point_integration(
-                        N_qm, -kf_p / mu, N_qm, wJe_q, True
-                    )
-
-                # ----- Assemble frac-matrix element contributions into global matrices
-                stop = vec_counter_fm + nne_m * nne_f  # vectorized index count end
-                _store_vectorized_element_matrix(vec_fm, element_matrices_fm, vec_counter_fm, stop)
-                vec_counter_fm = stop
-                # ----- Assemble matrix-matrix element contributions into global matrices
-                stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
-                _store_vectorized_element_matrix(vec_mm, element_matrices_mm, vec_counter_mm, stop)
-                vec_counter_mm = stop
-
-            # ----- Assemble frac-frac element contributions into global matrices
-            stop = vec_counter + nne_f * nne_f  # vectorized index count end
-            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
-            vec_counter = stop
-
-    # Assemble element matrices - _ff
-    integrated_matrices = _assemble_global_matrices(
-        vec, conn_f, nn_f, nne_list_f, elem_indx_f, np.concatenate(fracture_lists)
-    )
-    # Assemble coupled matrices - _fm
-    for name in vec_fm:
-        integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn_f)
-    # Assemble coupled matrices - _mm
-    for name in vec_mm:
-        integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
-
-    return (integrated_matrices, mesh)
+    return entries
 
 
 def _stack_coupled_matrices(
@@ -494,9 +370,25 @@ def _stack_coupled_matrices(
     nn_m: int,
     nn_f: int,
 ) -> dict[str, csc_matrix[Any]]:
-    """Stack the fracture and matrix matrices along with their off-diagonal coupling matrices."""
+    """Stack the fracture and matrix matrices along with their off-diagonal coupling matrices.
+
+    Not every matrix exists on both sides (e.g. `KpT` is bulk-only), so the fracture-domain
+    diagonal block and the `_fm`/`_mm`/`_ff` coupling blocks all default to zero when absent,
+    rather than assuming `fracture_matrices` has an entry for every name in `body_matrices`.
+    `_mm` corrects the matrix's own diagonal; `_ff` (symmetrically) corrects the fracture's
+    own diagonal - both are the coupling's self-interaction terms, computed alongside the
+    off-diagonal `_fm` term but added in here rather than during element integration.
+    """
     for name in body_matrices:
-        fracture_matrix = fracture_matrices[name].tocoo()
+        if name in fracture_matrices:
+            fracture_matrix = fracture_matrices[name].tocoo()
+        else:
+            fracture_matrix = csc_matrix((nn_f, nn_f)).tocoo()
+
+        # on-diagonal correction to the fracture's own block
+        if name + "_ff" in fracture_matrices:
+            fracture_matrix = fracture_matrix + fracture_matrices[name + "_ff"].tocoo()
+
         matrix_matrix = body_matrices[name].tocoo()
 
         # Off-diagonal coupling matrix
@@ -505,7 +397,7 @@ def _stack_coupled_matrices(
         else:
             diag_matrix = csc_matrix((nn_m, nn_f)).tocoo()
 
-        # on-diagonal contribution
+        # on-diagonal correction to the matrix's own block
         if name + "_mm" in fracture_matrices:
             matrix_matrix = matrix_matrix + fracture_matrices[name + "_mm"].tocoo()
 
@@ -515,11 +407,27 @@ def _stack_coupled_matrices(
     return body_matrices
 
 
-def integrate_linear_matrices(
-    mesh: dict[str, Any], mat: dict[str, Any], controls: dict[str, Any]
+def integrate_linear_matrices(  # noqa
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    controls: dict[str, Any],
+    *,
+    is_fracture: bool = False,
 ) -> tuple[dict[str, csc_matrix[Any]], dict[str, Any], dict[str, Any]]:
-    """Integrate linear matrices outside of time integration loop."""
-    # ----- integration controls
+    """Integrate linear matrices outside of time integration loop.
+
+    Matrices assembled:
+        Kpp = Pressure conductance matrix
+        KbT = Pressure buoyancy matrix
+        KM =  Pressure storage matrix
+        KpT =  Pressurization matrix (matrix only)
+        C = Thermal capacity matrix
+        KTT =  Thermal conductance matrix
+        Kpp_fm, KTT_fm, Kpp_mm, KTT_mm = fracture-matrix coupling terms (fracture pass only)
+
+    When called normally (`is_fracture=False`) and `fracture_on`, this recurses once onto
+    the fracture mesh (`is_fracture=True`) and stacks the two systems together.
+    """
     mu_linear = not bool(controls["viscosity_nonconstant"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
@@ -529,52 +437,92 @@ def integrate_linear_matrices(
         mu = mat["fluid"]["viscosity"]
         alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
+    g, ng = _get_gravity(mesh["nsd"])
 
-    # ----- mesh data
-    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
-    conn = mesh["conn"]  # (ne, nne)  - connectivity matrix
-    nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    region_lists = mesh["region_lists"]
-    num_regions = mesh["num_regions"]
-    etype_list = mesh["element_type"]
-    nq_list = mesh["n_quadrature"]
-    elem_indx = mesh["elem_indx"]
+    # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    if is_fracture:
+        fmesh = mesh["fracture_mesh"]
+        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
+        conn, nne_list = fmesh["conn"], fmesh["nne"]
+        nodes_f = fmesh["nodes"]
+        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
+        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
+        conn_fm = fmesh["matrix_conn"]
+        lambda_f = mat["fluid"]["therm_cond"]
+        cp_f = mat["fluid"]["specific_heat"]
+        comp_f0 = 1.0 / mat["fluid"]["bulk_mod"]
 
-    # ----- gravity vector
-    g, ng = _get_gravity(nsd)
+        list_of_matrices = ["KM", "C", "KTT"] + (["KbT", "Kpp"] if mu_linear else [])
+        list_of_ff_matrices = ["KTT_ff"] + (["Kpp_ff"] if mu_linear else [])
+        list_of_fm_matrices = ["KTT_fm"] + (["Kpp_fm"] if mu_linear else [])
+        list_of_mm_matrices = ["KTT_mm"] + (["Kpp_mm"] if mu_linear else [])
+        (
+            vec_count_ff,
+            row_vec_ff,
+            col_vec_ff,
+            vec_count_fm,
+            row_vec_fm,
+            col_vec_fm,
+            vec_count_mm,
+            row_vec_mm,
+            col_vec_mm,
+        ) = _create_fracture_coupling_vectors(conn, conn_fm, mesh["conn"])
+        # Cache for reuse by integrate_nonlinear_matrices / integrate_NLpressure_matrices,
+        # rather than re-deriving this connectivity-only (mesh-static) data every timestep.
+        fmesh["vec_mat_asmbl"] = {}
+        fmesh["vec_mat_asmbl"]["rows_ff"] = row_vec_ff
+        fmesh["vec_mat_asmbl"]["cols_ff"] = col_vec_ff
+        fmesh["vec_mat_asmbl"]["rows_fm"] = row_vec_fm
+        fmesh["vec_mat_asmbl"]["cols_fm"] = col_vec_fm
+        fmesh["vec_mat_asmbl"]["rows_mm"] = row_vec_mm
+        fmesh["vec_mat_asmbl"]["cols_mm"] = col_vec_mm
 
-    # ----- Vectorized matrix assembly
-    # Assemble lists of rows, columns, and entries and then assemble the sparse
-    # matrix all at once.
-    # For the scalar pressure and temperature, there are nne * nne entries
-    # per element.
-    list_of_matrices = ["Kpp", "KM", "KpT", "KbT", "C", "KTT"] if mu_linear else ["KM", "KpT", "C", "KTT"]
+        vec_ff = {name: np.zeros(vec_count_ff) for name in list_of_ff_matrices}
+        vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
+        vec_mm = {name: np.zeros(vec_count_mm) for name in list_of_mm_matrices}
+        vec_counter_ff = 0
+        vec_counter_fm = 0
+        vec_counter_mm = 0
+    else:
+        nn, nsd = mesh["nn"], mesh["nsd"]
+        conn, nne_list = mesh["conn"], mesh["nne"]
+        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
+        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
+        list_of_matrices = ["KM", "KpT", "C", "KTT"] + (["Kpp", "KbT"] if mu_linear else [])
+
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
-    # Matrices to assemble:
-    # Kpp = Pressure conductance matrix
-    # KbT = Pressure buoyancy matrix - body
-    # KM =  Pressure storage matrix
-    # KpT =  Pressurization matrix
-    # C = Thermal capacity matrix
-    # KTT =  Thermal conductance matrix
-
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        # solid properties - by region
-        alpha_e = np.asarray(mat["solid"]["therm_expansion_eff"][r])
-        comp_f = np.asarray(1 / mat["solid"]["storage_mod"][r])
-        kf = mat["solid"]["permeability_eff"][r]
-        m_e = mat["solid"]["volumetric_heat_capacity_eff"][r]
-        lambda_e = mat["solid"]["therm_cond_eff"][r]
-
-        if mu_linear:
-            kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T  # kf component in gravity direction
-
-        # Check for region isotropy
-        isotropic_cond = bool(isinstance(lambda_e, (float, int)))
-        isotropic_perm = bool(isinstance(kf, (float, int)))
+        if is_fracture:
+            # fracture properties - by region, derived from aperture and Nusselt number
+            w = mat["fracture"]["aperture"][r]
+            nusselt = mat["fracture"]["nusselt"][r]
+            kf = w**3 / 12  # longitudinal permeability
+            kf_p = w / 12  # transverse permeability, coupling only
+            h = nusselt * lambda_f / 2 / w  # interface heat transfer coefficient, coupling only
+            comp_f = comp_f0 * w
+            m_e = rho_f * cp_f * w
+            lambda_e = lambda_f
+            isotropic_perm = True
+            isotropic_cond = True
+            u = fmesh["fracture_tangent"][r]
+            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
+            if mu_linear:
+                kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T @ u  # local gravity component
+        else:
+            # solid properties - by region
+            alpha_e = np.asarray(mat["solid"]["therm_expansion_eff"][r])
+            comp_f = np.asarray(1 / mat["solid"]["storage_mod"][r])
+            kf = mat["solid"]["permeability_eff"][r]
+            m_e = mat["solid"]["volumetric_heat_capacity_eff"][r]
+            lambda_e = mat["solid"]["therm_cond_eff"][r]
+            isotropic_cond = bool(isinstance(lambda_e, (float, int)))
+            isotropic_perm = bool(isinstance(kf, (float, int)))
+            nodes_r = mesh["nodes"]
+            if mu_linear:
+                kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T  # kf component in gravity direction
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -591,7 +539,7 @@ def integrate_linear_matrices(
                 elem_type_counter = new_type_idx
 
             enodes = conn[e]  # local element nodes
-            xI = nodes[enodes, :]
+            xI = nodes_r[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
@@ -600,52 +548,76 @@ def integrate_linear_matrices(
                 wJe_q = wJe_q * r_coord.T
 
             # Element matrices
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
-
-            # Vectorized integrand computation
-            # N_q: [nq, 1, nne]
-            # B_q: [nq, nsd, nne]
-            # wJe: [nq,]
-
-            # Vectorized integration performs the following loop:
-            # for q in range(nq):
-            #     B = B_q[q]
-            #     N = N_q[q]
-            #     wJe = wJe_q[q]
-
-            #     element_matrices["KM"] += N.T @ (comp_f * N) * wJe
-            #     element_matrices["Kpp"] += B.T @ np.dot(kf / mu, B) * wJe
-            #     element_matrices["KpT"] += N.T @ (alpha_e * N) * wJe
-            #     element_matrices["KbT"] += N.T @ (kf_b @ g.T) @ B * wJe
-            #     element_matrices["C"] += N.T @ (m_e * N) * wJe
-            #     element_matrices["KTT"] += B.T @ np.dot(lambda_e, B) * wJe
-
-            element_matrices["KM"] = _vectorized_quad_point_integration(N_q, comp_f, N_q, wJe_q, True)
-            element_matrices["KpT"] = _vectorized_quad_point_integration(N_q, alpha_e, N_q, wJe_q, True)
-            element_matrices["C"] = _vectorized_quad_point_integration(N_q, m_e, N_q, wJe_q, True)
-            element_matrices["KTT"] = _vectorized_quad_point_integration(
-                B_q, lambda_e, B_q, wJe_q, isotropic_cond
-            )
+            element_matrices = {
+                "KM": _vectorized_quad_point_integration(N_q, comp_f, N_q, wJe_q, True),
+                "C": _vectorized_quad_point_integration(N_q, m_e, N_q, wJe_q, True),
+                "KTT": _vectorized_quad_point_integration(B_q, lambda_e, B_q, wJe_q, isotropic_cond),
+            }
+            if not is_fracture:
+                element_matrices["KpT"] = _vectorized_quad_point_integration(N_q, alpha_e, N_q, wJe_q, True)
             if mu_linear:
                 element_matrices["Kpp"] = _vectorized_quad_point_integration(
                     B_q, kf / mu, B_q, wJe_q, isotropic_perm
                 )
-                element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, False)
+                # KbT is a scalar product once projected onto the fracture's tangent, a matmul
+                # product for the bulk mesh - `is_fracture` doubles as that scalar/matmul flag.
+                element_matrices["KbT"] = _vectorized_quad_point_integration(
+                    N_q, kf_b, B_q, wJe_q, is_fracture
+                )
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne * nne  # vectorized index count end
             _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
             vec_counter = stop
 
+            # ----- Fracture-matrix coupling: KTT_ff/Kpp_ff are integrated as their own
+            # matrix (assembled separately below) and added onto the fracture diagonal by
+            # _stack_coupled_matrices, alongside collecting the off-diagonal _fm/_mm terms
+            if is_fracture:
+                coupling_entries = _integrate_fracture_matrix_coupling(
+                    e,
+                    enodes,
+                    nodes_f,
+                    N_q,
+                    wJe_q,
+                    mesh,
+                    kf_p=kf_p,
+                    mu_q=(mu if mu_linear else None),
+                    h=h,
+                    include_pressure=mu_linear,
+                    include_thermal=True,
+                )
+
+                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                    stop = vec_counter_ff + nne * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
+                    vec_counter_ff = stop
+                    stop = vec_counter_fm + nne_m * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
+                    vec_counter_fm = stop
+                    stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
+                    vec_counter_mm = stop
+
     integrated_matrices = _assemble_global_matrices(
-        vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])
+        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
     )
+
+    if is_fracture:
+        for name in vec_ff:
+            integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
+        for name in vec_fm:
+            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+        for name in vec_mm:
+            integrated_matrices[name] = _make_sparse(
+                vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
+            )
+        return integrated_matrices, mat, mesh
+
     if fracture_on:
-        integrated_fracture_matrices, mesh = integrate_linear_fracture_matrices(mesh, mat, controls)  # noqa
-        # Assemble the connected fracture-matrix matrices
-        nn_f = mesh["fracture_mesh"]["nn"]
+        integrated_fracture_matrices, _, _ = integrate_linear_matrices(mesh, mat, controls, is_fracture=True)
         integrated_matrices = _stack_coupled_matrices(
-            integrated_matrices, integrated_fracture_matrices, nn, nn_f
+            integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
     return (
         integrated_matrices,
@@ -750,11 +722,16 @@ def _integrate_pressure_flow_terms(
     mu_q: npt.NDArray[np.float64],
     kf_b: npt.NDArray[np.float64],
     isotropic_perm: bool,
+    kf_b_scalar: bool = False,
 ) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate the viscosity-dependent pressure conductance (Kpp) and buoyancy (KbT) matrices."""
+    """Integrate the viscosity-dependent pressure conductance (Kpp) and buoyancy (KbT) matrices.
+
+    `kf_b_scalar` distinguishes the bulk mesh (KbT is a matmul product, the default) from
+    the fracture mesh (KbT reduces to a scalar product once projected onto the tangent).
+    """
     return {
         "Kpp": _vectorized_quad_point_integration(B_q, kf / mu_q, B_q, wJe_q, isotropic_perm),
-        "KbT": _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, False),
+        "KbT": _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, kf_b_scalar),
     }
 
 
@@ -844,197 +821,13 @@ def _integrate_viscosity_pressure_correction(
     }
 
 
-def integrate_nonlinear_fracture_matrices(  # noqa
-    mesh: dict[str, Any],
-    mat: dict[str, Any],
-    primary_variables: dict[str, Any],
-    controls: dict[str, Any],
-) -> dict[str, Any]:
-    """Integrate non-linear matrices inside time integration loop.
-
-    KATT = Temperature advection tangent matrix wrt temperature
-    K_stab_TT = Advection stabilization wrt temperature
-    KATp = Temperature advection tangent matrix wrt pressure
-    K_stab_Tp = Advection stabilization wrt pressure
-    Kpp, KbT, KpT_mu_p, KpT_mu_b, KATT_mu, K_stab_TT_mu = viscosity-nonlinear corrections, see helpers below.
-    """
-    p = primary_variables["p"][:, 0]
-    T = primary_variables["T"][:, 0]
-    # ----- integration controls
-    mu_nonlinear = controls["viscosity_nonconstant"]
-    mu_linear = not mu_nonlinear
-    fully_coupled = controls["fully_coupled"]
-    axisymmetry = bool(controls["axisymmetric_on"])
-
-    # ----- fluid properties
-    mu = mat["fluid"]["viscosity"]
-    cp_f = mat["fluid"]["specific_heat"]
-    rho_f = mat["fluid"]["density"]
-    lambda_f = mat["fluid"]["therm_cond"]
-
-    # ----- mesh data
-    nsd = mesh["nsd"]
-    # Fracture data
-    fmesh = mesh["fracture_mesh"]
-    nn_f, nne_list_f = fmesh["nn"], fmesh["nne"]
-    conn_f = fmesh["conn"]  # (ne, nne)  - connectivity matrix
-    nodes_f = fmesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    etype_list_f = fmesh["element_type"]
-    elem_indx_f = fmesh["elem_indx"]
-    nq_list = fmesh["n_quadrature"]
-    fracture_lists = fmesh["region_lists"]
-    num_fractures = len(fracture_lists)
-    conn_global = fmesh["conn_global"]
-
-    # ----- gravity vector
-    g, ng = _get_gravity(nsd)
-    # Reduce nsd for fracture
-    nsd -= 1
-
-    # ----- Pre-allocate sparse matrices
-    list_of_matrices = ["KATT", "K_stab_TT"]
-    if fully_coupled:
-        list_of_matrices.extend(["KATp", "K_stab_Tp"])
-
-    if mu_nonlinear:
-        list_of_matrices.extend(["Kpp", "KbT", "KpT_mu_b", "KpT_mu_p", "KATT_mu", "K_stab_TT_mu"])
-        alpha_f = mat["fluid"]["therm_expansion"]
-
-    vec = _initiate_vectors(list_of_matrices, nne_list_f, elem_indx_f)
-    vec_counter = 0  # vectorized storage index counter
-
-    # ----- Matrix integration element loop
-    for r in range(num_fractures):
-        # fracture properties - by region
-        w = mat["fracture"]["aperture"][r]
-        kf = w**3 / 12  # longitudinal permeability
-        isotropic_cond = True
-        isotropic_perm = True
-
-        u = fmesh["fracture_tangent"][r]
-        # Project the mesh nodes into local coordinates
-        nodes_local = (nodes_f @ u).reshape(-1, 1)
-        # advection velocity = advection_conductivity * pressure gradient
-        if mu_linear:
-            advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
-
-        # find element type of first element in region
-        elem_type_counter = -1  # force an update on the first element
-
-        for e in fracture_lists[r]:
-            new_type_idx = bisect.bisect_left(elem_indx_f, e)
-            if new_type_idx != elem_type_counter:
-                # Update for different element type
-                # Evaluate quadrature points and get weights and shape functions.
-                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
-                    nq_list[new_type_idx], nsd, etype_list_f[new_type_idx]
-                )
-                nne_f = nne_list_f[new_type_idx]
-                elem_type_counter = new_type_idx
-
-            enodes = conn_f[e]  # local element nodes
-            enodes_global = conn_global[e]
-            xI = nodes_local[enodes, :]
-            B_q, detJe_q = getB(GN_q, xI, nsd)
-            wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
-            if axisymmetry:
-                # Add radial component to integrand for axisymmetry
-                r_coord = N_q @ xI[:, 0]
-                wJe_q = wJe_q * r_coord.T
-
-            # Element matrices initialize
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne_f, nne_f)
-
-            Te = T[enodes_global].reshape(-1, 1)  # element nodal temperatures
-            pe = p[enodes_global].reshape(-1, 1)  # element nodal pressures
-            enodes_coords = nodes_local[enodes, :]
-            L_vec = (enodes_coords.max(axis=0) - enodes_coords.min(axis=0)).reshape(-1, 1)  # element lengths
-
-            # ------------------------------------ Pressure and fluid flow
-            if mu_nonlinear:
-                # If mu is nonlinear, the pressure diffusion is also non-linear and must
-                # be re-integrated at each timestep.
-                T_q = N_q @ Te  # quadrature point temperatures
-                mu_q, dmu_dT_q = get_viscosity(T_q, mu)  # quadrature point viscosities
-
-                advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
-                kf_b = (
-                    ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ g.T
-                )  # kf component in gravity direction
-
-                # Integrate the tangent matrices
-                # Kpp = dFk / dp - Darcy's Law
-                # KbT = dFb / dT - Buoyancy
-                element_matrices.update(
-                    _integrate_pressure_flow_terms(N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm)
-                )
-
-            # ----------------------------------- Advection and stabilization
-            # Calculate fluxes, stabilization coefficicent, pressure gradients and store in supg dataclass
-            supg = _compute_supg_quantities(
-                B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_f, L_vec, nq, nsd
-            )
-
-            # advection matrix
-            element_matrices["KATT"] = _vectorized_quad_point_integration(N_q, supg.flux_T, B_q, wJe_q, False)
-            # advection stabilization
-            element_matrices["K_stab_TT"] = _vectorized_quad_point_integration(
-                B_q, supg.integrand_Kstab, B_q, wJe_q, False
-            )
-
-            gradT = B_q @ Te
-
-            # ---------------------------------- Viscosity correction
-            if mu_nonlinear:
-                # Integrate tangent matrices:
-                # KATT_mu = dFA / dmu * dmu / dT
-                # K_stab_TT_mu = dF_stab / dmu * dmu / dT
-                element_matrices.update(
-                    _integrate_viscosity_temperature_correction(N_q, B_q, wJe_q, gradT, supg, mu_q, dmu_dT_q)
-                )
-
-            # ----------------------------------- Fully coupled off diagonal terms
-            if fully_coupled:
-                # Integrate the off-diagonal tangents wrt pressure
-                # KATp = dFA / dp
-                # K_stab_Tp = dF_stab / dp
-                element_matrices.update(
-                    _integrate_coupled_pressure_terms(
-                        N_q, B_q, wJe_q, gradT, supg, advec_conduct, isotropic_perm, nsd
-                    )
-                )
-
-                # viscosity wrt T
-                if mu_nonlinear:
-                    # If non-linear viscosity, integrate the viscosity tangents
-                    # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
-                    # KpT_mu_b = dFb / dmu * dmu / dT - for buoyancy
-                    T_0e = mat["T_0"][enodes_global]
-                    del_T = Te - T_0e.reshape(-1, 1)
-                    element_matrices.update(
-                        _integrate_viscosity_pressure_correction(
-                            N_q, B_q, wJe_q, supg, kf, mu_q, dmu_dT_q, kf_b, del_T, isotropic_perm
-                        )
-                    )
-
-            # ----- Assemble element contributions into global matrices
-            stop = vec_counter + nne_f * nne_f  # vectorized index count end
-            _store_vectorized_element_matrix(vec, element_matrices, vec_counter, stop)
-            vec_counter = stop
-
-    # ----- Return and convert to sparse matrix
-    integrated_matrices = _assemble_global_matrices(
-        vec, conn_f, nn_f, nne_list_f, elem_indx_f, np.concatenate(fracture_lists)
-    )
-
-    return integrated_matrices
-
-
 def integrate_nonlinear_matrices(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
+    *,
+    is_fracture: bool = False,
 ) -> dict[str, Any]:
     """Integrate non-linear matrices inside time integration loop.
 
@@ -1043,55 +836,89 @@ def integrate_nonlinear_matrices(  # noqa
     KATp = Temperature advection tangent matrix wrt pressure
     K_stab_Tp = Advection stabilization wrt pressure
     Kpp, KbT, KpT_mu_p, KpT_mu_b, KATT_mu, K_stab_TT_mu = viscosity-nonlinear corrections, see helpers below.
+
+    When called normally (`is_fracture=False`) and `fracture_on`, this recurses once onto
+    the fracture mesh (`is_fracture=True`). `KTT` isn't part of this flavor's matrices (it's
+    held fixed from the linear assembly), so only the pressure coupling (`Kpp_fm`/`Kpp_mm`,
+    responsive to nonlinear viscosity via the fracture-side temperature) is relevant here.
+
+    Requires `integrate_linear_matrices` to have run at least once first when `fracture_on`
+    (reuses its cached `_fm`/`_mm` row/col index vectors rather than re-deriving them).
     """
     p = primary_variables["p"][:, 0]
     T = primary_variables["T"][:, 0]
-    # ----- integration controls
-    mu_nonlinear = controls["viscosity_nonconstant"]
+    mu_nonlinear = bool(controls["viscosity_nonconstant"])
     mu_linear = not mu_nonlinear
-    fully_coupled = controls["fully_coupled"]
+    fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
 
-    # ----- fluid properties
     mu = mat["fluid"]["viscosity"]
     cp_f = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
+    if mu_nonlinear:
+        alpha_f = mat["fluid"]["therm_expansion"]
 
-    # ----- mesh data
-    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
-    conn = mesh["conn"]  # connectivity
-    nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    region_lists = mesh["region_lists"]
-    num_regions = mesh["num_regions"]
-    etype_list = mesh["element_type"]
-    nq_list = mesh["n_quadrature"]
-    elem_indx = mesh["elem_indx"]
-
-    # ----- Pre-allocate sparse matrices
     list_of_matrices = ["KATT", "K_stab_TT"]
     if fully_coupled:
         list_of_matrices.extend(["KATp", "K_stab_Tp"])
-
     if mu_nonlinear:
         list_of_matrices.extend(["Kpp", "KbT", "KpT_mu_b", "KpT_mu_p", "KATT_mu", "K_stab_TT_mu"])
-        alpha_f = mat["fluid"]["therm_expansion"]
+
+    # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    if is_fracture:
+        fmesh = mesh["fracture_mesh"]
+        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
+        conn, nne_list = fmesh["conn"], fmesh["nne"]
+        nodes_f = fmesh["nodes"]
+        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
+        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
+        conn_global = fmesh["conn_global"]
+
+        if mu_nonlinear:
+            list_of_ff_matrices = ["Kpp_ff"]
+            # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
+            # fracture pass rather than re-derived here every timestep/Newton iteration.
+            row_vec_fm = fmesh["vec_matx_asmbl_rows_fm"]
+            col_vec_fm = fmesh["vec_matx_asmbl_cols_fm"]
+            row_vec_mm = fmesh["vec_matx_asmbl_rows_mm"]
+            col_vec_mm = fmesh["vec_matx_asmbl_cols_mm"]
+            vec_ff = _initiate_vectors(list_of_ff_matrices, nne_list, elem_indx)
+            vec_counter_ff = 0
+            vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
+            vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
+            vec_counter_fm = 0
+            vec_counter_mm = 0
+    else:
+        nn, nsd = mesh["nn"], mesh["nsd"]
+        conn, nne_list = mesh["conn"], mesh["nne"]
+        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
+        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
 
     # ----- gravity vector
-    g, ng = _get_gravity(nsd)
+    g, ng = _get_gravity(mesh["nsd"])
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        # solid properties - by region
-        kf = mat["solid"]["permeability_eff"][r]
-        lambda_e = mat["solid"]["therm_cond_eff"][r]
-
-        # Check for region isotropy
-        isotropic_cond = bool(isinstance(lambda_e, (float, int)))
-        isotropic_perm = bool(isinstance(kf, (float, int)))
+        if is_fracture:
+            w = mat["fracture"]["aperture"][r]
+            kf = w**3 / 12  # longitudinal permeability
+            isotropic_cond = True
+            isotropic_perm = True
+            lambda_e = mat["fluid"]["therm_cond"]
+            u = fmesh["fracture_tangent"][r]
+            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
+            if mu_nonlinear:
+                kf_p = w / 12  # transverse permeability, coupling only
+        else:
+            kf = mat["solid"]["permeability_eff"][r]
+            lambda_e = mat["solid"]["therm_cond_eff"][r]
+            isotropic_cond = bool(isinstance(lambda_e, (float, int)))
+            isotropic_perm = bool(isinstance(kf, (float, int)))
+            nodes_r = mesh["nodes"]
 
         # advection velocity = advection_conductivity * pressure gradient
         if mu_linear:
@@ -1112,7 +939,8 @@ def integrate_nonlinear_matrices(  # noqa
                 elem_type_counter = new_type_idx
 
             enodes = conn[e]  # local element nodes
-            xI = nodes[enodes, :]
+            enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T/p
+            xI = nodes_r[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
@@ -1121,12 +949,11 @@ def integrate_nonlinear_matrices(  # noqa
                 wJe_q = wJe_q * r_coord.T
 
             # Element matrices initialize
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
+            element_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
-            Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
-            pe = p[enodes].reshape(-1, 1)  # element nodal pressures
-            enodes_coords = nodes[enodes, :]
-            L_vec = (enodes_coords.max(axis=0) - enodes_coords.min(axis=0)).reshape(-1, 1)  # element lengths
+            Te = T[enodes_dof].reshape(-1, 1)  # element nodal temperatures
+            pe = p[enodes_dof].reshape(-1, 1)  # element nodal pressures
+            L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths
 
             # ------------------------------------ Pressure and fluid flow
             if mu_nonlinear:
@@ -1137,14 +964,16 @@ def integrate_nonlinear_matrices(  # noqa
 
                 advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
                 kf_b = (
-                    ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ g.T
+                    ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)
                 )  # kf component in gravity direction
 
                 # Integrate the tangent matrices
                 # Kpp = dFk / dp - Darcy's Law
                 # KbT = dFb / dT - Buoyancy
                 element_matrices.update(
-                    _integrate_pressure_flow_terms(N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm)
+                    _integrate_pressure_flow_terms(
+                        N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm, is_fracture
+                    )
                 )
 
             # ----------------------------------- Advection and stabilization
@@ -1187,13 +1016,40 @@ def integrate_nonlinear_matrices(  # noqa
                     # If non-linear viscosity, integrate the viscosity tangents
                     # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
                     # KpT_mu_b = dFb / dmu * dmu / dT - for buoyancy
-                    T_0e = mat["T_0"][enodes]
+                    T_0e = mat["T_0"][enodes_dof]
                     del_T = Te - T_0e.reshape(-1, 1)
                     element_matrices.update(
                         _integrate_viscosity_pressure_correction(
                             N_q, B_q, wJe_q, supg, kf, mu_q, dmu_dT_q, kf_b, del_T, isotropic_perm
                         )
                     )
+
+            # ----- Fracture-matrix pressure coupling: Kpp_ff is integrated as its own matrix
+            # (assembled separately below) and added onto the fracture diagonal by
+            # _stack_coupled_matrices, alongside collecting the off-diagonal Kpp_fm/Kpp_mm terms
+            if is_fracture and mu_nonlinear:
+                ff_correction, coupling_entries = _integrate_fracture_matrix_coupling(
+                    e,
+                    enodes,
+                    nodes_f,
+                    N_q,
+                    wJe_q,
+                    mesh,
+                    kf_p=kf_p,
+                    mu_q=mu_q,
+                    include_pressure=True,
+                    include_thermal=False,
+                )
+                stop_ff = vec_counter_ff + nne * nne  # vectorized index count end
+                _store_vectorized_element_matrix(vec_ff, ff_correction, vec_counter_ff, stop_ff)
+                vec_counter_ff = stop_ff
+                for nne_m, fm_matrices, mm_matrices in coupling_entries:
+                    stop = vec_counter_fm + nne_m * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
+                    vec_counter_fm = stop
+                    stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
+                    vec_counter_mm = stop
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne * nne  # vectorized index count end
@@ -1202,64 +1058,103 @@ def integrate_nonlinear_matrices(  # noqa
 
     # ----- Return and convert to sparse matrix
     integrated_matrices = _assemble_global_matrices(
-        vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"])
+        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
     )
+
+    if is_fracture:
+        if mu_nonlinear:
+            integrated_matrices.update(
+                _assemble_global_matrices(vec_ff, conn, nn, nne_list, elem_indx, np.concatenate(region_lists))
+            )
+            for name in vec_fm:
+                integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+            for name in vec_mm:
+                integrated_matrices[name] = _make_sparse(
+                    vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
+                )
+        return integrated_matrices
+
     if fracture_on:
-        integrated_fracture_matrices = integrate_nonlinear_fracture_matrices(
-            mesh, mat, primary_variables, controls
-        )  # noqa
-        # Assemble the connected fracture-matrix matrices
-        nn_f = mesh["fracture_mesh"]["nn"]
+        integrated_fracture_matrices = integrate_nonlinear_matrices(
+            mesh, mat, primary_variables, controls, is_fracture=True
+        )
         integrated_matrices = _stack_coupled_matrices(
-            integrated_matrices, integrated_fracture_matrices, nn, nn_f
+            integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
 
     return integrated_matrices
 
 
-def integrate_NLpressure_matrices(
+def integrate_NLpressure_matrices(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
-    controls: dict[str, Any],  # noqa
+    controls: dict[str, Any],
+    *,
+    is_fracture: bool = False,
 ) -> dict[str, Any]:
-    """Integrate non-linear fluid flow matrices inside time integration loop."""
-    T = primary_variables["T"][:, 0]  # noqa: F841
+    """Integrate the non-linear-viscosity pressure/buoyancy matrices (Kpp, KbT) inside
+    the time integration loop - a lighter-weight alternative to `integrate_nonlinear_matrices`
+    for solvers (e.g. `lin_extrap_time_integration`) that only need the pressure system.
 
-    # ----- fluid properties
+    When called normally (`is_fracture=False`) and `fracture_on`, this recurses once onto
+    the fracture mesh (`is_fracture=True`), integrating the `Kpp_fm`/`Kpp_mm` pressure
+    coupling (responsive to the same nonlinear viscosity) in the same pass.
+    """
+    T = primary_variables["T"][:, 0]
     mu_coeff = mat["fluid"]["viscosity"]
     alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
-
-    # ----- mesh data
-    nn, nne_list, nsd = mesh["nn"], mesh["nne"], mesh["nsd"]
-    conn = mesh["conn"]  # connectivity
-    nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    region_lists = mesh["region_lists"]
-    num_regions = mesh["num_regions"]
-    etype_list = mesh["element_type"]
-    nq_list = mesh["n_quadrature"]
-    elem_indx = mesh["elem_indx"]
     axisymmetry = bool(controls["axisymmetric_on"])
+    fracture_on = bool(controls["fracture_on"])
+    g, ng = _get_gravity(mesh["nsd"])
 
-    # ----- gravity vector
-    g, ng = _get_gravity(nsd)
-
-    # ----- Pre-allocate sparse matrices (use lil for efficient assembly)
     list_of_matrices = ["Kpp", "KbT"]
+
+    # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    if is_fracture:
+        fmesh = mesh["fracture_mesh"]
+        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
+        conn, nne_list = fmesh["conn"], fmesh["nne"]
+        nodes_f = fmesh["nodes"]
+        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
+        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
+        conn_global = fmesh["conn_global"]
+
+        # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
+        # fracture pass rather than re-derived here every timestep.
+        row_vec_fm = fmesh["vec_matx_asmbl_rows_fm"]
+        col_vec_fm = fmesh["vec_matx_asmbl_cols_fm"]
+        row_vec_mm = fmesh["vec_matx_asmbl_rows_mm"]
+        col_vec_mm = fmesh["vec_matx_asmbl_cols_mm"]
+        vec_ff = _initiate_vectors(["Kpp_ff"], nne_list, elem_indx)
+        vec_counter_ff = 0
+        vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
+        vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
+        vec_counter_fm = 0
+        vec_counter_mm = 0
+    else:
+        nn, nsd = mesh["nn"], mesh["nsd"]
+        conn, nne_list = mesh["conn"], mesh["nne"]
+        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
+        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
-    # Kpp = Pressure conductance matrix
-    # KbT = Pressure buoyancy matrix - body
-
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        # solid properties - by region
-        kf = mat["solid"]["permeability_eff"][r]
-
-        isotropic_perm = bool(isinstance(kf, (float, int)))
+        if is_fracture:
+            w = mat["fracture"]["aperture"][r]
+            kf = w**3 / 12  # longitudinal permeability
+            kf_p = w / 12  # transverse permeability, coupling only
+            isotropic_perm = True
+            u = fmesh["fracture_tangent"][r]
+            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
+        else:
+            kf = mat["solid"]["permeability_eff"][r]
+            isotropic_perm = bool(isinstance(kf, (float, int)))
+            nodes_r = mesh["nodes"]
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -1276,7 +1171,8 @@ def integrate_NLpressure_matrices(
                 elem_type_counter = new_type_idx
 
             enodes = conn[e]  # local element nodes
-            xI = nodes[enodes, :]
+            enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T
+            xI = nodes_r[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
@@ -1284,20 +1180,45 @@ def integrate_NLpressure_matrices(
                 r_coord = N_q @ xI[:, 0]
                 wJe_q = wJe_q * r_coord.T
 
-            # Element matrices
-            element_matrices = _initialize_element_matrices(list_of_matrices, nne, nne)
-
             # vectorized integration
-            Te = T[enodes].reshape(-1, 1)  # element nodal temperatures
+            Te = T[enodes_dof].reshape(-1, 1)  # element nodal temperatures
             T_q = N_q @ Te  # quadrature point temperatures
             mu_q, _ = get_viscosity(T_q, mu_coeff)  # quadrature point viscosities
 
-            kf_b = ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ g.T  # kf component in gravity direction
+            kf_b = (
+                ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)
+            )  # kf component in gravity direction
 
-            element_matrices["Kpp"] = _vectorized_quad_point_integration(
-                B_q, kf / mu_q, B_q, wJe_q, isotropic_perm
+            element_matrices = _integrate_pressure_flow_terms(
+                N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm, is_fracture
             )
-            element_matrices["KbT"] = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, False)
+
+            # ----- Fracture-matrix pressure coupling: Kpp_ff is integrated as its own matrix
+            # (assembled separately below) and added onto the fracture diagonal by
+            # _stack_coupled_matrices, alongside collecting the off-diagonal Kpp_fm/Kpp_mm terms
+            if is_fracture:
+                ff_correction, coupling_entries = _integrate_fracture_matrix_coupling(
+                    e,
+                    enodes,
+                    nodes_f,
+                    N_q,
+                    wJe_q,
+                    mesh,
+                    kf_p=kf_p,
+                    mu_q=mu_q,
+                    include_pressure=True,
+                    include_thermal=False,
+                )
+                stop_ff = vec_counter_ff + nne * nne  # vectorized index count end
+                _store_vectorized_element_matrix(vec_ff, ff_correction, vec_counter_ff, stop_ff)
+                vec_counter_ff = stop_ff
+                for nne_m, fm_matrices, mm_matrices in coupling_entries:
+                    stop = vec_counter_fm + nne_m * nne  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
+                    vec_counter_fm = stop
+                    stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
+                    _store_vectorized_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
+                    vec_counter_mm = stop
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne * nne  # vectorized index count end
@@ -1305,7 +1226,31 @@ def integrate_NLpressure_matrices(
             vec_counter = stop
 
     # ----- Return and convert to sparse matrix
-    return _assemble_global_matrices(vec, conn, nn, nne_list, elem_indx, np.concatenate(mesh["region_lists"]))
+    integrated_matrices = _assemble_global_matrices(
+        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
+    )
+
+    if is_fracture:
+        integrated_matrices.update(
+            _assemble_global_matrices(vec_ff, conn, nn, nne_list, elem_indx, np.concatenate(region_lists))
+        )
+        for name in vec_fm:
+            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, mesh["nn"], nn)
+        for name in vec_mm:
+            integrated_matrices[name] = _make_sparse(
+                vec_mm[name], row_vec_mm, col_vec_mm, mesh["nn"], mesh["nn"]
+            )
+        return integrated_matrices
+
+    if fracture_on:
+        integrated_fracture_matrices = integrate_NLpressure_matrices(
+            mesh, mat, primary_variables, controls, is_fracture=True
+        )
+        integrated_matrices = _stack_coupled_matrices(
+            integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
+        )
+
+    return integrated_matrices
 
 
 def integrate_boundary_flux_matrices(
