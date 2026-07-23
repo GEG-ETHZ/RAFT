@@ -90,7 +90,7 @@ simulation:
   timestep: 100.0
   timestep_min: 100.0
   timestep_max: 100.0
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1
@@ -110,6 +110,6 @@ simulation:
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
+      NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

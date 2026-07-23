@@ -158,6 +158,16 @@ def _vectorized_quad_point_integration(
     return result
 
 
+# Q4 boundary edges are traversed as (fixed_axis, fixed_value, t_sign): the local parameter
+# `t` from the edge projection maps to whichever of xi/eta isn't pinned to +-1 on that edge.
+_Q4_EDGE_MAP = (
+    (1, -1.0, 1.0),  # edge 0-1: eta = -1, xi = +t
+    (0, 1.0, 1.0),  # edge 1-2: xi = 1, eta = +t
+    (1, 1.0, -1.0),  # edge 2-3: eta = 1, xi = -t
+    (0, -1.0, -1.0),  # edge 3-0: xi = -1, eta = -t
+)
+
+
 def _get_parent_coordinates(  # noqa
     etype: str, nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
@@ -166,6 +176,8 @@ def _get_parent_coordinates(  # noqa
     Assumes that the point is on the element boundary.
     """
     parent_coords = np.empty((np.size(nodes, 1), 1, np.size(goal_pts, -1)))
+    x_targets = goal_pts[:, 0, 0]
+    y_targets = goal_pts[:, 0, 1]
 
     if etype == "Q4":
         edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
@@ -174,9 +186,8 @@ def _get_parent_coordinates(  # noqa
         tol = 1.0e-7
 
         for gp in range(np.size(goal_pts, 2)):
-            target = goal_pts[gp]
-            x_target = target[0][0]
-            y_target = target[0][1]
+            x_target = x_targets[gp]
+            y_target = y_targets[gp]
             for idx, (i, j) in enumerate(edges):
                 dx = x_nodes[j] - x_nodes[i]
                 dy = y_nodes[j] - y_nodes[i]
@@ -194,49 +205,31 @@ def _get_parent_coordinates(  # noqa
                     x_expected = x_nodes[i] + 0.5 * (t + 1.0) * dx
                     is_collinear = abs(x_target - x_expected) < tol
 
-                # 2. The point must be collinear AND fall within the segment endpoints [-1, 1]
+                # The point must be collinear AND fall within the segment endpoints [-1, 1]
                 if is_collinear and (-1.0 - tol <= t <= 1.0 + tol):
                     t = max(-1.0, min(1.0, t))  # Clean up minor numerical fuzz
 
                     # Map the 1D parameter 't' back to 2D parent space based on the edge index
-                    if idx == 0:  # Edge 1-2: η = -1
-                        xi = t
-                        eta = -1.0
-                        break
-                    elif idx == 1:  # Edge 2-3: ξ = 1
-                        xi = 1.0
-                        eta = t
-                        break
-                    elif idx == 2:  # Edge 3-4: η = 1 (t runs opposite to ξ direction)
-                        xi = -t
-                        eta = 1.0
-                        break
-                    elif idx == 3:  # Edge 4-1: ξ = -1 (t runs opposite to η direction)
-                        xi = -1.0
-                        eta = -t
-                        break
+                    fixed_axis, fixed_val, t_sign = _Q4_EDGE_MAP[idx]
+                    free_val = t_sign * t
+                    xi, eta = (fixed_val, free_val) if fixed_axis == 0 else (free_val, fixed_val)
+                    break
 
             parent_coords[gp] = np.array([xi, eta])
 
     elif etype == "T3":
-        # Direct mapping
-        x1 = nodes[0, 0]
-        x2 = nodes[1, 0]
-        x3 = nodes[2, 0]
-        y1 = nodes[0, 1]
-        y2 = nodes[1, 1]
-        y3 = nodes[2, 1]
+        # Direct mapping - linear in the target coordinates, so solve for every
+        # goal point at once instead of looping.
+        x1, x2, x3 = nodes[0, 0], nodes[1, 0], nodes[2, 0]
+        y1, y2, y3 = nodes[0, 1], nodes[1, 1], nodes[2, 1]
 
         # Determinant (2x the physical area of the triangle)
         D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
 
+        xi_all = ((y3 - y1) * (x_targets - x1) - (x3 - x1) * (y_targets - y1)) / D
+        eta_all = (-(y2 - y1) * (x_targets - x1) + (x2 - x1) * (y_targets - y1)) / D
         for gp in range(np.size(goal_pts, 2)):
-            target = goal_pts[gp]
-            x_target = target[0][0]
-            y_target = target[0][1]
-            xi = ((y3 - y1) * (x_target - x1) - (x3 - x1) * (y_target - y1)) / D
-            eta = (-(y2 - y1) * (x_target - x1) + (x2 - x1) * (y_target - y1)) / D
-            parent_coords[gp] = np.array([xi, eta])
+            parent_coords[gp] = np.array([xi_all[gp], eta_all[gp]])
 
     return parent_coords
 
