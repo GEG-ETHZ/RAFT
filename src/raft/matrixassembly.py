@@ -406,6 +406,128 @@ def _stack_fracture_matrices(
     return body_matrices
 
 
+def _get_region_mesh_data(
+    mesh: dict[str, Any], is_fracture: bool
+) -> tuple[
+    int,  # nn
+    int,  # nsd
+    list[list[int]],  # conn
+    list[int],  # nne_list
+    list[str],  # etype_list
+    list[int],  # elem_indx
+    list[int],  # nq_list
+    list[list[int]],  # region_lists
+    int,  # num_regions
+    dict[str, Any],  # fmesh; {} sentinel when not is_fracture
+    npt.NDArray[np.float64],  # nodes_f; empty sentinel when not is_fracture
+]:
+    """Resolve mesh/region data from the bulk mesh, or the fracture mesh when `is_fracture`."""
+    if is_fracture:
+        fmesh = mesh["fracture_mesh"]
+        return (
+            fmesh["nn"],
+            mesh["nsd"] - 1,
+            fmesh["conn"],
+            fmesh["nne"],
+            fmesh["element_type"],
+            fmesh["elem_indx"],
+            fmesh["n_quadrature"],
+            fmesh["region_lists"],
+            len(fmesh["region_lists"]),
+            fmesh,
+            fmesh["nodes"],
+        )
+    return (
+        mesh["nn"],
+        mesh["nsd"],
+        mesh["conn"],
+        mesh["nne"],
+        mesh["element_type"],
+        mesh["elem_indx"],
+        mesh["n_quadrature"],
+        mesh["region_lists"],
+        mesh["num_regions"],
+        {},
+        np.empty((0, 0)),
+    )
+
+
+@dataclass
+class _CachedCouplingVectors:
+    """Fracture/matrix coupling row/col index vectors cached on `fmesh` by
+    `integrate_linear_matrices`'s fracture pass and reused every timestep by
+    `integrate_nonlinear_matrices` and `integrate_NLpressure_matrices`.
+    """
+
+    row_vec_ff: npt.NDArray[np.int32]
+    col_vec_ff: npt.NDArray[np.int32]
+    row_vec_fm: npt.NDArray[np.int32]
+    col_vec_fm: npt.NDArray[np.int32]
+    row_vec_mm: npt.NDArray[np.int32]
+    col_vec_mm: npt.NDArray[np.int32]
+
+
+def _get_region_flow_data(
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    fmesh: dict[str, Any],
+    nodes_f: npt.NDArray[np.float64],
+    is_fracture: bool,
+    r: int,
+) -> tuple[
+    npt.NDArray[np.float64] | float,  # kf, permeability
+    bool,  # isotropic_perm
+    npt.NDArray[np.float64],  # nodes_r
+    float,  # w, fracture aperture; NaN sentinel when not is_fracture
+    npt.NDArray[np.float64],  # u, fracture tangent; NaN sentinel when not is_fracture
+    float,  # kf_p, transverse permeability, coupling only; NaN sentinel when not is_fracture
+    npt.NDArray[np.float64] | float,  # comp_f, pore/fracture fluid compressibility - KM only
+]:
+    """Resolve per-region permeability, node-projection, and storage data."""
+    # Fracture case
+    if is_fracture:
+        w = mat["fracture"]["aperture"][r]
+        kf = w**3 / 12  # longitudinal permeability, cubic law
+        kf_p = w / 12  # transverse permeability, coupling only
+        comp_f = w / mat["fluid"]["bulk_mod"]
+        u = fmesh["fracture_tangent"][r].reshape(-1, 1)
+        nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
+        return kf, True, nodes_r, w, u, kf_p, comp_f
+
+    # Bulk case
+    kf = mat["solid"]["permeability_eff"][r]
+    isotropic_perm = bool(isinstance(kf, (float, int)))
+    comp_f = np.asarray(1 / mat["solid"]["storage_mod"][r])
+    return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), float("nan"), comp_f
+
+
+def _get_region_thermal_data(
+    mat: dict[str, Any], is_fracture: bool, r: int
+) -> tuple[
+    npt.NDArray[np.float64] | float,  # lambda_e, thermal conductivity
+    bool,  # isotropic_cond
+    float,  # h, interface heat transfer coeff, coupling only; NaN sentinel when not is_fracture
+    npt.NDArray[np.float64] | float,  # m_e, volumetric heat capacity - C only
+    npt.NDArray[np.float64],  # alpha_e, thermal expansion coeff - KpT only; NaN sentinel when is_fracture
+]:
+    """Resolve per-region thermal conductivity, capacity, and expansion data."""
+    # Fracture case
+    if is_fracture:
+        lambda_e = mat["fluid"]["therm_cond"]
+        w = mat["fracture"]["aperture"][r]
+        nusselt = mat["fracture"]["nusselt"][r]
+        h = nusselt * lambda_e / 2 / w  # interface heat transfer coefficient, coupling only
+        m_e = mat["fluid"]["density"] * mat["fluid"]["specific_heat"] * w
+        return lambda_e, True, h, m_e, np.full((1, 1), np.nan)
+
+    # Bulk case
+    lambda_e = mat["solid"]["therm_cond_eff"][r]
+    isotropic_cond = bool(isinstance(lambda_e, (float, int)))
+    m_e = mat["solid"]["volumetric_heat_capacity_eff"][r]
+    alpha_e = np.asarray(mat["solid"]["therm_expansion_eff"][r])
+    return lambda_e, isotropic_cond, float("nan"), m_e, alpha_e
+
+
 def integrate_linear_matrices(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
@@ -439,17 +561,22 @@ def integrate_linear_matrices(  # noqa
     g, ng = _get_gravity(mesh["nsd"])
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    (
+        nn,
+        nsd,
+        conn,
+        nne_list,
+        etype_list,
+        elem_indx,
+        nq_list,
+        region_lists,
+        num_regions,
+        fmesh,
+        nodes_f,
+    ) = _get_region_mesh_data(mesh, is_fracture)
+
     if is_fracture:
-        fmesh = mesh["fracture_mesh"]
-        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
-        conn, nne_list = fmesh["conn"], fmesh["nne"]
-        nodes_f = fmesh["nodes"]
-        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
-        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
         conn_fm = fmesh["matrix_conn"]
-        lambda_f = mat["fluid"]["therm_cond"]
-        cp_f = mat["fluid"]["specific_heat"]
-        comp_f0 = 1.0 / mat["fluid"]["bulk_mod"]
 
         list_of_matrices = ["KM", "C", "KTT"] + (["KbT", "Kpp"] if mu_linear else [])
         list_of_ff_matrices = ["KTT_ff"] + (["Kpp_ff"] if mu_linear else [])
@@ -468,13 +595,14 @@ def integrate_linear_matrices(  # noqa
         ) = _create_fracture_coupling_vectors(conn, conn_fm, mesh["conn"])
         # Cache for reuse by integrate_nonlinear_matrices / integrate_NLpressure_matrices,
         # rather than re-deriving this connectivity-only (mesh-static) data every timestep.
-        fmesh["vec_mat_asmbl"] = {}
-        fmesh["vec_mat_asmbl"]["rows_ff"] = row_vec_ff
-        fmesh["vec_mat_asmbl"]["cols_ff"] = col_vec_ff
-        fmesh["vec_mat_asmbl"]["rows_fm"] = row_vec_fm
-        fmesh["vec_mat_asmbl"]["cols_fm"] = col_vec_fm
-        fmesh["vec_mat_asmbl"]["rows_mm"] = row_vec_mm
-        fmesh["vec_mat_asmbl"]["cols_mm"] = col_vec_mm
+        fmesh["vec_mat_asmbl"] = _CachedCouplingVectors(
+            row_vec_ff=row_vec_ff,
+            col_vec_ff=col_vec_ff,
+            row_vec_fm=row_vec_fm,
+            col_vec_fm=col_vec_fm,
+            row_vec_mm=row_vec_mm,
+            col_vec_mm=col_vec_mm,
+        )
 
         vec_ff = {name: np.zeros(vec_count_ff) for name in list_of_ff_matrices}
         vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
@@ -483,10 +611,6 @@ def integrate_linear_matrices(  # noqa
         vec_counter_fm = 0
         vec_counter_mm = 0
     else:
-        nn, nsd = mesh["nn"], mesh["nsd"]
-        conn, nne_list = mesh["conn"], mesh["nne"]
-        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
-        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
         list_of_matrices = ["KM", "KpT", "C", "KTT"] + (["Kpp", "KbT"] if mu_linear else [])
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
@@ -494,32 +618,15 @@ def integrate_linear_matrices(  # noqa
 
     # ---- Matrix integration element loop
     for r in range(num_regions):
+        kf, isotropic_perm, nodes_r, w, u, kf_p, comp_f = _get_region_flow_data(
+            mesh, mat, fmesh, nodes_f, is_fracture, r
+        )
+        lambda_e, isotropic_cond, h, m_e, alpha_e = _get_region_thermal_data(mat, is_fracture, r)
+
         if is_fracture:
-            # fracture properties - by region, derived from aperture and Nusselt number
-            w = mat["fracture"]["aperture"][r]
-            nusselt = mat["fracture"]["nusselt"][r]
-            kf = w**3 / 12  # longitudinal permeability
-            kf_p = w / 12  # transverse permeability, coupling only
-            h = nusselt * lambda_f / 2 / w  # interface heat transfer coefficient, coupling only
-            comp_f = comp_f0 * w
-            m_e = rho_f * cp_f * w
-            lambda_e = lambda_f
-            isotropic_perm = True
-            isotropic_cond = True
-            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
-            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
             if mu_linear:
                 kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T @ u  # local gravity component
         else:
-            # solid properties - by region
-            alpha_e = np.asarray(mat["solid"]["therm_expansion_eff"][r])
-            comp_f = np.asarray(1 / mat["solid"]["storage_mod"][r])
-            kf = mat["solid"]["permeability_eff"][r]
-            m_e = mat["solid"]["volumetric_heat_capacity_eff"][r]
-            lambda_e = mat["solid"]["therm_cond_eff"][r]
-            isotropic_cond = bool(isinstance(lambda_e, (float, int)))
-            isotropic_perm = bool(isinstance(kf, (float, int)))
-            nodes_r = mesh["nodes"]
             if mu_linear:
                 kf_b = ng.T @ np.dot(kf, ng) / mu * alpha_f * rho_f @ g.T  # kf component in gravity direction
 
@@ -859,24 +966,30 @@ def integrate_nonlinear_matrices(  # noqa
         list_of_matrices.extend(["Kpp", "KbT", "KpT_mu_b", "KpT_mu_p", "KATT_mu", "K_stab_TT_mu"])
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    (
+        nn,
+        nsd,
+        conn,
+        nne_list,
+        etype_list,
+        elem_indx,
+        nq_list,
+        region_lists,
+        num_regions,
+        fmesh,
+        nodes_f,
+    ) = _get_region_mesh_data(mesh, is_fracture)
+
     if is_fracture:
-        fmesh = mesh["fracture_mesh"]
-        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
-        conn, nne_list = fmesh["conn"], fmesh["nne"]
-        nodes_f = fmesh["nodes"]
-        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
-        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
         conn_global = fmesh["conn_global"]
 
         if mu_nonlinear:
             # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
             # fracture pass rather than re-derived here every timestep/Newton iteration.
-            row_vec_ff = fmesh["vec_mat_asmbl"]["rows_ff"]
-            col_vec_ff = fmesh["vec_mat_asmbl"]["cols_ff"]
-            row_vec_fm = fmesh["vec_mat_asmbl"]["rows_fm"]
-            col_vec_fm = fmesh["vec_mat_asmbl"]["cols_fm"]
-            row_vec_mm = fmesh["vec_mat_asmbl"]["rows_mm"]
-            col_vec_mm = fmesh["vec_mat_asmbl"]["cols_mm"]
+            cv = fmesh["vec_mat_asmbl"]
+            row_vec_ff, col_vec_ff = cv.row_vec_ff, cv.col_vec_ff
+            row_vec_fm, col_vec_fm = cv.row_vec_fm, cv.col_vec_fm
+            row_vec_mm, col_vec_mm = cv.row_vec_mm, cv.col_vec_mm
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
@@ -885,11 +998,6 @@ def integrate_nonlinear_matrices(  # noqa
             vec_counter_ff = 0
             vec_counter_fm = 0
             vec_counter_mm = 0
-    else:
-        nn, nsd = mesh["nn"], mesh["nsd"]
-        conn, nne_list = mesh["conn"], mesh["nne"]
-        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
-        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
 
     # ----- gravity vector
     g, ng = _get_gravity(mesh["nsd"])
@@ -899,22 +1007,10 @@ def integrate_nonlinear_matrices(  # noqa
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        if is_fracture:
-            w = mat["fracture"]["aperture"][r]
-            kf = w**3 / 12  # longitudinal permeability
-            isotropic_cond = True
-            isotropic_perm = True
-            lambda_e = mat["fluid"]["therm_cond"]
-            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
-            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
-            if mu_nonlinear:
-                kf_p = w / 12  # transverse permeability, coupling only
-        else:
-            kf = mat["solid"]["permeability_eff"][r]
-            lambda_e = mat["solid"]["therm_cond_eff"][r]
-            isotropic_cond = bool(isinstance(lambda_e, (float, int)))
-            isotropic_perm = bool(isinstance(kf, (float, int)))
-            nodes_r = mesh["nodes"]
+        kf, isotropic_perm, nodes_r, w, u, kf_p, _ = _get_region_flow_data(
+            mesh, mat, fmesh, nodes_f, is_fracture, r
+        )
+        lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
 
         # advection velocity = advection_conductivity * pressure gradient
         if mu_linear:
@@ -1107,23 +1203,30 @@ def integrate_NLpressure_matrices(  # noqa
     list_of_matrices = ["Kpp", "KbT"]
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
+    (
+        nn,
+        nsd,
+        conn,
+        nne_list,
+        etype_list,
+        elem_indx,
+        nq_list,
+        region_lists,
+        num_regions,
+        fmesh,
+        nodes_f,
+    ) = _get_region_mesh_data(mesh, is_fracture)
+
     if is_fracture:
-        fmesh = mesh["fracture_mesh"]
-        nn, nsd = fmesh["nn"], mesh["nsd"] - 1
-        conn, nne_list = fmesh["conn"], fmesh["nne"]
-        nodes_f = fmesh["nodes"]
-        etype_list, elem_indx, nq_list = fmesh["element_type"], fmesh["elem_indx"], fmesh["n_quadrature"]
-        region_lists, num_regions = fmesh["region_lists"], len(fmesh["region_lists"])
         conn_global = fmesh["conn_global"]
 
         # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
-        # fracture pass rather than re-derived here every timestep.
-        row_vec_ff = fmesh["vec_mat_asmbl"]["rows_ff"]
-        col_vec_ff = fmesh["vec_mat_asmbl"]["cols_ff"]
-        row_vec_fm = fmesh["vec_mat_asmbl"]["rows_fm"]
-        col_vec_fm = fmesh["vec_mat_asmbl"]["cols_fm"]
-        row_vec_mm = fmesh["vec_mat_asmbl"]["rows_mm"]
-        col_vec_mm = fmesh["vec_mat_asmbl"]["cols_mm"]
+        # fracture pass rather than re-derived here every timestep. `integrate_NLpressure_matrices`
+        # is only ever called for nonlinear viscosity, so this cache is unconditionally available.
+        cv = fmesh["vec_mat_asmbl"]
+        row_vec_ff, col_vec_ff = cv.row_vec_ff, cv.col_vec_ff
+        row_vec_fm, col_vec_fm = cv.row_vec_fm, cv.col_vec_fm
+        row_vec_mm, col_vec_mm = cv.row_vec_mm, cv.col_vec_mm
 
         vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
         vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
@@ -1132,28 +1235,15 @@ def integrate_NLpressure_matrices(  # noqa
         vec_counter_ff = 0
         vec_counter_fm = 0
         vec_counter_mm = 0
-    else:
-        nn, nsd = mesh["nn"], mesh["nsd"]
-        conn, nne_list = mesh["conn"], mesh["nne"]
-        etype_list, elem_indx, nq_list = mesh["element_type"], mesh["elem_indx"], mesh["n_quadrature"]
-        region_lists, num_regions = mesh["region_lists"], mesh["num_regions"]
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        if is_fracture:
-            w = mat["fracture"]["aperture"][r]
-            kf = w**3 / 12  # longitudinal permeability
-            kf_p = w / 12  # transverse permeability, coupling only
-            isotropic_perm = True
-            u = fmesh["fracture_tangent"][r].reshape(-1, 1)
-            nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
-        else:
-            kf = mat["solid"]["permeability_eff"][r]
-            isotropic_perm = bool(isinstance(kf, (float, int)))
-            nodes_r = mesh["nodes"]
+        kf, isotropic_perm, nodes_r, w, u, kf_p, _ = _get_region_flow_data(
+            mesh, mat, fmesh, nodes_f, is_fracture, r
+        )
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
