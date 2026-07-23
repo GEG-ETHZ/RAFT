@@ -940,6 +940,43 @@ def _deduplicate_split_nodes(
     return nodes, conn, nodes_new[:, -1]
 
 
+def _cut_tip_boundary_elements(
+    state: _CutState,
+    conn: list[list[int]],
+    matrix_elements_to_cut_arr: npt.NDArray[np.int64],
+    centroids: npt.NDArray[np.float64],
+    frac_nodes: npt.NDArray[np.float64],
+    tip_nodes: list[int],
+    frac_normal: npt.NDArray[np.float64],
+    nsd: int,
+    tol: float,
+) -> tuple[list[list[int]], npt.NDArray[np.int64]]:
+    """Cut far-side elements left over when a fracture tip lands exactly on an existing
+    matrix boundary -- an existing node, or a point partway along an edge -- shared
+    with another element that also qualified for cutting in `_find_cut_elements`.
+    """
+    new_elem: list[list[int]] = []
+
+    for tip in tip_nodes:
+        f_nodes_tip = np.array([tip])
+        f_coords_tip = frac_nodes[[tip], :]
+
+        while len(matrix_elements_to_cut_arr) > 0:
+            e_m, matrix_elements_to_cut_arr, centroids = _find_parent_element(
+                f_coords_tip, matrix_elements_to_cut_arr, centroids, conn, state.nodes, tol
+            )
+            if e_m is None:
+                break
+
+            new_elem.extend(
+                _cut_matrix_element(
+                    state, e_m, conn, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, nsd, tol
+                )
+            )
+
+    return new_elem, matrix_elements_to_cut_arr
+
+
 def _split_elements(
     mesh: dict[str, Any],
     frac_ls: FractureLevelSet,
@@ -986,6 +1023,13 @@ def _split_elements(
                 state, e_m, conn, f_nodes, f_coords, tip_nodes, tip_element, frac_normal, nsd, tol
             )
         )
+
+    # ---- Handle edge case: Fracture tip falls exactly on mesh edge and far element needs to be cut.
+    if tip_nodes and len(matrix_elements_to_cut_arr) > 0:
+        tip_new_elem, matrix_elements_to_cut_arr = _cut_tip_boundary_elements(
+            state, conn, matrix_elements_to_cut_arr, centroids, frac_nodes, tip_nodes, frac_normal, nsd, tol
+        )
+        new_elem.extend(tip_new_elem)
 
     conn = _replace_cut_elements(conn, elements_to_delete, matrix_elements_to_cut_arr, new_elem)
 

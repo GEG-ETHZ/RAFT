@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[25.5, 37.5, 0.0], [45, 5.0], [10,0]]
+          values: [[25.5, 37.5, 0.0], [22, 5.0], [90,0]]
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
@@ -90,7 +90,7 @@ simulation:
   timestep: 100.0
   timestep_min: 1.0
   timestep_max: 100.0
-  solver_type: "fully_coupled"
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1

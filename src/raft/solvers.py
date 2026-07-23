@@ -289,7 +289,7 @@ def _aitken_relax(
     """
     if bounds is None:
         min_relax = 0.001
-        max_relax = 100.0
+        max_relax = 10.0
     else:
         min_relax, max_relax = bounds
 
