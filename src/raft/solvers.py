@@ -245,7 +245,9 @@ def _check_convergence_fullycoupled(
     for key in R:
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
-        NR[key][iteration] = np.linalg.norm(R[key][nF]) / ne  # norm of the residual per element
+        normalizer = 1 if iteration < 4 else np.max(NR[key][0:4])
+
+        NR[key][iteration] = np.linalg.norm(R[key][nF]) / ne / normalizer  # norm of the residual per element
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
@@ -353,8 +355,8 @@ def fully_coupled_time_integration(  # noqa
     and pressure monolithically.
     """
     # extract vectors of nodal dofs
-    p = primary_variables["p"]
-    T = primary_variables["T"]
+    p = primary_variables["p"].copy()
+    T = primary_variables["T"].copy()
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
@@ -490,6 +492,11 @@ def fully_coupled_time_integration(  # noqa
             NR_step = 0.5
             d += NR_step * delta_var.reshape(-1, 1)
 
+            # Check for nan or inf data and break
+            if np.any(np.isnan(d)) or np.any(np.isinf(d)):
+                print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                break
+
             # Apply relaxation
             if aitken_on:
                 (
@@ -520,9 +527,10 @@ def fully_coupled_time_integration(  # noqa
     q = np.zeros((nn, 1))
     q[p_fix] = R["p"][p_fix]
     # save variables
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q"] = q  # outlet flow rates
+    if converged:
+        primary_variables["p"] = p
+        primary_variables["T"] = T
+        primary_variables["q"] = q  # outlet flow rates
 
     if verbose:
         print()  # new line for that output doesn't get overwritten
