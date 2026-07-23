@@ -371,7 +371,7 @@ def fully_coupled_time_integration(  # noqa
     mu_nonlinear = sim_control["viscosity_nonconstant"]
 
     # extract mesh characteristics
-    nn = mesh["nn"]  # noqa
+    nn = mesh["nn_total"]  # noqa
     T_dofs = T_dofs + nn  # shift for combined p-T vector
 
     # calculate rate coefficients
