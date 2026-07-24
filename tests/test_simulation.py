@@ -21,7 +21,7 @@ def test_axisymmetry() -> None:
     config_filename = "config_test_axisymmetry.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_axisymmetry(
         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
@@ -124,7 +124,7 @@ def test_patch_x_flux() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 0
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_patch_test_flux(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )

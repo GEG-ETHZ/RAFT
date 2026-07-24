@@ -358,8 +358,9 @@ def fully_coupled_time_integration(  # noqa
     and pressure monolithically.
     """
     # extract vectors of nodal dofs
-    p = primary_variables["p"].copy()
-    T = primary_variables["T"].copy()
+    primary_variables_iteration = primary_variables.copy()
+    p = primary_variables_iteration["p"]
+    T = primary_variables_iteration["T"]
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
@@ -431,7 +432,9 @@ def fully_coupled_time_integration(  # noqa
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Compute residual vectors
-        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
+        matrices_non_linear = integrate_nonlinear_matrices(
+            mesh, material, primary_variables_iteration, sim_control
+        )
 
         if mu_nonlinear:
             Kpp = matrices_non_linear["Kpp"]  # Pressure conductance matrix
@@ -480,7 +483,7 @@ def fully_coupled_time_integration(  # noqa
 
             # Assemble Jacobian matrix
             App = -KM * cv[0] - Kpp  # correct
-            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p  # issues?
+            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p
             ATp = -(KATp + K_stab_Tp) * adv_on  # correct
             ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct
 
