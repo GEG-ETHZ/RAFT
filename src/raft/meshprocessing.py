@@ -11,7 +11,7 @@ import scipy as sp
 from matplotlib.collections import PolyCollection
 
 
-def debugging_mesh_plot(nodes: npt.NDArray[np.float64], conn: list[list[int]]):
+def debugging_mesh_plot(nodes: npt.NDArray[np.float64], conn: list[list[int]]) -> None:
     """Plot and label mesh and nodes."""
     # Map node indices to coordinates
     verts = [nodes[elem] for elem in conn]
