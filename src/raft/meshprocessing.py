@@ -4,9 +4,56 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy as sp
+from matplotlib.collections import PolyCollection
+
+
+def debugging_mesh_plot(nodes: npt.NDArray[np.float64], conn: list[list[int]]):
+    """Plot and label mesh and nodes."""
+    # Map node indices to coordinates
+    verts = [nodes[elem] for elem in conn]
+
+    fig, ax = plt.subplots()
+
+    # 1. Plot the elements
+    mesh = PolyCollection(verts, closed=True, edgecolor="black", facecolor="skyblue", alpha=0.6)
+    ax.add_collection(mesh)
+
+    # 2. Scatter the node points
+    ax.scatter(nodes[:, 0], nodes[:, 1], color="red", zorder=3, s=25)
+
+    # 3. Label Node IDs (offset slightly to the top-right of the node)
+    for i, (x, y) in enumerate(nodes):
+        ax.text(x + 0.05, y + 0.05, str(i), color="darkred", fontsize=9, zorder=4)
+
+    # 4. Label Element IDs at their centroids
+    for elem_id, elem_nodes in enumerate(conn):
+        # The centroid is the mean of the coordinates of the nodes in this element
+        centroid = np.mean(nodes[elem_nodes], axis=0)
+
+        # Place the text directly on the centroid
+        ax.text(
+            centroid[0],
+            centroid[1],
+            f"E{elem_id}",
+            color="blue",
+            fontsize=10,
+            fontweight="bold",
+            ha="center",  # Center horizontally
+            va="center",  # Center vertically
+            zorder=4,
+            # Optional: Add a semi-transparent white background box for readability
+            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", boxstyle="round,pad=0.2"),  # noqa
+        )
+
+    # Clean up axis limits and aspect ratio
+    ax.autoscale_view()
+    ax.set_aspect("equal")
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.show()
 
 
 def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, list[list[int]] | None]:  # noqa
@@ -789,7 +836,8 @@ def _group_split_nodes(
             face_nodes = [m_nodes_orig[i] for i in face_local]
             crosses_phi = np.any(phi_sign[face_nodes] > 0) and np.any(phi_sign[face_nodes] < 0)
             beyond_tip = np.any(psi[face_nodes] >= tol)
-            if crosses_phi and beyond_tip:
+            cut_by_fracture = np.any(psi[face_nodes] < tol)
+            if crosses_phi and beyond_tip and not cut_by_fracture:
                 tip_group.extend(n for n in face_nodes if n not in tip_group)
 
         if len(tip_group) > 1:
