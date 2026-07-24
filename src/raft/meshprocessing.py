@@ -670,6 +670,7 @@ class _CutState:
     """
 
     nodes: npt.NDArray[np.float64]
+    phi: npt.NDArray[np.float64]
     phi_sign: npt.NDArray[np.float64]
     psi: npt.NDArray[np.float64]
     new_node_index: int
@@ -801,6 +802,7 @@ def _insert_split_nodes(
 def _group_split_nodes(
     m_nodes: list[int],
     m_nodes_orig: list[int],
+    phi: npt.NDArray[np.float64],
     phi_sign: npt.NDArray[np.float64],
     psi: npt.NDArray[np.float64],
     tip_element: bool,
@@ -835,10 +837,19 @@ def _group_split_nodes(
         for face_local in faces.values():
             face_nodes = [m_nodes_orig[i] for i in face_local]
             crosses_phi = np.any(phi_sign[face_nodes] > 0) and np.any(phi_sign[face_nodes] < 0)
-            beyond_tip = np.any(psi[face_nodes] >= tol)
-            cut_by_fracture = np.any(psi[face_nodes] < tol)
-            if crosses_phi and beyond_tip and not cut_by_fracture:
-                tip_group.extend(n for n in face_nodes if n not in tip_group)
+
+            if crosses_phi:
+                # Interpolate psi at the exact intersection of the edge with phi = 0
+                phi_a, phi_b = phi[face_nodes[0]], phi[face_nodes[1]]
+                psi_a, psi_b = psi[face_nodes[0]], psi[face_nodes[1]]
+
+                denom = phi_b - phi_a
+                t = -phi_a / denom if abs(denom) > 1e-12 else 0.5
+                psi_intersect = psi_a + t * (psi_b - psi_a)
+
+                # If the intersection occurs ahead of or at the crack tip
+                if psi_intersect >= -tol:
+                    tip_group.extend(n for n in face_nodes if n not in tip_group)
 
         if len(tip_group) > 1:
             m_node_groups.append(tip_group)
@@ -852,7 +863,10 @@ def _triangulate_node_groups(
     """Triangulate (or keep as a single Q4/T3) each node group, returning new element connectivity."""
     new_elem = []
     for group in m_node_groups:
-        if len(group) < 5:
+        if len(group) < 3:
+            # Degenerate element, skip
+            continue
+        elif len(group) < 5:
             # Keep as a Q4/T3, sort to ensure new nodes are CCW ordered
             global_conn = [_sort_boundary_coords(group, nodes[group, :])]
         else:
@@ -891,7 +905,7 @@ def _cut_matrix_element(
     )
 
     m_node_groups = _group_split_nodes(
-        m_nodes, m_nodes_orig, state.phi_sign, state.psi, tip_element, nsd, tol
+        m_nodes, m_nodes_orig, state.phi, state.phi_sign, state.psi, tip_element, nsd, tol
     )
     new_elem = _triangulate_node_groups(m_node_groups, state.nodes)
 
@@ -1040,7 +1054,11 @@ def _split_elements(
     frac_normal = frac_ls.n
 
     state = _CutState(
-        nodes=mesh["nodes"], phi_sign=frac_ls.phi_sign, psi=frac_ls.psi, new_node_index=mesh["nn"]
+        nodes=mesh["nodes"],
+        phi=frac_ls.phi,
+        phi_sign=frac_ls.phi_sign,
+        psi=frac_ls.psi,
+        new_node_index=mesh["nn"],
     )
 
     # Find matrix elements that need cutting, and their centroids -- used below to match
