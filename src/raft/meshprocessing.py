@@ -472,9 +472,13 @@ def _compute_node_levels(
     # Tangential level set (negative inside the crack, positive past the tips)
     psi = np.abs(s) - half_length
 
-    # Identify nodes directly on the physical fracture segment (phi = 0 and psi <= 0)
-    on_frac_mask = (np.abs(phi) < tol) & (psi <= tol)
-    phi[on_frac_mask] = 0.0
+    # Snap any node numerically collinear with the (infinite) fracture line to phi = 0
+    collinear_mask = np.abs(phi) < tol
+    phi[collinear_mask] = 0.0
+
+    # Nodes directly on the physical fracture segment (phi = 0 and psi <= 0) -- a
+    # narrower set than collinear_mask, since it excludes collinear nodes beyond a tip.
+    on_frac_mask = collinear_mask & (psi <= tol)
     on_frac_nodes = set(np.where(on_frac_mask)[0])
 
     return phi, psi, s, on_frac_nodes
@@ -697,6 +701,97 @@ def _find_cut_elements(
                 # The element crosses or is in the tangential level set
                 matrix_elements_to_cut.append(e)
     return matrix_elements_to_cut
+
+
+def _find_collinear_tip_elements(
+    conn: list[list[int]],
+    nsd: int,
+    phi_sign: npt.NDArray[np.float64],
+    psi: npt.NDArray[np.float64],
+    frac_ls: FractureLevelSet,
+    tip_nodes: list[int],
+    frac_nodes: npt.NDArray[np.float64],
+) -> list[tuple[int, int, int, int]]:
+    """Find elements with a boundary edge collinear with the fracture line whose two
+    endpoints straddle a crack tip tangentially (one within the fracture's tangential
+    extent, one beyond the tip).
+
+    Returns (element_index, near_node, far_node, tip_index) tuples: near_node lies
+    within the fracture's tangential extent, far_node lies beyond the tip, and
+    tip_index indexes into `tip_nodes`/`frac_nodes` for the matching crack tip.
+    """
+    zero_nodes = set(np.flatnonzero(phi_sign == 0.0).tolist())
+    if len(zero_nodes) < 2:
+        return []
+
+    # Determine which elements have exactly 2 nodes with a zero phi level set
+    candidate_elems = [e for e, enodes in enumerate(conn) if sum(n in zero_nodes for n in enodes) >= 2]
+    if not candidate_elems:
+        return []
+
+    center_2d = frac_ls.center_2d
+    u = frac_ls.u
+    s = frac_ls.s
+    tol = frac_ls.tol
+    tip_s = {idx: float(np.dot(frac_nodes[idx] - center_2d, u)) for idx in tip_nodes}
+
+    # Check that these are tip elements
+    found: list[tuple[int, int, int, int]] = []
+    for e in candidate_elems:
+        enodes = conn[e]
+        faces = _get_element_face_lists(len(enodes), nsd)
+        for face_local in faces.values():
+            a, b = enodes[face_local[0]], enodes[face_local[1]]
+            if a not in zero_nodes or b not in zero_nodes:
+                continue  # not the edge
+            if np.sign(psi[a]) == np.sign(psi[b]):
+                continue  # both collinear, but doesn't straddle a tip tangentially
+            if psi[a] < tol or psi[b] < tol:
+                continue  # the tip already exists as a node
+            near, far = (a, b) if psi[a] < psi[b] else (b, a)
+
+            tip_idx = min(tip_s, key=lambda k: abs(tip_s[k] - s[near]))
+            found.append((e, near, far, tip_idx))
+    return found
+
+
+def _cut_collinear_tip_elements(
+    state: _CutState,
+    conn: list[list[int]],
+    matches: list[tuple[int, int, int, int]],
+    frac_nodes: npt.NDArray[np.float64],
+    tip_nodes: list[int],
+    frac_normal: npt.NDArray[np.float64],
+    tol: float,
+) -> tuple[list[list[int]], list[int]]:
+    """Cut the neighbouring collinear elements by inserting the new node at the edge."""
+    new_elem: list[list[int]] = []
+    consumed_elems: list[int] = []
+
+    for e, near, far, tip_idx in matches:
+        m_nodes_orig = conn[e]
+
+        f_nodes_tip = np.array([tip_idx])
+        f_coords_tip = frac_nodes[[tip_idx], :]
+        m_nodes = [node for node in m_nodes_orig if state.phi_sign[node] != 0.0]
+        m_nodes, _ = _insert_split_nodes(
+            state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
+        )
+        new_tip_node = m_nodes[-1]  # node _insert_split_nodes just appended for the tip
+
+        # Splice the tip node into the element's existing CCW boundary order, directly
+        # between near and far (they're adjacent by construction, since they form one
+        # of the element's own edges).
+        ordered = list(m_nodes_orig)
+        idx_near = ordered.index(near)
+        insert_at = idx_near + 1 if ordered[(idx_near + 1) % len(ordered)] == far else ordered.index(far) + 1
+        ordered.insert(insert_at, new_tip_node)
+
+        new_elem.extend(_triangulate_node_groups([ordered], state.nodes))
+
+        consumed_elems.append(e)
+
+    return new_elem, consumed_elems
 
 
 def _compute_element_centroids(
@@ -953,7 +1048,12 @@ def _resolve_zero_level_set_nodes(
         d = np.linalg.norm(state.nodes - tip_coords, axis=1)
         matrix_tip_nodes.extend((np.where(d < tol)[0]).tolist())
     tip_node_set = set(matrix_tip_nodes)
-    zero_ls_nodes = [n for n in np.where(state.phi_sign == 0.0)[0].tolist() if n not in tip_node_set]
+
+    zero_ls_nodes = [
+        n
+        for n in np.where(state.phi_sign == 0.0)[0].tolist()
+        if n not in tip_node_set and state.psi[n] <= tol
+    ]
 
     for node in zero_ls_nodes:
         elems_with_node = [e for e, enodes in enumerate(conn) if node in enodes]
@@ -1075,6 +1175,23 @@ def _split_elements(
 
     new_elem: list[list[int]] = []
     ne_f = np.size(frac_conn, 0)
+
+    # ---- Handle edge case: an element's boundary edge is collinear with the fracture
+    # line but the fracture stops short of spanning it (the tip lands mid-edge).
+    # `_find_cut_elements` can never see these elements (see docstring), so find and
+    # cut them separately, up front, using the original (pre-cut) connectivity.
+    if tip_nodes:
+        collinear_matches = _find_collinear_tip_elements(
+            conn, nsd, state.phi_sign, state.psi, frac_ls, tip_nodes, frac_nodes
+        )
+        if collinear_matches:
+            collinear_new_elem, collinear_consumed = _cut_collinear_tip_elements(
+                state, conn, collinear_matches, frac_nodes, tip_nodes, frac_normal, tol
+            )
+            new_elem.extend(collinear_new_elem)
+            for e in collinear_consumed:
+                if e not in elements_to_delete:
+                    elements_to_delete.append(e)
 
     # ---- Loop through all fracture elements, cutting each one's parent matrix element
     for e_f in range(ne_f):

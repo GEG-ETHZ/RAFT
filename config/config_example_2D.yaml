@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[20.4, 37.5, 0.0], [21.5, 5.0], [90 ,0]]
+          values: [[20.4, 37.5, 0.0], [22.5, 5.0], [90 ,0]]
 
 
 material:
