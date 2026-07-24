@@ -239,15 +239,18 @@ def _check_convergence_fullycoupled(
     tolerance: float,
 ) -> tuple[bool, float]:
 
-    n_DoFs = np.arange(0, mesh["nn"])  # number of DoFs
+    n_DoFs = np.arange(0, mesh["nn_total"])  # number of DoFs
     ne = mesh["ne"]
 
     for key in R:
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
         normalizer = 1 if iteration < 4 else np.max(NR[key][0:4])
+        numerator = np.linalg.norm(R[key][nF])
 
-        NR[key][iteration] = np.linalg.norm(R[key][nF]) / ne / normalizer  # norm of the residual per element
+        NR[key][iteration] = np.min(
+            (numerator / ne, numerator / ne / normalizer)
+        )  # norm of the residual per element
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
