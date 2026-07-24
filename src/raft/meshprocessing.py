@@ -848,7 +848,7 @@ def _group_split_nodes(
                 psi_intersect = psi_a + t * (psi_b - psi_a)
 
                 # If the intersection occurs ahead of or at the crack tip
-                if psi_intersect >= -tol:
+                if psi_intersect >= tol:
                     tip_group.extend(n for n in face_nodes if n not in tip_group)
 
         if len(tip_group) > 1:
@@ -1010,7 +1010,7 @@ def _cut_tip_boundary_elements(
     frac_nodes: npt.NDArray[np.float64],
     tip_nodes: list[int],
     frac_normal: npt.NDArray[np.float64],
-    nsd: int,
+    nsd: int,  # noqa
     tol: float,
 ) -> tuple[list[list[int]], npt.NDArray[np.int64]]:
     """Cut far-side elements left over when a fracture tip lands exactly on an existing
@@ -1030,11 +1030,16 @@ def _cut_tip_boundary_elements(
             if e_m is None:
                 break
 
-            new_elem.extend(
-                _cut_matrix_element(
-                    state, e_m, conn, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, nsd, tol
-                )
+            # If the node is already on the fracture path, we're going to
+            # replace it with a new node
+            m_nodes_orig = conn[e_m].copy()
+            m_nodes = [node for node in m_nodes_orig if state.phi_sign[node] != 0.0]
+
+            m_nodes, _ = _insert_split_nodes(
+                state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
             )
+
+            new_elem.extend(_triangulate_node_groups([m_nodes], state.nodes))
 
     return new_elem, matrix_elements_to_cut_arr
 
