@@ -856,7 +856,6 @@ def _find_parent_element(
     centroids: npt.NDArray[np.float64],
     conn: list[list[int]],
     nodes: npt.NDArray[np.float64],
-    tol: float,
 ) -> tuple[int | None, npt.NDArray[np.int64], npt.NDArray[np.float64]]:
     """Find the matrix element containing a fracture element, checking nearest-centroid first.
 
@@ -878,7 +877,7 @@ def _find_parent_element(
         )  # extract the equations defining the 0-level set
         # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
         # If Ax + b < 0, then the point is within the polyhedron.
-        elem_in_region = np.all(f_coords @ A.T + b.T < tol)
+        elem_in_region = np.all(f_coords @ A.T + b.T < 1e-8)
         if elem_in_region:
             # The fracture element is within the matrix element domain, this is the element to cut.
             e_m = int(candidate)
@@ -1192,7 +1191,7 @@ def _cut_tip_boundary_elements(
 
         while len(matrix_elements_to_cut_arr) > 0:
             e_m, matrix_elements_to_cut_arr, centroids = _find_parent_element(
-                f_coords_tip, matrix_elements_to_cut_arr, centroids, conn, state.nodes, tol
+                f_coords_tip, matrix_elements_to_cut_arr, centroids, conn, state.nodes
             )
             if e_m is None:
                 break
@@ -1267,7 +1266,7 @@ def _split_elements(
         tip_element = bool(np.any(f_nodes == tip_nodes)) if len(tip_nodes) > 0 else False
 
         e_m, matrix_elements_to_cut_arr, centroids = _find_parent_element(
-            f_coords, matrix_elements_to_cut_arr, centroids, conn, state.nodes, tol
+            f_coords, matrix_elements_to_cut_arr, centroids, conn, state.nodes
         )
         if e_m is None:
             # fracture element lies along a boundary

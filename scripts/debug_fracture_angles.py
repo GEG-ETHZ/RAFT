@@ -30,7 +30,7 @@ for i in range(num_cases):
     config_mesh = copy.deepcopy(config["mesh"])
     xc = random.random() * 51
     yc = random.random() * 75
-    L = random.random() * 82
+    L = max(random.random() * 82, 5)
     angle = random.random() * 360
 
     print(f"xc = {xc}")
