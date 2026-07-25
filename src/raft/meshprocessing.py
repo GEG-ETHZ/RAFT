@@ -662,7 +662,7 @@ def _create_fracture_nodes_conn(  # noqa
         )  # extract the equations defining the 0-level set
         # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
         # If Ax + b < 0, then the point is within the polyhedron.
-        node_in_region = np.all(tip_coords @ A.T + b.T < tol)
+        node_in_region = np.all(tip_coords @ A.T + b.T < 1e-8)
         if not node_in_region:
             # Tip is outside the domain
             continue
