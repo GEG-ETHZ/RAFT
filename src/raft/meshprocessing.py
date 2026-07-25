@@ -621,7 +621,7 @@ def _create_fracture_nodes_conn(  # noqa
             # check tangential level set
             s_c = np.dot(nodes_c - center_2d, u)
             psi_c = np.abs(s_c) - half_length
-            if psi_c < 0:
+            if psi_c < tol:
                 # If within bounds, add new node
                 d_a = np.linalg.norm(nodes_c - nodes_a)
                 d_b = np.linalg.norm(nodes_c - nodes_b)
@@ -644,7 +644,7 @@ def _create_fracture_nodes_conn(  # noqa
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
         nearest_indx = int(np.argmin(d))
-        if d[nearest_indx] < tol:
+        if phi[nearest_indx] == 0.0:
             tip_coords = nodes[nearest_indx, :]
 
         # Check if fracture node at tip_coords already exists

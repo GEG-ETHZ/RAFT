@@ -10,7 +10,7 @@ mesh:
   dimensions: 2
   fractures:
         - shape: "ellipse"
-          values: [[21.058923092969785, 59.49123185708153, 0.0], [38.58702109028117, 5.0], [351.9771865557109 ,0]]
+          values: [[21.819717394976866, 37.52863310236877, 0.0], [14.208345160034254, 5.0], [157.1319583838092 ,0]]
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
