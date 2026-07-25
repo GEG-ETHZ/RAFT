@@ -15,6 +15,7 @@ def debugging_mesh_plot(
     nodes: npt.NDArray[np.float64],
     conn: list[list[int]],
     nodal_values: npt.NDArray[np.float64] | None = None,
+    plot_ids: bool = False,
 ) -> None:
     """Plot and label mesh elements and nodes, optionally showing interpolated scalar values."""
     fig, ax = plt.subplots()
@@ -59,43 +60,45 @@ def debugging_mesh_plot(
     ax.scatter(nodes[:, 0], nodes[:, 1], color="red", zorder=3, s=25)
 
     # 4. Add Node IDs (and scalar values if available)
-    for i, (x, y) in enumerate(nodes):
-        label = f"{i} ({nodal_values[i]:.1f})" if nodal_values is not None else f"{i}"
-        ax.text(
-            x + 0.05,
-            y + 0.05,
-            label,
-            color="white" if nodal_values is not None else "darkred",
-            fontsize=6,
-            zorder=4,
-            bbox=dict(  # noqa
-                facecolor="black" if nodal_values is not None else "white",
-                alpha=0.6,
-                pad=1,
-                edgecolor="none",
-            ),
-        )
+    if plot_ids:
+        for i, (x, y) in enumerate(nodes):
+            label = f"{i} ({nodal_values[i]:.1f})" if nodal_values is not None else f"{i}"
+            ax.text(
+                x + 0.05,
+                y + 0.05,
+                label,
+                color="white" if nodal_values is not None else "darkred",
+                fontsize=6,
+                zorder=4,
+                bbox=dict(  # noqa
+                    facecolor="black" if nodal_values is not None else "white",
+                    alpha=0.6,
+                    pad=1,
+                    edgecolor="none",
+                ),
+            )
 
     # 5. Add Element IDs at centroids
-    for elem_id, elem_nodes in enumerate(conn):
-        centroid = np.mean(nodes[elem_nodes], axis=0)
-        ax.text(
-            centroid[0],
-            centroid[1],
-            f"E{elem_id}",
-            color="black",
-            fontweight="bold",
-            ha="center",
-            va="center",
-            fontsize=6,
-            zorder=4,
-            bbox=dict(  # noqa
-                facecolor="white",
-                alpha=0.8,
-                edgecolor="none",
-                boxstyle="round,pad=0.2",
-            ),
-        )
+    if plot_ids:
+        for elem_id, elem_nodes in enumerate(conn):
+            centroid = np.mean(nodes[elem_nodes], axis=0)
+            ax.text(
+                centroid[0],
+                centroid[1],
+                f"E{elem_id}",
+                color="black",
+                fontweight="bold",
+                ha="center",
+                va="center",
+                fontsize=6,
+                zorder=4,
+                bbox=dict(  # noqa
+                    facecolor="white",
+                    alpha=0.8,
+                    edgecolor="none",
+                    boxstyle="round,pad=0.2",
+                ),
+            )
 
     # 6. Final adjustments
     ax.autoscale_view()
@@ -1006,7 +1009,9 @@ def _group_split_nodes(
 
 
 def _triangulate_node_groups(
-    m_node_groups: list[list[int]], nodes: npt.NDArray[np.float64]
+    m_node_groups: list[list[int]],
+    nodes: npt.NDArray[np.float64],
+    cut_boundary: bool = False,
 ) -> list[list[int]]:
     """Triangulate (or keep as a single Q4/T3) each node group, returning new element connectivity."""
     new_elem = []
@@ -1014,7 +1019,7 @@ def _triangulate_node_groups(
         if len(group) < 3:
             # Degenerate element, skip
             continue
-        elif len(group) < 5:
+        elif len(group) < 5 and not cut_boundary:
             # Keep as a Q4/T3, sort to ensure new nodes are CCW ordered
             global_conn = [_sort_boundary_coords(group, nodes[group, :])]
         else:
@@ -1205,7 +1210,7 @@ def _cut_tip_boundary_elements(
                 state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
             )
 
-            new_elem.extend(_triangulate_node_groups([m_nodes], state.nodes))
+            new_elem.extend(_triangulate_node_groups([m_nodes], state.nodes, True))
 
     return new_elem, matrix_elements_to_cut_arr
 
