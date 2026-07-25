@@ -942,9 +942,12 @@ def _insert_split_nodes(
 def _group_split_nodes(
     m_nodes: list[int],
     m_nodes_orig: list[int],
+    nodes: npt.NDArray[np.float64],
     phi: npt.NDArray[np.float64],
     phi_sign: npt.NDArray[np.float64],
-    psi: npt.NDArray[np.float64],
+    center_2d: npt.NDArray[np.float64],
+    u: npt.NDArray[np.float64],
+    half_length: float,
     tip_element: bool,
     nsd: int,
     tol: float,
@@ -979,13 +982,19 @@ def _group_split_nodes(
             crosses_phi = np.any(phi_sign[face_nodes] > 0) and np.any(phi_sign[face_nodes] < 0)
 
             if crosses_phi:
-                # Interpolate psi at the exact intersection of the edge with phi = 0
+                # Find the exact intersection point of the edge with phi = 0 and
+                # recompute psi there directly from geometry.
                 phi_a, phi_b = phi[face_nodes[0]], phi[face_nodes[1]]
-                psi_a, psi_b = psi[face_nodes[0]], psi[face_nodes[1]]
+                nodes_a, nodes_b = nodes[face_nodes[0], :], nodes[face_nodes[1], :]
 
-                denom = phi_b - phi_a
-                t = -phi_a / denom if abs(denom) > 1e-12 else 0.5
-                psi_intersect = psi_a + t * (psi_b - psi_a)
+                denom = phi_a - phi_b
+                nodes_c = (
+                    (phi_a * nodes_b - phi_b * nodes_a) / denom
+                    if abs(denom) > 1e-12
+                    else 0.5 * (nodes_a + nodes_b)
+                )
+                s_intersect = np.dot(nodes_c - center_2d, u)
+                psi_intersect = np.abs(s_intersect) - half_length
 
                 # If the intersection occurs ahead of or at the crack tip
                 if psi_intersect >= tol:
@@ -1029,6 +1038,9 @@ def _cut_matrix_element(
     tip_nodes: list[int],
     tip_element: bool,
     frac_normal: npt.NDArray[np.float64],
+    center_2d: npt.NDArray[np.float64],
+    u: npt.NDArray[np.float64],
+    half_length: float,
     nsd: int,
     tol: float,
 ) -> list[list[int]]:
@@ -1045,7 +1057,17 @@ def _cut_matrix_element(
     )
 
     m_node_groups = _group_split_nodes(
-        m_nodes, m_nodes_orig, state.phi, state.phi_sign, state.psi, tip_element, nsd, tol
+        m_nodes,
+        m_nodes_orig,
+        state.nodes,
+        state.phi,
+        state.phi_sign,
+        center_2d,
+        u,
+        half_length,
+        tip_element,
+        nsd,
+        tol,
     )
     new_elem = _triangulate_node_groups(m_node_groups, state.nodes)
 
@@ -1253,7 +1275,19 @@ def _split_elements(
 
         new_elem.extend(
             _cut_matrix_element(
-                state, e_m, conn, f_nodes, f_coords, tip_nodes, tip_element, frac_normal, nsd, tol
+                state,
+                e_m,
+                conn,
+                f_nodes,
+                f_coords,
+                tip_nodes,
+                tip_element,
+                frac_normal,
+                frac_ls.center_2d,
+                frac_ls.u,
+                frac_ls.half_length,
+                nsd,
+                tol,
             )
         )
 
