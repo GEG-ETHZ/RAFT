@@ -28,10 +28,15 @@ config["mesh"]["config_dir"] = config["config_dir"]
 
 for i in range(num_cases):
     config_mesh = copy.deepcopy(config["mesh"])
-    xc = 20.4  # random.random()*51
+    xc = random.random() * 51
     yc = random.random() * 75
     L = random.random() * 82
-    angle = 90  # random.random()*360
+    angle = random.random() * 360
+
+    print(f"xc = {xc}")
+    print(f"yc = {yc}")
+    print(f"L = {L}")
+    print(f"Fracture angle = {angle} deg")
     config_mesh["fractures"][FRACTURE_INDEX]["values"][0][0] = xc
     config_mesh["fractures"][FRACTURE_INDEX]["values"][0][1] = yc
     config_mesh["fractures"][FRACTURE_INDEX]["values"][1][0] = L
@@ -39,5 +44,4 @@ for i in range(num_cases):
 
     mesh = load_mesh(config_mesh, verbose=True)
 
-    print(f"Fracture angle = {angle} deg")
     debugging_mesh_plot(mesh["nodes"], mesh["conn"])

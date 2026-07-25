@@ -11,48 +11,97 @@ import scipy as sp
 from matplotlib.collections import PolyCollection
 
 
-def debugging_mesh_plot(nodes: npt.NDArray[np.float64], conn: list[list[int]]) -> None:
-    """Plot and label mesh and nodes."""
-    # Map node indices to coordinates
-    verts = [nodes[elem] for elem in conn]
-
+def debugging_mesh_plot(
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    nodal_values: npt.NDArray[np.float64] | None = None,
+) -> None:
+    """Plot and label mesh elements and nodes, optionally showing interpolated scalar values."""
     fig, ax = plt.subplots()
 
-    # 1. Plot the elements
-    mesh = PolyCollection(verts, closed=True, edgecolor="black", facecolor="skyblue", alpha=0.6)
+    # 1. Handle optional nodal scalar field
+    if nodal_values is not None:
+        # Fan triangulation around the first vertex for smooth Gouraud shading
+        triangles = [[elem[0], elem[i], elem[i + 1]] for elem in conn for i in range(1, len(elem) - 1)]
+
+        tc = ax.tripcolor(
+            nodes[:, 0],
+            nodes[:, 1],
+            np.array(triangles),
+            nodal_values,
+            shading="gouraud",
+            cmap="viridis",
+        )
+        cbar = fig.colorbar(tc, ax=ax)
+        cbar.set_label("Nodal Scalar Value")
+
+        facecolor = "none"
+        alpha = 1.0
+        plot_title = "Interpolated Nodal Values Mesh Plot"
+    else:
+        facecolor = "skyblue"
+        alpha = 0.6
+        plot_title = "Mesh Plot"
+
+    # 2. Overlay element borders
+    verts = [nodes[elem] for elem in conn]
+    mesh = PolyCollection(
+        verts,
+        closed=True,
+        edgecolor="black",
+        facecolor=facecolor,
+        alpha=alpha,
+        linewidth=1.2,
+    )
     ax.add_collection(mesh)
 
-    # 2. Scatter the node points
+    # 3. Scatter node locations
     ax.scatter(nodes[:, 0], nodes[:, 1], color="red", zorder=3, s=25)
 
-    # 3. Label Node IDs (offset slightly to the top-right of the node)
+    # 4. Add Node IDs (and scalar values if available)
     for i, (x, y) in enumerate(nodes):
-        ax.text(x + 0.05, y + 0.05, str(i), color="darkred", fontsize=9, zorder=4)
+        label = f"{i} ({nodal_values[i]:.1f})" if nodal_values is not None else f"{i}"
+        ax.text(
+            x + 0.05,
+            y + 0.05,
+            label,
+            color="white" if nodal_values is not None else "darkred",
+            fontsize=6,
+            zorder=4,
+            bbox=dict(  # noqa
+                facecolor="black" if nodal_values is not None else "white",
+                alpha=0.6,
+                pad=1,
+                edgecolor="none",
+            ),
+        )
 
-    # 4. Label Element IDs at their centroids
+    # 5. Add Element IDs at centroids
     for elem_id, elem_nodes in enumerate(conn):
-        # The centroid is the mean of the coordinates of the nodes in this element
         centroid = np.mean(nodes[elem_nodes], axis=0)
-
-        # Place the text directly on the centroid
         ax.text(
             centroid[0],
             centroid[1],
             f"E{elem_id}",
-            color="blue",
-            fontsize=10,
+            color="black",
             fontweight="bold",
-            ha="center",  # Center horizontally
-            va="center",  # Center vertically
+            ha="center",
+            va="center",
+            fontsize=6,
             zorder=4,
-            # Optional: Add a semi-transparent white background box for readability
-            bbox=dict(facecolor="white", alpha=0.7, edgecolor="none", boxstyle="round,pad=0.2"),  # noqa
+            bbox=dict(  # noqa
+                facecolor="white",
+                alpha=0.8,
+                edgecolor="none",
+                boxstyle="round,pad=0.2",
+            ),
         )
 
-    # Clean up axis limits and aspect ratio
+    # 6. Final adjustments
     ax.autoscale_view()
     ax.set_aspect("equal")
     plt.grid(True, linestyle="--", alpha=0.3)
+    plt.title(plot_title)
     plt.show()
 
 
@@ -329,7 +378,7 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
         end = elem_indx[i] + 1
         block_conn = np.array(conn[start:end])
         centroids[start:end, :] = np.mean(nodes[block_conn, :], 1)
-        start = end + 1
+        start = end
     if nsd == 2:
         centroids = np.hstack((centroids, np.zeros((ne, 1))))
 
@@ -467,9 +516,9 @@ def _compute_node_levels(
     """
     # Signed level set
     phi = np.dot(nodes[:, :2] - center_2d, n)
-    s = np.dot(nodes[:, :2] - center_2d, u)
 
     # Tangential level set (negative inside the crack, positive past the tips)
+    s = np.dot(nodes[:, :2] - center_2d, u)
     psi = np.abs(s) - half_length
 
     # Snap any node numerically collinear with the (infinite) fracture line to phi = 0
@@ -555,7 +604,6 @@ def _create_fracture_nodes_conn(  # noqa
     half_length = frac_ls.half_length
     u = frac_ls.u
     tol = frac_ls.tol
-    psi = frac_ls.psi
     phi = frac_ls.phi
 
     # list of all boundary faces in the mesh. Each key is a unique boundary.
@@ -566,16 +614,13 @@ def _create_fracture_nodes_conn(  # noqa
     for boundary in boundary_list:
         phi_a = phi[boundary[0]]
         phi_b = phi[boundary[1]]
-        psi_a = psi[boundary[0]]
-        psi_b = psi[boundary[1]]
         nodes_a = nodes[boundary[0], :]
         nodes_b = nodes[boundary[1], :]
         if np.sign(phi_a) != np.sign(phi_b):
             nodes_c = (phi_a * nodes_b - phi_b * nodes_a) / (phi_a - phi_b)
             # check tangential level set
-            psi_c = psi_a + (psi_b - psi_a) * np.linalg.norm(nodes_a - nodes_c) / np.linalg.norm(
-                nodes_a - nodes_b
-            )
+            s_c = np.dot(nodes_c - center_2d, u)
+            psi_c = np.abs(s_c) - half_length
             if psi_c < 0:
                 # If within bounds, add new node
                 d_a = np.linalg.norm(nodes_c - nodes_a)
@@ -993,7 +1038,7 @@ def _cut_matrix_element(
     # If the node is already on the fracture path, we're going to
     # replace it with a new node
     m_nodes_orig = conn[e_m].copy()
-    m_nodes = [node for node in m_nodes_orig if state.phi_sign[node] != 0.0]
+    m_nodes = [node for node in m_nodes_orig if (state.phi_sign[node] != 0.0 or state.psi[node] > tol)]
 
     m_nodes, shifted_nodes = _insert_split_nodes(
         state, m_nodes, f_nodes, f_coords, tip_nodes, tip_element, frac_normal, tol
@@ -1331,6 +1376,10 @@ def _create_global_fracture_connectivities(  # noqa
         pos_elem = pos_candidates.pop() if pos_candidates else None
         neg_elem = neg_candidates.pop() if neg_candidates else None
 
+        if neg_elem is None or pos_elem is None:
+            debugging_mesh_plot(mesh["nodes"], conn)
+            raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
+
         # append to frac_matrix_conn as [positive side, negative side]
         frac_matrix_conn.append([pos_elem, neg_elem])
 
@@ -1369,6 +1418,12 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
         # Assemble global fracture connectivity and matrix-fracture connectivity
         mesh = _create_global_fracture_connectivities(mesh, frac_ls, frac_nodes, frac_conn)
+
+    if len(mesh["fracture_mesh"]["conn"]) == 0:
+        raise ValueError(
+            """No fracture elements generated from fracture specifications.
+            Try changing the fracture definitions or use a different mesh."""
+        )
 
     # Re-evaluate key values
     mesh = _extract_key_mesh_values(mesh)
