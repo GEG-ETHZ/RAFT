@@ -8,8 +8,7 @@ mesh:
         values: [[34, 38.5, 0], 5]
         region_number: 1
   dimensions: 2
-  fractures:
-        - values: [[42.0, 39.0, 0.0], [22.5], [125]]
+
 
 
 material:

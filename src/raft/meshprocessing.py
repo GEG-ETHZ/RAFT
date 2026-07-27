@@ -1481,6 +1481,11 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
         print("3D fractures not yet supported.")
         return mesh
     # Initialize
+    if fracture_specs is None:
+        raise ValueError(
+            """Fracture block included but no fractures specified.
+            Remove fracture block from config if not needed."""
+        )
 
     # Set node distance tolerance based on domain size, bounded by local mesh resolution
     # so the tolerance shrinks with the mesh instead of staying fixed at the domain scale.
