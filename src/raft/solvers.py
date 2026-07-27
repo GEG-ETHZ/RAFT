@@ -184,7 +184,7 @@ def lin_extrap_time_integration(
 
     if verbose:
         print("     Solving pressure equations...")
-    F_pT = (1 - steady_temp) * prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
+    F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
     F_bT = buoy_on * (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
 
     # Assemble combined matrices
