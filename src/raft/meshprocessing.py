@@ -58,7 +58,7 @@ def debugging_mesh_plot(
     ax.add_collection(mesh)
 
     # 3. Scatter node locations
-    ax.scatter(nodes[:, 0], nodes[:, 1], color="red", zorder=3, s=25)
+    ax.scatter(nodes[:, 0], nodes[:, 1], color="red", zorder=3, s=2)
 
     # 4. Add Node IDs (and scalar values if available)
     if plot_ids:
@@ -1436,6 +1436,41 @@ def _create_global_fracture_connectivities(  # noqa
     return mesh
 
 
+def _local_element_scale(
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    center: npt.NDArray[np.float64],
+    half_length: float,
+    u: npt.NDArray[np.float64],
+    pad: float,
+) -> float | None:
+    """Minimum edge length among elements near a fracture's bounding box.
+
+    Used to scale the node-snapping tolerance to the local mesh resolution rather than
+    the overall domain size, which matters for meshes graded finer around fractures.
+    Returns None if no element centroids fall within the padded bounding box.
+    """
+    tip_a = center + half_length * u
+    tip_b = center - half_length * u
+    bbox_min = np.minimum(tip_a, tip_b) - pad
+    bbox_max = np.maximum(tip_a, tip_b) + pad
+
+    min_edge_sq = np.inf
+    for elem in conn:
+        coords = nodes[elem]
+        centroid = coords.mean(axis=0)
+        if np.any(centroid < bbox_min) or np.any(centroid > bbox_max):
+            continue
+        n_nodes = len(elem)
+        for i in range(n_nodes):
+            d = coords[(i + 1) % n_nodes] - coords[i]
+            min_edge_sq = min(min_edge_sq, float(d @ d))
+
+    if not np.isfinite(min_edge_sq):
+        return None
+    return float(np.sqrt(min_edge_sq))
+
+
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
     """Create mesh cutting for fracture elements."""
     fracture_specs = config_mesh["fractures"]
@@ -1447,14 +1482,21 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
         return mesh
     # Initialize
 
-    # Set node distance tolerance based on domain size
+    # Set node distance tolerance based on domain size, bounded by local mesh resolution
+    # so the tolerance shrinks with the mesh instead of staying fixed at the domain scale.
 
     d_max = np.amax(nodes, 0)
     L = (d_max.prod()) ** (1 / nsd)
-    tol = L * 0.005
+    tol_domain = L * 0.005
+    tol_floor = L * 1.0e-9
 
     # Loop through each fracture specification
     for fracture in fracture_specs:
+        center_2d, half_length, _, u, _ = _get_fracture_geometry_2D(fracture)
+        h_local = _local_element_scale(nodes, mesh["conn"], center_2d, half_length, u, pad=tol_domain)
+        tol = min(tol_domain, 0.2 * h_local) if h_local is not None else tol_domain
+        tol = max(tol, tol_floor)
+
         # Compute fracture geometry and nodal level sets once, shared by both helpers below
         frac_ls = _build_fracture_level_set(nodes, fracture, tol)
 
