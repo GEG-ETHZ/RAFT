@@ -10,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import scipy as sp
 from matplotlib.collections import PolyCollection
+from matplotlib.tri import Triangulation
 
 
 def debugging_mesh_plot(
@@ -26,10 +27,9 @@ def debugging_mesh_plot(
         # Fan triangulation around the first vertex for smooth Gouraud shading
         triangles = [[elem[0], elem[i], elem[i + 1]] for elem in conn for i in range(1, len(elem) - 1)]
 
+        triangulation = Triangulation(nodes[:, 0], nodes[:, 1], np.array(triangles))
         tc = ax.tripcolor(
-            nodes[:, 0],
-            nodes[:, 1],
-            np.array(triangles),
+            triangulation,
             nodal_values,
             shading="gouraud",
             cmap="viridis",
