@@ -727,3 +727,68 @@ def check_axisymmetry(
     test_pass = bool(err_ex < tol)
 
     return test_pass
+
+
+def check_fracture_single(config_name: str, config_dir: Path, mesh: dict[str, Any]) -> bool:
+    """Check mesh-cutting correctness for a single, fully-interior 2D fracture.
+
+    Verifies that the fracture mesh produced by `_create_fracture_mesh` is geometrically
+    and topologically consistent with the fracture specification: fracture nodes lie on
+    the prescribed line and within its tip-to-tip extent, every fracture element has a
+    matrix element identified on each side, and the matrix mesh partition (element areas)
+    is conserved by the cut (no gaps or overlaps introduced).
+    """
+    config = load_config(config_name, config_dir, verbose=False)
+    fracture_spec = config["mesh"]["fractures"][0]
+
+    center = np.asarray(fracture_spec["values"][0][:2])
+    half_length = fracture_spec["values"][1][0]
+    theta = np.radians(fracture_spec["values"][2][0])
+    u = np.array([np.cos(theta), np.sin(theta)])
+
+    # Node-snapping tolerance mirrors the one used internally in meshprocessing.
+    d_max = np.amax(mesh["nodes"], 0)
+    tol = (d_max.prod()) ** 0.5 * 0.005
+
+    frac_nodes = mesh["fracture_mesh"]["nodes"]
+    d = frac_nodes - center
+    s = d @ u  # tangential coordinate along the fracture
+    perp = d - np.outer(s, u)  # component perpendicular to the fracture line
+    perp_dist = np.linalg.norm(perp, axis=1)
+
+    on_line = bool(np.all(perp_dist < tol))
+    within_extent = bool(np.all(s <= half_length + tol) and np.all(s >= -half_length - tol))
+    reaches_tips = bool(
+        np.isclose(s.max(), half_length, atol=tol) and np.isclose(s.min(), -half_length, atol=tol)
+    )
+
+    # Every fracture element should find a matrix element on both sides (fully interior fracture).
+    matrix_conn = mesh["fracture_mesh"]["matrix_conn"]
+    ne = mesh["ne"]
+    both_sides_found = all(len(pair) == 2 for pair in matrix_conn)
+    valid_matrix_indices = all(0 <= idx < ne for pair in matrix_conn for idx in pair)
+    correct_conn_count = len(matrix_conn) == mesh["fracture_mesh"]["ne"]
+
+    # Cutting the mesh should not change the total matrix area (no gaps/overlaps).
+    def _poly_area(coords: npt.NDArray[np.float64]) -> float:
+        x, y = coords[:, 0], coords[:, 1]
+        return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+    nodes = mesh["nodes"]
+    domain_area = (mesh["nodes"][:, 0].max() - mesh["nodes"][:, 0].min()) * (
+        mesh["nodes"][:, 1].max() - mesh["nodes"][:, 1].min()
+    )
+    cut_area = sum(_poly_area(nodes[np.asarray(elem)]) for elem in mesh["conn"])
+    area_conserved = bool(np.isclose(cut_area, domain_area, rtol=1e-8))
+
+    test_pass = (
+        on_line
+        and within_extent
+        and reaches_tips
+        and both_sides_found
+        and valid_matrix_indices
+        and correct_conn_count
+        and area_conserved
+    )
+
+    return test_pass

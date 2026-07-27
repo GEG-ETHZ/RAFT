@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import tests.test_checks as test_checks
+from raft.preprocessing import preprocessing
 from raft.subsurface import main
 
 
@@ -286,6 +287,16 @@ def test_patch_z() -> None:
     test_pass = test_checks.check_patch_test(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
+    assert test_pass
+
+
+def test_fracture_single() -> None:
+    """Verify mesh-cutting correctness for a single, fully-interior 2D fracture."""
+    case_dir = _test_data_dir()
+    config_filename = "config_test_fracture_single.yaml"
+    _, mesh = preprocessing(config_filename, case_dir, verbose=False)
+
+    test_pass = test_checks.check_fracture_single(config_filename, case_dir, mesh)
     assert test_pass
 
 
