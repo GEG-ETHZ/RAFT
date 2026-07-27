@@ -31,6 +31,14 @@ def _make_sparse(
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn_1, nn_2))
 
 
+def _lump_diagonal(matrix: csc_matrix) -> csc_matrix:
+    """Row-sum lump a matrix, returning a diagonal csc matrix of the same shape."""
+    diag_vals = np.asarray(matrix.sum(axis=1)).ravel()
+    n = matrix.shape[0]
+    idx = np.arange(n, dtype=np.int32)
+    return csc_matrix((diag_vals, (idx, idx)), shape=(n, n))
+
+
 def _assemble_global_matrices(
     vec: dict[str, npt.NDArray[np.float64]],
     conn: list[list[int]],
@@ -697,6 +705,10 @@ def integrate_linear_matrices(  # noqa
     integrated_matrices = _assemble_global_matrices(
         vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
     )
+
+    # ----- Mass lumping: sum rows of KM and C, store as diagonal (nn, nn) csc matrices
+    for name in ("KM", "C"):
+        integrated_matrices[name] = _lump_diagonal(integrated_matrices[name])
 
     if is_fracture:
         # Assemble the coupling matrices
