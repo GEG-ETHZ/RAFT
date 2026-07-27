@@ -85,6 +85,8 @@ Each region specification requires three fields:
 ### `fractures` (optional field)
 Fractures are modelled as lower-dimensional manifolds embedded within the higher dimensional matrix. Fractures use a conforming mesh approach and cut through the existing mesh, creating conforming nodes around them. These cuts may lead to poorly conditioned elements, so care should be taken when examining results. Mesh refinement around fractures is often necessary.
 
+> **Current limitation:** Fractures are only supported in 2D analyses (`dimensions: 2`), and only a single fracture per simulation has been validated. 3D fracture support is not yet implemented (a warning is printed and the mesh is returned unmodified). Multiple fractures may be listed under `fractures`, but this configuration is not yet supported/tested.
+
 If regions are not defined, homogeneity is assumed (all elements are assigned to region 0).
 
 **Fracture Definition:**
@@ -97,8 +99,7 @@ Each fracture specification requires three fields:
   * $[a,b]$ *(list[float], no default)*: extents. For the ellipse, $a$ = major axis distance, $b$ = minor axis distance. For the rectangle, $a$ = half-length, $b$ = half-width. In 2D, $a$ is taken as the fracture half-length.
   * $[\theta_1, \theta_2]$ *(list[float], no default)*: plane angles. $\theta_1$ = plane angle with respect to the x-axis, $\theta_2$ = plane angle with respect to the y-axis.
 
-* **`aperture`** *(list[float], no default)*: hydraulic aperture of the fracture, $w$. Each aperture Fluid flux in the fracture plane is calculated using aperture with the cubic law according to $\vec{q}_{\parallel} = \frac{w^3}{12\mu} \nabla p$ ($m^2/s$). Fluid leak-off to the matrix is calculated according to the difference in pressures and the permeability such that $\vec{q}_{\perp} = \frac{w}{12\mu} (p_f - p_m)$ ($m/s$) where $p_f$ is the mean pressure in the fracture and $p_m$ is the pressure at the fracture face. Heat flux to the matrix is calculated with a convection boundary condition such that $\vec{q}_{T\perp} = h (T_f - T_m)$ where $T_f$ is the mean temperature in the fracture and $T_m$ is the temperature at the fracture face and $h = \frac{Nu \cdot k_f}{2w}$ in which $Nu$ is the Nusselt number and $k_f$ is the thermal conductivity of the fluid.
-* **`nusselt`** *(float, optional, default: `5.0`)*: Controls the heat transfer coefficient to the matrix. A high value of $Nu$ enforces local thermal equilibrium. For laminar flow, $Nu = O(10^0)$ for all cases (Bejan, 2013). At steady-state, $Nu = [3.66 - 4.36]$ and is higher during the temperature transient.
+Hydraulic properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below).
 
 ### `material`
 * **`solid`**: Rock mass properties. Rock mass properties are defined per region. If regions are defined, RAFT expects a list with a number of entries equal to the number of regions. Region numbers correspond to property indices.
@@ -123,6 +124,10 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
   * **`viscosity`** *(float or list, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Viscosity also supports a list of floats `[A, B, C, D]` for non-linear viscosity form: $\mu = A e^{-B/T + CT + DT^2}$
+
+* **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
+  * **`aperture`** *(list[float], no default)*: hydraulic aperture of the fracture, $w$. Fluid flux in the fracture plane is calculated using aperture with the cubic law according to $\vec{q}_{\parallel} = \frac{w^3}{12\mu} \nabla p$ ($m^2/s$). Fluid leak-off to the matrix is calculated according to the difference in pressures and the permeability such that $\vec{q}_{\perp} = \frac{w}{12\mu} (p_f - p_m)$ ($m/s$) where $p_f$ is the mean pressure in the fracture and $p_m$ is the pressure at the fracture face. Heat flux to the matrix is calculated with a convection boundary condition such that $\vec{q}_{T\perp} = h (T_f - T_m)$ where $T_f$ is the mean temperature in the fracture and $T_m$ is the temperature at the fracture face and $h = \frac{Nu \cdot k_f}{2w}$ in which $Nu$ is the Nusselt number and $k_f$ is the thermal conductivity of the fluid.
+  * **`nusselt`** *(list[float], no default)*: Controls the heat transfer coefficient to the matrix. A high value of $Nu$ enforces local thermal equilibrium. For laminar flow, $Nu = O(10^0)$ for all cases (Bejan, 2013). At steady-state, $Nu = [3.66 - 4.36]$ and is higher during the temperature transient.
 
 
 ### `initial_conditions`

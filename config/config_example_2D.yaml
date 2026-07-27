@@ -1,16 +1,15 @@
 mesh:
-  file: square2D_plain.msh
+  file: square2D.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
-        region_number: 0
+        region_number: 2
       - shape: "sphere"
         values: [[34, 38.5, 0], 5]
-        region_number: 0
+        region_number: 1
   dimensions: 2
   fractures:
-        # - values: [[49.20528779158808, 13.575045277492967, 0.0], [25.256838651083893, 5.0], [85.75776583290912 ,0]] # 47
-        - values: [[42.39226721104343, 38.967726293617716, 0.0], [46.27680119822414, 5.0], [135.20286301945075 ,0]] # 42
+        - values: [[42.0, 39.0, 0.0], [22.5], [125]]
 
 
 material:
@@ -23,10 +22,10 @@ material:
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [1.0e-16,   1.0e-19]       # m^2
+      permeability: [[1.0e-16, 1.0e-16, 1.0e-18],   1.0e-19, 1.0e-19]       # m^2
       rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
-      rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
+      rotation_z: [40.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
   # Fluid parameters - single phase flow is assumed
   fluid:
@@ -35,12 +34,12 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity:  [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity: 1.0e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-3, 2.0e-3]
-    nusselt: [0, 5.0]
+    aperture: [1.0e-3]
+    nusselt: [5.0]
 
 initial_conditions:
   assignment: "constant"
@@ -64,17 +63,17 @@ boundary_conditions:
 
 
   temperature_fixed:
-      # - faces: [y_min]
-      #   values: [286]
+      - faces: [y_min]
+        values: [310]
       - faces: [y_max]
         values: [286]
-      - coords: [[30, 25]]
+      - coords: [[22.5, 41]]
         values: [[300, 500], 10]
         function: "ramp"
 
 
   fluid_flux:
-        - coords: [[30, 25]]
+        - coords: [[22.5, 41]]
           values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
           function: "table"
           tag: "wellbore"
@@ -103,7 +102,7 @@ simulation:
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  buoyancy_on: 1
+  buoyancy_on: 0
   steady_pressure: 0
   steady_temperature: 0
   axisymmetric_on: 0
