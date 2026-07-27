@@ -9,8 +9,9 @@ mesh:
         region_number: 0
   dimensions: 2
   fractures:
-        - shape: "ellipse"
-          values: [[21.819717394976866, 37.52863310236877, 0.0], [16.6, 5.0], [157.1319583838092 ,0]]
+        - values: [[49.20528779158808, 13.575045277492967, 0.0], [25.256838651083893, 5.0], [85.75776583290912 ,0]] # 47
+        # - values: [[42.39226721104343, 38.967726293617716, 0.0], [46.27680119822414, 5.0], [135.20286301945075 ,0]] # 42
+
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
@@ -39,7 +40,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-3, 2.0e-3]
-    nusselt: [1.0, 5.0]
+    nusselt: [0, 5.0]
 
 initial_conditions:
   assignment: "BC_compatible"

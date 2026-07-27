@@ -33,6 +33,7 @@ for i in range(num_cases):
     L = max(random.random() * 82, 5)
     angle = random.random() * 360
 
+    print(f"Case {i + 1}")
     print(f"xc = {xc}")
     print(f"yc = {yc}")
     print(f"L = {L}")

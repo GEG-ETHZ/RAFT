@@ -1,5 +1,6 @@
 """Import mesh, assign regions, extract relevant mesh properties."""
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -318,8 +319,8 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         fracture_faces: set[tuple[int, ...]] = set()
         faces_by_nne = {n: _get_element_face_lists(n, nsd) for n in set(nne)}
 
-        for pos_elem, neg_elem in matrix_conn:
-            for elem in (pos_elem, neg_elem):
+        for conn_fm in matrix_conn:
+            for elem in conn_fm:
                 if elem is None:
                     continue
                 elem_conn = conn[elem]
@@ -1414,12 +1415,19 @@ def _create_global_fracture_connectivities(  # noqa
         pos_elem = pos_candidates.pop() if pos_candidates else None
         neg_elem = neg_candidates.pop() if neg_candidates else None
 
-        if neg_elem is None or pos_elem is None:
+        if neg_elem is None and pos_elem is None:
             debugging_mesh_plot(mesh["nodes"], conn)
             raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
-
-        # append to frac_matrix_conn as [positive side, negative side]
-        frac_matrix_conn.append([pos_elem, neg_elem])
+        elif neg_elem is None or pos_elem is None:
+            found_elem = pos_elem if pos_elem is not None else neg_elem
+            warnings.warn(
+                f"Only one matrix element (of positive/negative side) found for fracture "
+                f"element {e_f}; appending single-element matrix connectivity."
+            )
+            frac_matrix_conn.append([found_elem])
+        else:
+            # append to frac_matrix_conn as [positive side, negative side]
+            frac_matrix_conn.append([pos_elem, neg_elem])
 
     frac_mesh["matrix_conn"].extend(frac_matrix_conn)
 

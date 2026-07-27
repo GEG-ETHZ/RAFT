@@ -264,8 +264,7 @@ def _create_fracture_coupling_vectors(
     for e_f in range(ne_f):
         e_nodes_f = conn_f[e_f]
         nne_f = len(e_nodes_f)
-        for f in range(2):
-            e_m = conn_fm[e_f][f]
+        for e_m in conn_fm[e_f]:
             e_nodes_m = conn_m[e_m]
             nne_m = len(e_nodes_m)
 
