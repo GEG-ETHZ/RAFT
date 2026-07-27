@@ -33,3 +33,6 @@ config/*
 !config/config_profiling.yaml
 !config/box_profiling.geo
 !config/box_profiling.msh
+!config/config_example_2D.yaml
+!config/square2D_mixed.geo
+!config/square2D_mixed.msh

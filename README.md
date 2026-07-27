@@ -1,17 +1,13 @@
 # RAFT — Reservoir Analysis for TANGO
 
-A finite element method (FEM) simulator for coupled subsurface fluid flow and
-heat transport in geothermal reservoirs, specifically developed for native
-coupling with TANGO. RAFT solves pressure and temperature fields over time
-using a one-pass linearized extrapolation time integration scheme . Pressure
-and temperature are decoupled by lagging temperature and then extrapolating
-it to the current timestep.
+A finite element method (FEM) simulator for coupled subsurface fluid flow and heat transport in geothermal reservoirs, specifically developed for native coupling with TANGO. RAFT solves pressure and temperature fields over time using a one-pass linearized extrapolation time integration scheme . Pressure and temperature are decoupled by lagging temperature and then extrapolating it to the current timestep. It also contains a fully-coupled solver.
 
  Physical processes include:
  - Fluid flow
      - Darcy flow
      - Pressurization
      - Buoyancy$^1$
+     - Temperature-dependent viscosity
  - Heat flow
      - Diffusion
      - Advection (Streamline Upwind Pretrov Galerkin (SUPG) stabilization)
@@ -33,8 +29,11 @@ Run the test suite:
 The simulator uses a YAML configuration file to define simulation options, material properties, initial conditions, boundary conditions, and numerical controls. Below is the list of parameters and their options.
 
 ### `mesh`
-* **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format). Meshes may be either B8 or T4 elements in 3D or Q4 or T3 in 2D, but must use entirely one element. Mixed meshes are currently not supported.
+* **`file`** *(string, default: `"box3D.msh"`)*: Name or relative path to the Gmsh `.msh` file (Version 2.x format). Meshes may be either B8 or T4 elements in 3D or Q4 or T3 in 2D. Meshes can consist of any combination of elements, so long as the element boundaries form a continuous approximation.
 * **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`).
+* **`regions`** *(subcategories)*: See the `regions` section for specifying regions, or specify the subcategory `"list":` *(str)* and provide the path to a .txt file with a list of corresponding region for each element.
+* **`fractures`** *(subcategories)*: See the `fractures` section for specifications.
+
 ### `regions`
 Regions allow you to assign different material properties to different sections of your domain. Each region is defined by a geometric shape which assign the region number to all elements whose centroids fall within the shape. Region numbers correspond to indices in the material property lists. Regions are an independent definition that does not rely on the mesh or domain, but conforming mesh boundaries are encouraged for more accurate results.
 
@@ -83,6 +82,24 @@ Each region specification requires three fields:
 * Material properties are indexed by region number, so ensure your material lists have entries for each region used.
 * Multiple shape definitions can be assigned the same region numbers.
 
+### `fractures` (optional field)
+Fractures are modelled as lower-dimensional manifolds embedded within the higher dimensional matrix. Fractures use a conforming mesh approach and cut through the existing mesh, creating conforming nodes around them. These cuts may lead to poorly conditioned elements, so care should be taken when examining results. Mesh refinement around fractures is often necessary.
+
+> **Current limitation:** Fractures are only supported in 2D analyses (`dimensions: 2`), and only a single fracture per simulation has been validated. 3D fracture support is not yet implemented (a warning is printed and the mesh is returned unmodified). Multiple fractures may be listed under `fractures`, but this configuration is not yet supported/tested.
+
+If regions are not defined, homogeneity is assumed (all elements are assigned to region 0).
+
+**Fracture Definition:**
+Each fracture specification requires three fields:
+* **`shape`** *(string)*: Type of geometric boundary. These shapes are only used in 3D, in 2D all fractures are represented as lines. Supported shapes:
+  * `"ellipse"`
+  * `"rectangle"`
+* **`values`** *(list)*: $[[x_c, y_c, z_c ], [a,b], [\theta_1, \theta_2]]$
+  * $[x_c, y_c, z_c ]$ *(list[float], no default)*: coordinates of the plane center. In 2D analysis, only $x_c$ and $y_c$ are considered.
+  * $[a,b]$ *(list[float], no default)*: extents. For the ellipse, $a$ = major axis distance, $b$ = minor axis distance. For the rectangle, $a$ = half-length, $b$ = half-width. In 2D, $a$ is taken as the fracture half-length.
+  * $[\theta_1, \theta_2]$ *(list[float], no default)*: plane angles. $\theta_1$ = plane angle with respect to the x-axis, $\theta_2$ = plane angle with respect to the y-axis.
+
+Hydraulic properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below).
 
 ### `material`
 * **`solid`**: Rock mass properties. Rock mass properties are defined per region. If regions are defined, RAFT expects a list with a number of entries equal to the number of regions. Region numbers correspond to property indices.
@@ -107,6 +124,11 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
   * **`viscosity`** *(float or list, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Viscosity also supports a list of floats `[A, B, C, D]` for non-linear viscosity form: $\mu = A e^{-B/T + CT + DT^2}$
+
+* **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
+  * **`aperture`** *(list[float], no default)*: hydraulic aperture of the fracture, $w$. Fluid flux in the fracture plane is calculated using aperture with the cubic law according to $\vec{q}_{\parallel} = \frac{w^3}{12\mu} \nabla p$ ($m^2/s$). Fluid leak-off to the matrix is calculated according to the difference in pressures and the permeability such that $\vec{q}_{\perp} = \frac{w}{12\mu} (p_f - p_m)$ ($m/s$) where $p_f$ is the mean pressure in the fracture and $p_m$ is the pressure at the fracture face. Heat flux to the matrix is calculated with a convection boundary condition such that $\vec{q}_{T\perp} = h (T_f - T_m)$ where $T_f$ is the mean temperature in the fracture and $T_m$ is the temperature at the fracture face and $h = \frac{Nu \cdot k_f}{2w}$ in which $Nu$ is the Nusselt number and $k_f$ is the thermal conductivity of the fluid.
+  * **`nusselt`** *(list[float], no default)*: Controls the heat transfer coefficient to the matrix. A high value of $Nu$ enforces local thermal equilibrium. For laminar flow, $Nu = O(10^0)$ for all cases (Bejan, 2013). At steady-state, $Nu = [3.66 - 4.36]$ and is higher during the temperature transient.
+
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.
@@ -169,22 +191,31 @@ Each boundary condition group must specify nodes using exactly one of the follow
 
 
 ### `simulation`
+ Simulation controls
 * **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
 * **`t_end`** *(float, default: `100.0`)*: End time of the simulation.
 * **`timestep`** *(float, default: `1.0`)*: Simulation timestep.
 * **`timestep_min`** *(float, default: `1.0`)*: Minimum allowed timestep.
 * **`timestep_max`** *(float, default: `1.0`)*: Maximum allowed timestep.
-* **`solver_type`** *(string, default: `"linearized"`)*: Type of time integration solver. Options are `"linearized"` or `"fully_coupled"`.
+
+Output Controls
 * **`output_frequency`** *(integer, default: `1`)*: Controls how often outputs are written (every $N$ timesteps).
 * **`output_vtk`** *(integer/boolean, default: `0`)*: If set to `1`, enables writing mesh and solution fields to `.vtk` files for visualization.
 * **`output_viscosity`** *(integer/boolean, default: `0`)*: If set to `1`, enables output of fluid viscosity fields.
 * **`output_directory`** *(string, optional)*: Custom output directory path. Defaults to `outputs/` under the repository root.
+
+Physical controls
+
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change (typically `1`).
 * **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
 * **`pressurization_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable thermal pressurization coupling; `0` to disable.
 * **`buoyancy_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable density buoyancy effects; `0` to disable. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
 * **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
 * **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
+* **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
+
+Numerical solver controls
+* **`solver_type`** *(string, default: `"linearized"`)*: Type of time integration solver. Options are `"linearized"` or `"fully_coupled"`.
 * **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks.
 * **`iterative_controls`** *(dictionary)*: Non-linear iterative solver settings, applicable when `solver_type` is `"fully_coupled"`.
   * **`NR_tol`** *(float, default: `1.0e-6`)*: Newton-Raphson residual tolerance.

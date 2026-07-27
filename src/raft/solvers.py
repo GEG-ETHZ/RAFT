@@ -151,7 +151,7 @@ def lin_extrap_time_integration(
     steady_temp = sim_control["steady_temperature"]
     mu_nonlinear = sim_control["viscosity_nonconstant"]
     # extract mesh characteristics
-    nn = mesh["nn"]
+    nn = mesh["nn_total"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
@@ -239,13 +239,18 @@ def _check_convergence_fullycoupled(
     tolerance: float,
 ) -> tuple[bool, float]:
 
-    n_DoFs = np.arange(0, mesh["nn"])  # number of DoFs
+    n_DoFs = np.arange(0, mesh["nn_total"])  # number of DoFs
     ne = mesh["ne"]
 
     for key in R:
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
-        NR[key][iteration] = np.linalg.norm(R[key][nF]) / ne  # norm of the residual per element
+        normalizer = 1 if iteration < 4 else np.max(NR[key][0:4])
+        numerator = np.linalg.norm(R[key][nF])
+
+        NR[key][iteration] = np.min(
+            (numerator / ne, numerator / ne / normalizer)
+        )  # norm of the residual per element
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
@@ -287,7 +292,7 @@ def _aitken_relax(
     """
     if bounds is None:
         min_relax = 0.001
-        max_relax = 100.0
+        max_relax = 10.0
     else:
         min_relax, max_relax = bounds
 
@@ -353,8 +358,9 @@ def fully_coupled_time_integration(  # noqa
     and pressure monolithically.
     """
     # extract vectors of nodal dofs
-    p = primary_variables["p"]
-    T = primary_variables["T"]
+    primary_variables_iteration = primary_variables.copy()
+    p = primary_variables_iteration["p"]
+    T = primary_variables_iteration["T"]
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
@@ -371,7 +377,7 @@ def fully_coupled_time_integration(  # noqa
     mu_nonlinear = sim_control["viscosity_nonconstant"]
 
     # extract mesh characteristics
-    nn = mesh["nn"]  # noqa
+    nn = mesh["nn_total"]  # noqa
     T_dofs = T_dofs + nn  # shift for combined p-T vector
 
     # calculate rate coefficients
@@ -426,7 +432,9 @@ def fully_coupled_time_integration(  # noqa
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Compute residual vectors
-        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
+        matrices_non_linear = integrate_nonlinear_matrices(
+            mesh, material, primary_variables_iteration, sim_control
+        )
 
         if mu_nonlinear:
             Kpp = matrices_non_linear["Kpp"]  # Pressure conductance matrix
@@ -475,7 +483,7 @@ def fully_coupled_time_integration(  # noqa
 
             # Assemble Jacobian matrix
             App = -KM * cv[0] - Kpp  # correct
-            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p  # issues?
+            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p
             ATp = -(KATp + K_stab_Tp) * adv_on  # correct
             ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct
 
@@ -489,6 +497,11 @@ def fully_coupled_time_integration(  # noqa
 
             NR_step = 0.5
             d += NR_step * delta_var.reshape(-1, 1)
+
+            # Check for nan or inf data and break
+            if np.any(np.isnan(d)) or np.any(np.isinf(d)):
+                print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                break
 
             # Apply relaxation
             if aitken_on:
@@ -520,9 +533,10 @@ def fully_coupled_time_integration(  # noqa
     q = np.zeros((nn, 1))
     q[p_fix] = R["p"][p_fix]
     # save variables
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q"] = q  # outlet flow rates
+    if converged:
+        primary_variables["p"] = p
+        primary_variables["T"] = T
+        primary_variables["q"] = q  # outlet flow rates
 
     if verbose:
         print()  # new line for that output doesn't get overwritten

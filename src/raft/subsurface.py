@@ -99,6 +99,8 @@ def _assign_initial_gradient(
 ) -> npt.NDArray[np.float64]:
     """Gradient calculation for initial conditions based on arbitrary direction."""
     s = direction / np.linalg.norm(direction)  # unit vector in gradient direction
+    nsd = np.size(nodes, 1)
+    s = s[0:nsd]
 
     x = np.dot(nodes, s)
     x_min = np.min(x)
@@ -139,10 +141,10 @@ def _assign_ic_gradient(
 ) -> dict[str, Any]:
     """Apply linear-gradient initial conditions."""
     T = _assign_initial_gradient(
-        mesh["nodes"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
+        mesh["nodes_total"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
     )
     p = _assign_initial_gradient(
-        mesh["nodes"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
+        mesh["nodes_total"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
     )
 
     primary_variables["p"][:, :] = _broadcast_to_history(p)
@@ -165,7 +167,7 @@ def _assign_ic_bc_compatible(
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
     sim_control_SS = _build_steady_state_controls(sim_control)
-    material["T_0"] = np.zeros((mesh["nn"],))
+    material["T_0"] = np.zeros((mesh["nn_total"],))
 
     if sim_control_SS["viscosity_nonconstant"]:
         # viscosity is a function of temperature, fully coupled steady-state
@@ -342,8 +344,11 @@ def main(  # noqa
     # ----- Load config and mesh
     config, mesh = preprocessing(config_name, config_dir, verbose)
     material = config["material"]
-    controls = config["simulation"]
     BC_config = config["boundary_conditions"]
+    controls = config["simulation"]
+    # Copy config name and directory to controls
+    controls["config_name"] = config["config_name"]
+    controls["config_dir"] = config["config_dir"]
 
     # ----- Initialize simulation parameters
 
@@ -359,8 +364,8 @@ def main(  # noqa
 
     ## Initialize vectors
     primary_variables = {}  # storage structure for all primary variables and results
-    p_dofs = np.arange(0, mesh["nn"])
-    T_dofs = np.arange(0, mesh["nn"])
+    p_dofs = np.arange(0, mesh["nn_total"])
+    T_dofs = np.arange(0, mesh["nn_total"])
     primary_variables["p_dofs"] = p_dofs
     primary_variables["T_dofs"] = T_dofs
     # Vectors of primary DoFs - ndof x 4
@@ -379,7 +384,7 @@ def main(  # noqa
     # --- Initial Conditions
     # Update Boundary Conditions for initial step
     boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
-    q = np.zeros((mesh["nn"], 1))
+    q = np.zeros((mesh["nn_total"], 1))
     primary_variables["q"] = q
 
     [primary_variables, material] = _assign_initial_conditions(
@@ -397,7 +402,7 @@ def main(  # noqa
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    postprocessing(n, mesh, config, material, primary_variables, t, verbose)
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
     n += 1
 
     # ---- Time integration
@@ -431,7 +436,7 @@ def main(  # noqa
         if converged:
             if verbose:
                 print("     Postprocessing...")
-            postprocessing(n, mesh, config, material, primary_variables, t, verbose)
+            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
             n += 1
             primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
             primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
@@ -439,7 +444,9 @@ def main(  # noqa
         # Check end condition
         if t > t_end:
             if verbose:
-                print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
+                print(
+                    "Simulation complete. Output files are stored in: \n" + controls["output_directory_full"]
+                )
             break
 
     return primary_variables, mesh

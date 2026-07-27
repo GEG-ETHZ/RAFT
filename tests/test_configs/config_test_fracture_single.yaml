@@ -1,0 +1,5 @@
+mesh:
+  file: square2D_fracture_patch.msh
+  dimensions: 2
+  fractures:
+      - values: [[20.0, 20.0, 0.0], [10.0], [35]]

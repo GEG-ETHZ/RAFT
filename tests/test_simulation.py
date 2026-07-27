@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import tests.test_checks as test_checks
+from raft.preprocessing import preprocessing
 from raft.subsurface import main
 
 
@@ -21,7 +22,7 @@ def test_axisymmetry() -> None:
     config_filename = "config_test_axisymmetry.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_axisymmetry(
         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
@@ -124,7 +125,7 @@ def test_patch_x_flux() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 0
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_patch_test_flux(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
@@ -285,6 +286,30 @@ def test_patch_z() -> None:
     plot_on = False
     test_pass = test_checks.check_patch_test(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_fracture_single() -> None:
+    """Verify mesh-cutting correctness for a single, fully-interior 2D fracture."""
+    case_dir = _test_data_dir()
+    config_filename = "config_test_fracture_single.yaml"
+    _, mesh = preprocessing(config_filename, case_dir, verbose=False)
+
+    test_pass = test_checks.check_fracture_single(config_filename, case_dir, mesh)
+    assert test_pass
+
+
+def test_fracture_perpendicular_patch() -> None:
+    """Patch test: a fracture perpendicular to the gradient should recover the exact linear solution."""
+    case_dir = _test_data_dir()
+    test_name = "Fracture Patch Test - Perpendicular"
+    config_filename = "config_test_fracture_perpendicular.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_fracture_perpendicular_patch(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
     assert test_pass
 
