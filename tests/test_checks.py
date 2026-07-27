@@ -792,3 +792,71 @@ def check_fracture_single(config_name: str, config_dir: Path, mesh: dict[str, An
     )
 
     return test_pass
+
+
+def check_fracture_perpendicular_patch(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check patch test for a fracture oriented perpendicular to the pressure/temperature gradient.
+
+    When the fracture sits exactly on an equipotential (its tangent is perpendicular to the
+    imposed gradient), there is no along-fracture flow: leak-off to the matrix is pointwise
+    zero (fracture pressure/temperature equal the local matrix value everywhere), and the
+    natural zero-flux condition at the fracture tips is trivially satisfied. The exact
+    solution is therefore the same linear field as the fracture-free patch test, evaluated
+    at every node including the fracture's own DOFs. This does not hold for any other
+    fracture orientation, where longitudinal flow along the fracture perturbs the field
+    away from linear.
+    """
+    # Set tolerance (relative to the imposed BC range)
+    tol = 1.0e-3
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+
+    # Gradient direction is x; extents taken from the (uncut) matrix nodes.
+    nodes = mesh["nodes"]
+    xmin, xmax = nodes[:, 0].min(), nodes[:, 0].max()
+
+    nodes_total = mesh["nodes_total"]
+    x = nodes_total[:, 0]
+    p_exact = p0 + (p1 - p0) * (x - xmin) / (xmax - xmin)
+    T_exact = T0 + (T1 - T0) * (x - xmin) / (xmax - xmin)
+
+    p = results["p"][:, 0]
+    T = results["T"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot(x, p_exact, "ro", label="exact")
+        plt.plot(x, p, "k.", label="RAFT")
+        plt.xlabel("x (m)")
+        plt.ylabel("p")
+        plt.title(test_name)
+        plt.legend()
+
+        plt.figure()
+        plt.plot(x, T_exact, "ro", label="exact")
+        plt.plot(x, T, "k.", label="RAFT")
+        plt.xlabel("x (m)")
+        plt.ylabel("T")
+        plt.title(test_name)
+        plt.legend()
+
+    # Relative error, including the fracture's own nodes.
+    err_p = np.max(np.abs(p - p_exact)) / (p0 - p1)
+    err_T = np.max(np.abs(T - T_exact)) / (T0 - T1)
+
+    test_pass = bool(err_p < tol and err_T < tol)
+
+    return test_pass
