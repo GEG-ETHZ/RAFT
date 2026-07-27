@@ -1205,7 +1205,9 @@ def _cut_tip_boundary_elements(
             # If the node is already on the fracture path, we're going to
             # replace it with a new node
             m_nodes_orig = conn[e_m].copy()
-            m_nodes = [node for node in m_nodes_orig if state.phi_sign[node] != 0.0]
+            m_nodes = [
+                node for node in m_nodes_orig if (state.phi_sign[node] != 0.0 or state.psi[node] > tol)
+            ]
 
             m_nodes, _ = _insert_split_nodes(
                 state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
