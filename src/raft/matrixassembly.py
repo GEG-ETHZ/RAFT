@@ -515,9 +515,10 @@ def _get_region_thermal_data(
     # Fracture case
     if is_fracture:
         w = mat["fracture"]["aperture"][r]
-        lambda_e = mat["fluid"]["therm_cond"] * w
+        lambda_f = mat["fluid"]["therm_cond"]
+        lambda_e = lambda_f * w
         nusselt = mat["fracture"]["nusselt"][r]
-        h = nusselt * lambda_e / 2 / w  # interface heat transfer coefficient, coupling only
+        h = nusselt * lambda_f / 2 / w  # interface heat transfer coefficient, coupling only
         m_e = mat["fluid"]["density"] * mat["fluid"]["specific_heat"] * w
         return lambda_e, True, h, m_e, np.full((1, 1), np.nan)
 
