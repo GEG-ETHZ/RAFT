@@ -514,8 +514,8 @@ def _get_region_thermal_data(
     """Resolve per-region thermal conductivity, capacity, and expansion data."""
     # Fracture case
     if is_fracture:
-        lambda_e = mat["fluid"]["therm_cond"]
         w = mat["fracture"]["aperture"][r]
+        lambda_e = mat["fluid"]["therm_cond"] * w
         nusselt = mat["fracture"]["nusselt"][r]
         h = nusselt * lambda_e / 2 / w  # interface heat transfer coefficient, coupling only
         m_e = mat["fluid"]["density"] * mat["fluid"]["specific_heat"] * w
