@@ -15,6 +15,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
 $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to density is included. Hydrostatic pressures are not accounted or solved for.
 
 ## Table of Contents
+- [Running the simulation](#running-the-simulation)
 - [Governing Equations and Numerical Methods](#governing-equations-and-numerical-methods)
   - [Symbol Glossary](#symbol-glossary)
   - [Strong Form Governing Equations](#strong-form-governing-equations)
@@ -24,7 +25,6 @@ $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to dens
   - [Time Discretization and Solution Scheme](#time-discretization-and-solution-scheme)
   - [Adaptive Timestep Control](#adaptive-timestep-control)
   - [Tangent Matrices](#tangent-matrices)
-- [Running the simulation](#running-the-simulation)
 - [Configuration Parameters](#configuration-parameters)
   - [`mesh`](#mesh)
   - [`regions`](#regions)
@@ -39,6 +39,18 @@ $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to dens
 - [Developers](#developers)
   - [Branching Strategy](#branching-strategy)
   - [Running Checks](#running-checks)
+
+  ## Running the simulation
+Run a simulation:
+    uv run -m raft **some-config-file.yaml**
+
+replace the config file with a specific config file name, such as:
+    uv run -m raft config_example.yaml
+
+Run the test suite:
+    uv run pytest
+
+Config files are read from the "config" directory. Meshes are made via GMSH and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in Paraview, and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
 
 ## Governing Equations and Numerical Methods
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem. This section summarizes the strong and weak forms, spatial and temporal discretization, stabilization, and the linearized solution scheme actually implemented by the solvers in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py) and [`src/raft/solvers.py`](src/raft/solvers.py).
@@ -196,16 +208,6 @@ $$\textbf{K}_{Tp} = \frac{\partial\textbf{R}_T}{\partial\textbf{p}^n} = \textbf{
 $$\textbf{K}_{TT} = \frac{\partial\textbf{R}_T}{\partial\textbf{T}^n} = -c_{v0}\textbf{C}_T + \textbf{K}_{AT} + \textbf{K}_{DT} + \textbf{K}_{stabT}$$
 
 where $\textbf{K}_{DT} = \int_\Omega \textbf{B}^\top \lambda_e \textbf{B}\,d\Omega$ is the heat conduction matrix, $\textbf{K}_{AT}$ the heat advection matrix, and $\textbf{K}_{stabP}$, $\textbf{K}_{stabT}$ the SUPG stabilization tangent contributions. When viscosity is temperature-dependent (see the `[A, B, C, D]` nonlinear viscosity form under [`material.fluid.viscosity`](#material)), additional $\textbf{K}_{pT}^\mu$ and $\textbf{K}_{TT}^\mu$ terms are included via $\partial\mu/\partial T$.
-
-## Running the simulation
-Run a simulation:
-    uv run -m raft **some-config-file.yaml**
-
-replace the config file with a specific config file name, such as:
-    uv run -m raft config_example.yaml
-
-Run the test suite:
-    uv run pytest
 
 ## Configuration Parameters
 
