@@ -1,6 +1,6 @@
 # RAFT — Reservoir Analysis for TANGO
 
-A finite element method (FEM) simulator for coupled subsurface fluid flow and heat transport in geothermal reservoirs, specifically developed for native coupling with TANGO. RAFT solves pressure and temperature fields over time using a one-pass linearized extrapolation time integration scheme. Pressure and temperature are decoupled by lagging temperature and then extrapolating it to the current timestep. It also contains a fully-coupled solver.
+A finite element method (FEM) simulator for coupled subsurface fluid flow and heat transport in geothermal reservoirs, specifically developed for native coupling with TANGO.
 
  Physical processes include:
  - Fluid flow
@@ -65,7 +65,6 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 | $K_f$ | Bulk modulus of fluid | $Pa$ | Material property |
 | $Q_i$ | Volumetric fluid injection per injection point | $m^n/s$ | Boundary condition |
 | $\vec{q}$ | Darcy flux | $m^3/s/m^2$ | Derived property |
-| $\eta$ | Forchheimer correction / Brinkman effective viscosity | $Pa\cdot s^2/m$ | Material property |
 | $c_{pf}$ | Specific heat capacity of fluid | $J/kg/^\circ C$ | Material property |
 | $c_{ps}$ | Specific heat capacity of matrix | $J/kg/^\circ C$ | Material property |
 | $m_e$ | Effective heat capacity | $J/m^3/^\circ C$ | Derived property |
@@ -109,7 +108,7 @@ $$0 = -\int_\Omega \delta p\,\frac{1}{M}\dot{p}\,d\Omega + \oint_{\Gamma_N}\delt
 
 $$0 = -\int_\Omega \delta T\,m_e\dot{T}\,d\Omega + \int_\Omega \delta T\,\rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\nabla p\cdot\nabla T\,d\Omega + \oint_{\Gamma_N}\delta T\,\overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N + \int_\Omega \nabla\delta T\cdot\lambda_e\nabla T\,d\Omega$$
 
-The fields are discretized with standard isoparametric shape functions, $p^h = \textbf{N}(\vec{X})\textbf{p}(t)$ and $T^h = \textbf{N}(\vec{X})\textbf{T}(t)$, with gradients $\nabla p^h = \textbf{B}(\vec{X})\textbf{p}(t)$, $B_{ij} = \partial N_j/\partial x_i$ ([`src/raft/shapefunctions.py`](src/raft/shapefunctions.py)). Pressure and temperature may use different-order shape functions. Substituting into the weak forms and factoring out the arbitrary nodal variations $\delta\textbf{p}$, $\delta\textbf{T}$ gives element residual vectors $\textbf{R}_p = 0$ and $\textbf{R}_T = 0$, assembled in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py):
+The fields are discretized with standard isoparametric shape functions, $p^h = \textbf{N}(\vec{X})\textbf{p}(t)$ and $T^h = \textbf{N}(\vec{X})\textbf{T}(t)$, with gradients $\nabla p^h = \textbf{B}(\vec{X})\textbf{p}(t)$, $B_{ij} = \partial N_j/\partial x_i$ ([`src/raft/shapefunctions.py`](src/raft/shapefunctions.py)). Pressure and temperature may use different-order shape functions. Substituting into the weak forms gives element residual vectors $\textbf{R}_p = 0$ and $\textbf{R}_T = 0$, assembled in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py):
 
 $$\textbf{R}_p = \textbf{F}_S + \textbf{F}_{\Gamma p} + \textbf{F}_k + \textbf{F}_b + \textbf{F}_z + \textbf{F}_w = 0$$
 
@@ -326,7 +325,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
     * **`p_grad`** *(float, default: `0.0`)*: Pressure gradient along the gradient vector in $\text{Pa/m}$.
     * **`grad_direction_T`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the temperature gradient. Automatically normalized.
     * **`grad_direction_p`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the pressure gradient. Automatically normalized.
-  * **`"BC_compatible"`**: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
+  * `"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
 
 ### `boundary_conditions`
 Boundary conditions are specified in groups. Each group can be applied using one of three geometric specification methods: node indices, coordinate proximity, or named faces. Each group can also specify either constant or time-dependent values.

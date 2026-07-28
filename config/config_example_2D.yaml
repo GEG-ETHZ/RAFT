@@ -8,7 +8,7 @@ mesh:
         values: [[34, 38.5, 0], 5]
         region_number: 1
       - shape: "polyhedron"
-        values: [[0, 75], [51, 75], [51, 65], [0, 55]]
+        values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 2
   dimensions: 2
   fractures:
