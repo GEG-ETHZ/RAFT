@@ -193,9 +193,16 @@ def _check_region_properties(max_region: int, mat: dict[str, Any]) -> None:
 
 
 def rotation_matrices(
-    rot_x: float, rot_y: float, rot_z: float, nsd: int
+    rot_x: float, rot_y: float, rot_z: float
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Return individual rotation matrices (angles in degrees)."""
+    """Return individual 3D rotation matrices (angles in degrees).
+
+    Always returns full 3x3 matrices. Rotations about in-plane axes (x, y)
+    are not valid 2D rotations on their own, so callers working in 2D must
+    apply the full 3D rotation to a full 3D tensor and only truncate the
+    *result* down to the in-plane (nsd x nsd) block, rather than truncating
+    these matrices before multiplying.
+    """
     rot_x = np.radians(rot_x)
     rot_y = np.radians(rot_y)
     rot_z = np.radians(rot_z)
@@ -207,11 +214,6 @@ def rotation_matrices(
     Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-
-    # extract only initial the required space dimensions
-    Rx = Rx[:nsd, :nsd]
-    Ry = Ry[:nsd, :nsd]
-    Rz = Rz[:nsd, :nsd]
 
     return Rx, Ry, Rz
 
@@ -252,12 +254,14 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         angle_y = _get_region_value(mat["solid"]["rotation_y"], r)
         angle_z = _get_region_value(mat["solid"]["rotation_z"], r)
 
-        Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z, nsd)
-        R = Rx @ Ry @ Rz  # general rotation matrix
+        Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z)
+        R = Rx @ Ry @ Rz  # general 3D rotation matrix (always orthogonal)
 
-        # For anisotropic case, perform rotation
+        # For anisotropic case, rotate the full 3D tensor and only then
+        # restrict to the in-plane (nsd x nsd) block.
         if isinstance(kf, list):
-            kf = R @ np.diag(kf[0:nsd]) @ R.T
+            kf.append(0.0) if len(kf) < 3 else kf
+            kf = (R @ np.diag(kf) @ R.T)[:nsd, :nsd]
 
         # Derived properties (computed here, not stored in YAML)
         M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
@@ -267,9 +271,11 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
 
         # effective conductivity
         if isinstance(lambda_s, list):
+            lambda_s.append(0.0) if len(lambda_s) < 3 else lambda_s
             # anisotropic case
             lambda_e = (
-                phi * mat["fluid"]["therm_cond"] * np.eye(nsd) + (1 - phi) * R @ np.diag(lambda_s) @ R.T
+                phi * mat["fluid"]["therm_cond"] * np.eye(nsd)
+                + (1 - phi) * (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
             )
         else:
             # isotropic case

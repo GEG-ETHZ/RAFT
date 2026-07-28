@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -528,6 +529,54 @@ def _get_region_thermal_data(
     return lambda_e, isotropic_cond, float("nan"), m_e, alpha_e
 
 
+_YELLOW = "\033[93m"
+_RESET = "\033[0m"
+
+
+def _warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0.7) -> None:
+    """Warn if the pressure stiffness matrix severely violates the discrete maximum principle.
+
+    A physically well-behaved diffusion stiffness matrix is an M-matrix: every
+    off-diagonal entry must be <= 0, so increasing pressure at a neighboring node
+    can only ever pull pressure down at a node via diffusion, never push it up.
+    Positive off-diagonal entries typically arise from a region's permeability
+    tensor being strongly anisotropic and/or rotated relative to the mesh (i.e.
+    not aligned with the local triangulation).
+
+    Mild violations are common and mostly harmless, so `rel_tol` is calibrated high.
+    """
+    Kpp_coo = Kpp.tocoo()
+    diag = np.asarray(Kpp.diagonal())
+
+    off_diag = Kpp_coo.row != Kpp_coo.col
+    positive = Kpp_coo.data > 0
+    mask = off_diag & positive
+    rows, cols, vals = Kpp_coo.row[mask], Kpp_coo.col[mask], Kpp_coo.data[mask]
+
+    row_diag = diag[rows]
+    significant = (row_diag > 0) & (vals > rel_tol * row_diag)
+    rows, cols, vals = rows[significant], cols[significant], vals[significant]
+    if rows.size == 0:
+        return
+
+    ratio = vals / diag[rows]
+    order = np.argsort(-ratio)
+    n_nodes = np.unique(rows).size
+    worst = [(int(rows[i]), int(cols[i]), round(float(ratio[i]), 3)) for i in order[:5]]
+
+    warnings.warn(
+        f"{_YELLOW}Pressure stiffness matrix (Kpp) has {rows.size} strongly positive "
+        f"off-diagonal entries (>{rel_tol:.0%} of the diagonal) across {n_nodes} node(s)."
+        "This usually means a region's permeability tensor is too anisotropic and/or "
+        "rotated relative to the mesh for the linear FEM discretization to remain "
+        "monotonic. Spurious pressure/temperature oscillations may occur in that area."
+        f"Worst offenders as (node, neighbor, off-diag/diag ratio): {worst}."
+        "If this occurs, reduce the anisotropic ratio and/or align and stretch"
+        f"the mesh to the anisotropy ratio.{_RESET}",
+        stacklevel=2,
+    )
+
+
 def integrate_linear_matrices(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
@@ -728,6 +777,10 @@ def integrate_linear_matrices(  # noqa
         integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
+
+    if "Kpp" in integrated_matrices:
+        _warn_nonmonotone_pressure_diffusion(integrated_matrices["Kpp"])
+
     return (
         integrated_matrices,
         mat,
