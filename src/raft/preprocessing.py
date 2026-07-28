@@ -1,4 +1,4 @@
-"""Import mesh and create mesh objects."""
+"""Import mesh, calculate material properties, apply defaults."""
 
 from pathlib import Path
 from typing import Any
@@ -7,12 +7,15 @@ import numpy as np
 import numpy.typing as npt
 import yaml
 
+from .meshprocessing import load_mesh
+
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
     # ---- mesh ----------------------------------------------------------------
     "mesh": {
         "file": "box3D.msh",
         "dimensions": 3,
+        "regions": "",
     },
     # ---- material ------------------------------------------------------------
     "material": {
@@ -22,6 +25,12 @@ DEFAULTS: dict[str, Any] = {
             "therm_cond": 3.0,  # W/mK
             "specific_heat": 800.0,  # J/kgK
             "therm_expansion": 12.0e-6,  # 1/K
+            "porosity": 0.01,  # -
+            "biot_coeff": 0.5,  # -
+            "permeability": 1.0e-16,  # m^2
+            "rotation_x": 0.0,  # rotation of local coordinates around x-axis (degrees)
+            "rotation_y": 0.0,  # rotation of local coordinates around y-axis (degrees)
+            "rotation_z": 0.0,  # rotation of local coordinates around z-axis (degrees)
         },
         "fluid": {
             "bulk_mod": 2.0e9,  # Pa
@@ -31,16 +40,16 @@ DEFAULTS: dict[str, Any] = {
             "specific_heat": 4180.0,  # J/kgK
             "viscosity": 1e-3,  # Pa·s
         },
-        "porosity": 0.01,  # -
-        "biot_coeff": 0.5,  # -
-        "permeability": 1.0e-16,  # m^2
     },
     # ---- initial conditions --------------------------------------------------
     "initial_conditions": {
-        "geothermal_gradient": 0.0,  # deg C/m
-        "T_surf": 20.0,  # deg C
-        "pressure_gradient": 0.0,  # Pa/m
-        "p_surf": 1.0e5,  # Pa
+        "assignment": "constant",
+        "T_ini": 20.0,  # deg C
+        "p_ini": 1.0e5,  # Pa
+        "T_grad": 0.0,  # deg C/m
+        "p_grad": 0.0,  # Pa / m
+        "grad_direction_T": [0, 0, -1],  # unit vector in gradient direction
+        "grad_direction_p": [0, 0, -1],  # unit vector in gradient direction
     },
     # ---- boundary conditions -------------------------------------------------
     "boundary_conditions": {
@@ -56,87 +65,26 @@ DEFAULTS: dict[str, Any] = {
         "timestep": 1.0,
         "timestep_min": 1.0,
         "timestep_max": 1.0,
+        "solver_type": "linearized",
         "output_frequency": 1,
         "output_vtk": 0,
+        "output_viscosity": 0,
         "rate_order": 1,
+        "fully_coupled": 0,
         "advection_on": 0,
         "pressurization_on": 0,
         "buoyancy_on": 0,
         "steady_pressure": 0,
         "steady_temperature": 0,
+        "axisymmetric_on": 0,
         "rel_error_T": 1.0e-2,
+        "iterative_controls": {
+            "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
+            "iter_max": 100,  # Maximum number of iterations
+            "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
+        },
     },
 }
-
-
-def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, npt.NDArray[np.int64] | None]:
-    """Reads mesh data from a Gmsh (.msh) file (Version 2.x format).
-
-    meshfile : name of mesh file
-    nsd : number of space dimensions of the analysis
-
-    nodes : nn x nsd array with coordinates of mesh nodes.
-    conn : ne x nne array with element connectivity.
-    """
-    try:
-        with open(meshfile) as f:
-            lines: list[str] = [line.strip() for line in f.readlines()]
-    except FileNotFoundError:
-        print("Error: File {meshfile} not found.")
-        return None, None
-
-    # Find the start of nodes and elements sections
-    try:
-        n_str_idx: int = lines.index("$Nodes")
-        e_str_idx: int = lines.index("$Elements")
-    except ValueError:
-        print("Error: $Nodes or $Elements section not found in file.")
-        return None, None
-
-    # Parse number of nodes and elements
-    nnode: int = int(lines[n_str_idx + 1])
-    nelem: int = int(lines[e_str_idx + 1])
-
-    # Initialize nodes array
-    nodes: npt.NDArray[np.float64] = np.zeros((nnode, nsd), dtype=np.float64)
-
-    # Extract nodal coordinates
-    for i in range(nnode):
-        temp_line: list[str] = lines[n_str_idx + 2 + i].split()
-        temp_data: list[float] = [float(x) for x in temp_line]
-        nodes[i, :] = temp_data[1 : nsd + 1]
-
-    conn_list: list[list[int]] = []
-
-    # Extract element connectivity
-    for i in range(nelem):
-        temp_line = lines[e_str_idx + 2 + i].split()
-        temp_data_int: list[int] = [int(x) for x in temp_line]
-
-        elmtyp = temp_data_int[1]
-        edg = 1  # edge element flag
-
-        # Element type logic
-        match (nsd, elmtyp):
-            case (3, 5):  # B8
-                nne, edg = 8, 0
-            case (3, 12):  # B27
-                nne, edg = 27, 0
-            case (2, 3):  # Q4
-                nne, edg = 4, 0
-            case (2, 10):  # Q9
-                nne, edg = 9, 0
-
-        # Only append elements if they are not edge elements
-        if edg == 0:
-            conn_list.append(temp_data_int[-nne:])
-
-    # Convert list to numpy array
-    conn: npt.NDArray[np.int64] = (
-        np.array(conn_list, dtype=np.int64) if conn_list else np.empty((0, 0), dtype=np.int64)
-    )
-
-    return nodes, conn
 
 
 def _apply_defaults(
@@ -155,6 +103,48 @@ def _apply_defaults(
         else:
             if verbose:
                 print(f"  [CONFIG]   {full_key} = {config[key]}")
+
+    return config
+
+
+def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
+    """Determine physics controls that are controlled through implicit inputs.
+
+    This primarily includes non-constant material properties, but also includes
+    non-feasible combinations of settings.
+    """
+    # Viscosity
+    mu = config["material"]["fluid"]["viscosity"]
+    if isinstance(mu, float):  # constant
+        config["simulation"]["viscosity_nonconstant"] = 0
+    elif not isinstance(mu, list) or len(mu) < 1:  # not a list
+        raise ValueError(f"Incompatible viscosity format: {mu}")
+    elif len(mu) == 1:  # single list -> transfer to float
+        config["material"]["fluid"]["viscosity"] = mu[0]
+        config["simulation"]["viscosity_nonconstant"] = 0
+    else:  # non-constant function
+        coeff = np.zeros((4,))
+        for i in range(len(mu)):
+            coeff[i] = mu[i]
+        if verbose:
+            print(
+                f"""\nViscosity = {coeff[0]:.2e} * exp({coeff[1]:.2e} / T
+                + {coeff[2]:.2e} * T + {coeff[3]:.2e} * T^2 )"""
+            )
+            print("T is assumed in K.")
+
+        config["material"]["fluid"]["viscosity"] = coeff
+        config["simulation"]["viscosity_nonconstant"] = 1
+
+    # Axisymmetry
+    axisymmetric_on = config["simulation"]["axisymmetric_on"]
+    if axisymmetric_on and config["mesh"]["dimensions"] == 3:
+        config["simulation"]["axisymmetric_on"] = 0
+        if verbose:
+            print("Axisymmetry turned off, not valid in 3D analysis.")
+
+    # Fractures
+    config["simulation"]["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
 
     return config
 
@@ -180,152 +170,158 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
 
     _apply_defaults(config, DEFAULTS, verbose=verbose)
 
+    _determine_physics_controls(config, verbose)
+
     if verbose:
         print()
 
     return config
 
 
-def _extract_exterior(mesh: dict[str, Any]):
-    """Find the nodes along the exterior for applying boundary conditions.
-    Note that this extraction assumes the reservoir has 6 sides that do not have to be planar.
+def _check_region_properties(max_region: int, mat: dict[str, Any]) -> None:
+    """Check that the correct number of properties are included."""
+    missing_props = []
+    for mat_prop in mat:
+        if isinstance(mat[mat_prop], list):  # noqa
+            if len(mat[mat_prop]) < (max_region + 1):
+                missing_props.append(mat_prop)
+
+    if len(missing_props) > 0:
+        raise IndexError(f"Insufficient properties provided for:\n{chr(10).join(missing_props)}")
+
+    return
+
+
+def rotation_matrices(
+    rot_x: float, rot_y: float, rot_z: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Return individual 3D rotation matrices (angles in degrees).
+
+    Always returns full 3x3 matrices. Rotations about in-plane axes (x, y)
+    are not valid 2D rotations on their own, so callers working in 2D must
+    apply the full 3D rotation to a full 3D tensor and only truncate the
+    *result* down to the in-plane (nsd x nsd) block, rather than truncating
+    these matrices before multiplying.
     """
-    conn = mesh["conn"]
-    nodes = mesh["nodes"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
+    rot_x = np.radians(rot_x)
+    rot_y = np.radians(rot_y)
+    rot_z = np.radians(rot_z)
 
-    # Define element faces. Node numberings should have outwards pointing normals.
-    if nne == 8:  # B8 elements
-        faces = {
-            "face0": [0, 3, 2, 1],
-            "face1": [4, 5, 6, 7],
-            "face2": [0, 1, 5, 4],
-            "face3": [0, 4, 7, 3],
-            "face4": [1, 2, 6, 5],
-            "face5": [2, 3, 7, 6],
-        }
-    else:
-        raise NotImplementedError(f"Boundary extraction for {nne}-node elements")
+    cx, sx = np.cos(rot_x), np.sin(rot_x)
+    cy, sy = np.cos(rot_y), np.sin(rot_y)
+    cz, sz = np.cos(rot_z), np.sin(rot_z)
 
-    # Loop through all elements, collect a list of faces in global coordinates,
-    # then find unique faces.
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
 
-    # use dictionary to track faces and keep original order for calculating normals.
-    # dictionary structure: sorted_face: [count, original face]
-    face_tracker: dict[tuple[int, ...], list[int | tuple[int, ...]]] = {}
-
-    for elem in range(ne):
-        for face_name, face_local in faces.items():
-            original_face = tuple(conn[elem, face_local])  # for normals later
-            sorted_face = tuple(sorted(original_face))  # for uniqueness
-            if sorted_face in face_tracker:
-                # Increment count
-                face_tracker[sorted_face][0] += 1  # type: ignore[operator]
-            else:
-                # Store count and original
-                face_tracker[sorted_face] = [1, original_face]
-
-    boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
-
-    # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
-    x_min: set[int] = set()
-    x_max: set[int] = set()
-    y_min: set[int] = set()
-    y_max: set[int] = set()
-    z_min: set[int] = set()
-    z_max: set[int] = set()
-
-    for face in boundary_faces:
-        # calculate plane normal
-        xI = nodes[face, :]
-        v1 = [xI[1, 0] - xI[0, 0], xI[1, 1] - xI[0, 1], xI[1, 2] - xI[0, 2]]
-        v2 = [xI[2, 0] - xI[0, 0], xI[2, 1] - xI[0, 1], xI[2, 2] - xI[0, 2]]
-        n = np.cross(v1, v2)
-
-        # project n onto axis normals
-        ex = n @ [1, 0, 0]
-        ey = n @ [0, 1, 0]
-        ez = n @ [0, 0, 1]
-
-        # Find which component has the largest magnitude
-        components = {"x": ex, "y": ey, "z": ez}
-        max_component = max(components, key=lambda k: abs(components[k]))
-
-        # Append to appropriate list based on sign
-        if max_component == "x":
-            (x_max if ex > 0 else x_min).update(face)  # type: ignore[arg-type]
-        elif max_component == "y":
-            (y_max if ey > 0 else y_min).update(face)  # type: ignore[arg-type]
-        else:  # max_component == 'z'
-            (z_max if ez > 0 else z_min).update(face)  # type: ignore[arg-type]
-
-    mesh["boundaries"] = {}
-    mesh["boundaries"]["x_max"] = x_max
-    mesh["boundaries"]["x_min"] = x_min
-    mesh["boundaries"]["y_max"] = y_max
-    mesh["boundaries"]["y_min"] = y_min
-    mesh["boundaries"]["z_max"] = z_max
-    mesh["boundaries"]["z_min"] = z_min
-
-    x_all = x_max | x_min
-    y_all = y_max | y_min
-    z_all = z_max | z_min
-    n_all = x_all | y_all | z_all
-
-    mesh["boundaries"]["x_all"] = x_all
-    mesh["boundaries"]["y_all"] = y_all
-    mesh["boundaries"]["z_all"] = z_all
-    mesh["boundaries"]["n_all"] = n_all
-
-    return mesh
+    return Rx, Ry, Rz
 
 
-def load_mesh(config_mesh: dict[str, Any], verbose: bool):
-    """Load mesh and define mesh structures."""
-    config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
-    [nodes, conn] = load_Gmsh(str(config_path), config_mesh["dimensions"])
+def _get_region_value(val: Any, region_idx: int) -> Any:
+    """Return value for region, handling both scalar and list cases.
 
-    if nodes is None or conn is None:
-        raise RuntimeError(f"Failed to load mesh from {config_path}")
+    Fallback for homogeneous cases defined as scalars instead of lists.
+    """
+    return val[region_idx] if isinstance(val, list) else val
 
-    mesh: dict[str, Any] = {
-        "nodes": nodes,
-        "conn": conn - 1,
-    }
 
-    # Extract key values
-    mesh["nn"] = np.shape(nodes)[0]  # number of nodes
-    mesh["ne"] = np.shape(conn)[0]  # number of elements
-    mesh["nne"] = np.shape(conn)[1]  # number of nodes per element
-    mesh["nsd"] = np.shape(nodes)[1]  # number of space dimensions
+def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> dict[str, Any]:
+    """Calculate properties derived from other primary properties."""
+    nsd = mesh["nsd"]
+    num_regions = max(mesh["regions"]) + 1
 
-    # Define number of quadrature points
-    match (mesh["nsd"], mesh["nne"]):
-        case (3, 8):  # B8
-            nq, etyp = 2, "B8"
-        case (3, 27):  # B27
-            nq, etyp = 3, "B27"
-        case (2, 4):  # Q4
-            nq, etyp = 2, "Q4"
-        case (2, 9):  # Q9
-            nq, etyp = 3, "Q9"
-    mesh["n_quadrature"] = nq
-    mesh["element_type"] = etyp
+    # Initialize derived properties storage
+    mat["solid"]["storage_mod"] = [None] * num_regions
+    mat["solid"]["therm_cond_eff"] = [None] * num_regions
+    mat["solid"]["therm_expansion_eff"] = [None] * num_regions
+    mat["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
+    mat["solid"]["permeability_eff"] = [None] * num_regions
 
-    # Extract sets of exterior nodes
-    mesh = _extract_exterior(mesh)
+    for r in range(num_regions):
+        # ----- material properties
+        alpha_s = _get_region_value(mat["solid"]["therm_expansion"], r)
+        alpha_f = mat["fluid"]["therm_expansion"]
+        phi = _get_region_value(mat["solid"]["porosity"], r)
+        biot = _get_region_value(mat["solid"]["biot_coeff"], r)
+        Kf = mat["fluid"]["bulk_mod"]
+        Ks = _get_region_value(mat["solid"]["bulk_mod"], r)
+        lambda_s = _get_region_value(mat["solid"]["therm_cond"], r)
+        kf = _get_region_value(mat["solid"]["permeability"], r)
 
-    if verbose:
-        print("----- Mesh statistics")
-        print(f"  File            : {config_mesh['file']}")
-        print(f"  Element type    : {etyp}")
-        print(f"  Dimensions      : {mesh['nsd']}D")
-        print(f"  Nodes           : {mesh['nn']}")
-        print(f"  Elements        : {mesh['ne']}")
-        print(f"  Quadrature pts  : {nq}^{mesh['nsd']} = {nq ** mesh['nsd']}\n")
+        # physical properties
+        angle_x = _get_region_value(mat["solid"]["rotation_x"], r)
+        angle_y = _get_region_value(mat["solid"]["rotation_y"], r)
+        angle_z = _get_region_value(mat["solid"]["rotation_z"], r)
 
-    return mesh
+        Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z)
+        R = Rx @ Ry @ Rz  # general 3D rotation matrix (always orthogonal)
+
+        # For anisotropic case, rotate the full 3D tensor and only then
+        # restrict to the in-plane (nsd x nsd) block.
+        if isinstance(kf, list):
+            kf.append(0.0) if len(kf) < 3 else kf
+            kf = (R @ np.diag(kf) @ R.T)[:nsd, :nsd]
+
+        # Derived properties (computed here, not stored in YAML)
+        M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
+
+        # effective expansion modulus
+        alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
+
+        # effective conductivity
+        if isinstance(lambda_s, list):
+            lambda_s.append(0.0) if len(lambda_s) < 3 else lambda_s
+            # anisotropic case
+            lambda_e = (
+                phi * mat["fluid"]["therm_cond"] * np.eye(nsd)
+                + (1 - phi) * (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
+            )
+        else:
+            # isotropic case
+            lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * lambda_s
+
+        # effective volumetric heat capacity
+        cp_s = _get_region_value(mat["solid"]["specific_heat"], r)
+        rho_s = _get_region_value(mat["solid"]["density"], r)
+        m_e = phi * mat["fluid"]["specific_heat"] * mat["fluid"]["density"] + (1 - phi) * cp_s * rho_s
+
+        # store derived properties for future use
+        mat["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
+        mat["solid"]["storage_mod"][r] = M
+        mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
+        mat["solid"]["therm_expansion_eff"][r] = alpha_e
+        mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
+
+    return mat
+
+
+def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """During the preprocessing step, turn boundary condition groups
+    defined by coordinates into node groups.
+    """
+    BC_dict = config["boundary_conditions"]
+    nodes = mesh["nodes_total"]
+    if np.size(nodes, 1) < 3:
+        nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
+
+    for BC_type in BC_dict:
+        for group in BC_dict[BC_type]:
+            BCnodes = []
+            if "coords" in group:
+                for xi in group["coords"]:
+                    if np.size(xi, 0) != 3:
+                        xi.append(0.0)
+                    d = np.linalg.norm(nodes - xi, axis=1)
+                    # In the case of duplicate nodes, take the highest node number.
+                    # This prioritizes fracture nodes over matrix nodes.
+                    d_min = np.min(d)
+                    closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
+                    BCnodes.append(closest_node)
+                group["nodes"] = BCnodes
+
+    config["boundary_conditions"] = BC_dict
+    return config
 
 
 def preprocessing(
@@ -334,5 +330,12 @@ def preprocessing(
     """Load and validate the config and mesh."""
     config = load_config(config_name, config_dir, verbose)
     config["mesh"]["config_dir"] = config["config_dir"]
+
     mesh = load_mesh(config["mesh"], verbose)
+
+    config = _convert_coordBCs_to_nodeBCs(mesh, config)
+
+    _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
+    config["material"] = _calculate_derived_properties(mesh, config["material"])
+
     return config, mesh

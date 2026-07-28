@@ -5,9 +5,9 @@ L = 50;
 W = 73;
 H = 45;
 
-nL = 3;
-nW = 3;
-nH = 3;
+nL = 7;
+nW = 7;
+nH = 7;
 
 Point(1) = {0,  0,  0, 1};
 Point(2) = {L,  0,  0, 1};
@@ -86,3 +86,5 @@ Transfinite Surface {4};
 Transfinite Surface {5};
 //+
 Transfinite Surface {1};
+//+
+Transfinite Volume{1};

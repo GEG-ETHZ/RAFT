@@ -11,7 +11,7 @@ import argparse
 from pathlib import Path
 
 
-def main():
+def main() -> None:
     """Run the TANGO geothermal simulator."""
     parser = argparse.ArgumentParser(
         prog="raft",

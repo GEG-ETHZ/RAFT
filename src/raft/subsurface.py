@@ -1,209 +1,335 @@
-"""Subsurface Simulator."""
+"""Subsurface simulator - main time integration loop."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_linear_matrices, integrate_nonlinear_matrices
+from .matrixassembly import integrate_linear_matrices
 from .parseboundaryconditions import parsebcs
 from .postprocessing import postprocessing
 from .preprocessing import preprocessing
+from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
 
-def rate_coefficients(dt, order):
-    """Calculate the rate of change coefficients."""
-    # dt1 = t_n - t_(n-1)
-    # dt2 = t_(n-1) - t_(n-2)
-    # dt3 = t_(n-2) - t_(n-3)
-    dt1 = dt[0]
-    dt2 = dt[1]
-    dt3 = dt[2]
-    cv = np.ones(3)  # rate of change coefficients
-    cx = np.ones(3)  # extrapolation coefficients
-    if order > 1:
-        cv[0] = (2 * dt1 + dt2) / dt1 / (dt1 + dt2)
-        cv[1] = -(dt1 + dt2) / dt1 / dt2
-        cv[2] = dt1 / dt2 / (dt1 + dt2)
-
-        cx[0] = (dt1 + dt2 + dt3) * (dt1 + dt2) / (dt2 + dt3) / dt2
-        cx[1] = -dt1 * (dt1 + dt2 + dt3) / dt2 / dt3
-        cx[2] = dt1 * (dt1 + dt2) / (dt2 + dt3) / dt3
-    else:
-        cv[0] = 1 / dt1
-        cv[1] = -1 / dt1
-        cv[2] = 0
-
-        cx[0] = 1 + dt1 / dt2
-        cx[1] = -dt1 / dt2
-        cx[2] = 0
-    return cv, cx
-
-
-def _update_time(t, dt, t_end, dt_max):
+def _update_time(  # noqa
+    solver_type: str,
+    t: float,
+    dt: list[float],
+    sim_control: dict[str, Any],
+    critical_times: npt.NDArray[np.float64],
+    converged: bool,
+    timestep_error: float,
+    verbose: bool,
+) -> tuple[float, list[float], bool]:
     """Update the current time and timestep."""
+    dt_max = sim_control["timestep_max"]
+    dt_min = sim_control["timestep_min"]
+    rel_tol_T = sim_control["rel_error_T"]
+
+    if not converged:  # Decrease the timestep
+        if dt[0] == dt_min:
+            # minimum timestep reached, proceed with simulation
+            match solver_type:
+                case "linearized":
+                    if verbose:
+                        print(
+                            f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                        )
+                case "fully_coupled":
+                    if verbose:
+                        print(
+                            "     Minimum timestep reached, unable to converge to solution."  # noqa: E501
+                        )
+                    sys.exit()
+        else:
+            if solver_type == "linearized":
+                # Cut timestep in proportion with error
+                cut_factor = 0.85 * 4 / (1 + 3 * timestep_error / rel_tol_T)
+            else:
+                cut_factor = 0.5
+            t = t - dt[0]
+            dt[0] = max(cut_factor * dt[0], dt_min)
+            t = t + dt[0]
+            if verbose:
+                print(
+                    f"     Timestep error = {timestep_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
+                )
+            return t, dt, False
+
+    # otherwise, increase the timestep
     dt[2] = dt[1]
     dt[1] = dt[0]
     if dt[0] < dt_max:
-        dt[0] *= 1.25  # Note: arbitrary timestep increasing rate. Could be made variable.
+        dt[0] = min(1.25 * dt[0], dt_max)  # Note: arbitrary timestep increasing rate. Could be made variable.
     t += dt[0]
-    if t > t_end and t != t_end:
-        t -= dt[0]
-        dt[0] = t_end - t
-        t = t_end
-    return t, dt
+
+    # find next critical time and prevent overshoot
+    upcoming = [ct for ct in critical_times if ct > t - dt[0]]
+    if upcoming:
+        t_next = min(upcoming)
+        if t > t_next and t != t_next:
+            t -= dt[0]
+            dt[0] = max(t_next - t, dt_min)
+            t += dt[0]
+
+    return t, dt, True
 
 
-def _check_convergence(T, T_extrap, dt, sim_control, n, verbose):
-    rel_tol_T = sim_control["rel_error_T"]
-    dt_min = sim_control["timestep_min"]
-    rate_order = sim_control["rate_order"]
-    converged = 1  # default to converged, and only break if not converged
-
-    # First few timesteps affected by initial conditions, do not check
-    if n < rate_order + 1:
-        return converged
-
-    # Calculate error
-    extrapolation_error = max(abs(T[:, 0] - T_extrap) / T[:, 0])
-    if extrapolation_error > rel_tol_T:
-        if dt[0] != dt_min:
-            cut_factor = 0.85 * 4 / (1 + 3 * extrapolation_error / rel_tol_T)
-            dt[0] = max(cut_factor * dt[0], dt_min)
-            converged = 0
-            if verbose:
-                print(
-                    f"     Extrapolation error = {extrapolation_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
-                )
-        else:
-            converged = 1
-            if verbose:
-                print(
-                    f"     Minimum timestep reached, error is {extrapolation_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                )
-    return converged
+def get_critical_times(bc_config: dict[str, Any], t_end: float) -> npt.NDArray[np.float64]:
+    """Collect all times from BC groups using the 'table' function."""
+    times: set[float] = set()
+    # add end times
+    times.add(t_end)
+    # search for any boundary condition change times
+    for key in ("temperature_fixed", "pressure_fixed", "temperature_flux", "fluid_flux"):
+        for group in bc_config.get(key, []):
+            if group.get("function") == "table":
+                times.update(group["values"][0])
+            elif group.get("function") == "ramp":
+                times.add(float(group["values"][1]))
+    return np.array(sorted(times), dtype=np.float64)
 
 
-# ------------------------ Primary time integration function --------
-def _lin_extrap_time_integration(
+def _assign_initial_gradient(
+    nodes: npt.NDArray[np.float64], y0: float, slope: float, direction: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Gradient calculation for initial conditions based on arbitrary direction."""
+    s = direction / np.linalg.norm(direction)  # unit vector in gradient direction
+    nsd = np.size(nodes, 1)
+    s = s[0:nsd]
+
+    x = np.dot(nodes, s)
+    x_min = np.min(x)
+    y = y0 + slope * (x - x_min)
+
+    return np.asarray(y, dtype=np.float64)
+
+
+def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Broadcast a per-node scalar field into the 4-column time-history layout."""
+    return np.tile(values.reshape(-1, 1), (1, 4))
+
+
+def _build_steady_state_controls(sim_control: dict[str, Any]) -> dict[str, Any]:
+    """Build a simulation-control dict for the steady-state initial condition solve.
+
+    Pressurization is neglected since it is time-dependent, and buoyancy is neglected
+    because the steady-state initial condition has no reference temperature. Buoyancy
+    is instead accounted for in the hydrostatic pressure, which does not affect flow.
+    """
+    sim_control_SS = sim_control.copy()
+    sim_control_SS["pressurization_on"] = 0
+    sim_control_SS["buoyancy_on"] = 0
+    sim_control_SS["steady_pressure"] = 1
+    sim_control_SS["steady_temperature"] = 1
+    return sim_control_SS
+
+
+def _assign_ic_constant(config_ini: dict[str, Any], primary_variables: dict[str, Any]) -> dict[str, Any]:
+    """Apply constant uniform initial conditions."""
+    primary_variables["p"][:, :] = config_ini["p_ini"]
+    primary_variables["T"][:, :] = config_ini["T_ini"]
+    return primary_variables
+
+
+def _assign_ic_gradient(
+    config_ini: dict[str, Any], mesh: dict[str, Any], primary_variables: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply linear-gradient initial conditions."""
+    T = _assign_initial_gradient(
+        mesh["nodes_total"], config_ini["T_ini"], config_ini["T_grad"], config_ini["grad_direction_T"]
+    )
+    p = _assign_initial_gradient(
+        mesh["nodes_total"], config_ini["p_ini"], config_ini["p_grad"], config_ini["grad_direction_p"]
+    )
+
+    primary_variables["p"][:, :] = _broadcast_to_history(p)
+    primary_variables["T"][:, :] = _broadcast_to_history(T)
+    return primary_variables
+
+
+def _assign_ic_bc_compatible(
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    dt: npt.NDArray[np.float64],
     n: int,
     verbose: bool,
-):
-    """Assemble FEM matrices and vectors and solve for solution at next timestep."""
-    # extract vectors of nodal dofs
-    p = primary_variables["p"]
-    T = primary_variables["T"]
-    p_dofs = primary_variables["p_dofs"]
-    T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    adv_on = sim_control["advection_on"]
-    prez_on = sim_control["pressurization_on"]
-    buoy_on = sim_control["buoyancy_on"]
-    steady_pres = sim_control["steady_pressure"]
-    steady_temp = sim_control["steady_temperature"]
+) -> dict[str, Any]:
+    """Solve for a steady-state initial condition compatible with the boundary conditions."""
+    if verbose:
+        print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
-    converged = 0
-    while not converged:
-        # calculate rate coefficients
-        cv, cx = rate_coefficients(dt, rate_order)
+    sim_control_SS = _build_steady_state_controls(sim_control)
+    material["T_0"] = np.zeros((mesh["nn_total"],))
 
-        # parse boundary conditions
-        # dirichlet - fixed
-        T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
-        T_bar = boundary_conditions["T_dirichlet"][:, 1]
-        p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-        p_bar = boundary_conditions["p_dirichlet"][:, 1]
-        # neumann - external force vectors
-        F_extT = np.zeros((len(T_dofs), 1))
-        F_extp = np.zeros((len(p_dofs), 1))
-        F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
-            :, 1
-        ].reshape(-1, 1)
-        F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][
-            :, 1
-        ].reshape(-1, 1)
-
-        # Begin the one-pass extrapolated linearization by solving pressure
-        # first using an extrapolated pressure
-        # One-pass update: solve pressure, then temperature
+    if sim_control_SS["viscosity_nonconstant"]:
+        # viscosity is a function of temperature, fully coupled steady-state
+        # solution is required.
         if verbose:
-            print("     Solving pressure equations...")
+            print("   Non-linear properties present, using sequential scheme to estimate fields...")
 
-        T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
-        T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
+        # Use one-pass linear to generate approximate solution
+        num_passes = 1
+        for _ in range(num_passes):
+            primary_variables, _, _, _ = lin_extrap_time_integration(
+                sim_control_SS,
+                mesh,
+                material,
+                matrices_linear,
+                primary_variables,
+                boundary_conditions,
+                [1, 1, 1],
+                n,
+                verbose,
+            )
 
-        KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
-        Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
-        KpT = matrices_linear["KpT"]  # Pressurization matrix
-        KbT = matrices_linear["KbT"]  # Buoyancy matrix
-
-        F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-        F_bT = buoy_on * (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
-
-        # Assemble combined matrices
-        A = (cv[0] * KM) + Kpp
-        b = -KM @ (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1) + F_extp + F_bT + F_pT
-
-        nE = p_fix.astype(int)  # essential DoFs
-        nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
-        dE = p_bar
-        KFF = A[np.ix_(nF, nF)]
-        KFE = A[np.ix_(nF, nE)]
-        pF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-        p[nE, 0] = dE
-        p[nF, 0] = pF.ravel()
-
-        # Calculate reaction flow rates at prescribed DoFs
-        KEE = A[np.ix_(nE, nE)]
-        KEF = A[np.ix_(nE, nF)]
-        qE = KEE @ dE.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
-
-        # Update nonlinear matrices with new pressure
+        # Perform fully coupled solution
         if verbose:
-            print("     Assembling non-linear matrices...")
-        matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables)
+            print("   Solving for fully-coupled steady-state condition...")
 
-        KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
-        KTT = matrices_linear["KTT"]  # thermal conduction matrix
-        C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
+        sim_control_SS["fully_coupled"] = True
+        primary_variables, _, converged, _ = fully_coupled_time_integration(
+            sim_control_SS,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            [1, 1, 1],
+            n,
+            verbose,
+        )
+        if not converged:
+            raise RuntimeError("Failed to converge during assignment of initial conditions.")
+    else:
+        # viscosity is a constant.
+        # This reduces the problem to a one-way p -> T, just like in
+        # our linearized extrapolation.
+        primary_variables, _, _, _ = lin_extrap_time_integration(
+            sim_control_SS,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            [1, 1, 1],
+            n,
+            verbose,
+        )
 
-        if verbose:
-            print("     Solving temperature equations...")
-        A = (cv[0] * C) + KTA + KTT
-        b = -C @ (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1) + F_extT
+    p = primary_variables["p"][:, 0]
+    T = primary_variables["T"][:, 0]
+    primary_variables["p"][:, :] = _broadcast_to_history(p)
+    primary_variables["T"][:, :] = _broadcast_to_history(T)
+    return primary_variables
 
-        nE = T_fix  # essential DoFs
-        nF = np.setdiff1d(T_dofs, nE)  # free DoFs
-        dE = T_bar
-        KFF = A[np.ix_(nF, nF)]
-        KFE = A[np.ix_(nF, nE)]
-        TF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
-        T[nE, 0] = dE
-        T[nF, 0] = TF.ravel()
 
-        # Check for extrapolation error
-        converged = _check_convergence(T, T_extrap, dt, sim_control, n, verbose)
+# ------------------ Solve for initial conditions
+def _assign_initial_conditions(
+    config_ini: dict[str, Any],
+    sim_control: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    matrices_linear: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    n: int,
+    verbose: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assign initial conditions."""
+    if verbose:
+        print("Assigning initial conditions...")
 
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q_out"] = qE  # outlet flow rates
-    primary_variables["T_out"] = T[p_fix, 0]  # outlet temperatures
-    return primary_variables, dt
+    assign_type = config_ini["assignment"]
+    supported_types = ["constant", "gradient", "BC_compatible"]
+
+    if assign_type == "constant":
+        primary_variables = _assign_ic_constant(config_ini, primary_variables)
+    elif assign_type == "gradient":
+        primary_variables = _assign_ic_gradient(config_ini, mesh, primary_variables)
+    elif assign_type == "BC_compatible":
+        primary_variables = _assign_ic_bc_compatible(
+            sim_control,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            n,
+            verbose,
+        )
+    else:
+        raise ValueError(
+            f"Unknown initial condition assignment type: '{assign_type}'\n"
+            f"Supported types: {', '.join(supported_types)}\n"
+        )
+
+    # use initial conditions as the reference temperature for buoyancy
+    material["T_0"] = primary_variables["T"][:, 0]  # initial condition reference temperature
+
+    return primary_variables, material
+
+
+# ------------------------------------ Time integration decider
+def _perform_time_integration(
+    sim_control: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    matrices_linear: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    dt: list[float],
+    n: int,  # noqa
+    verbose: bool,
+) -> tuple[dict[str, Any], list[float], bool, float]:
+    """Choose between time integration types."""
+    solver_type = sim_control["solver_type"]
+    supported_types = ["linearized", "fully_coupled"]
+
+    if solver_type == "linearized":
+        primary_variables, dt, converged, timestep_error = lin_extrap_time_integration(
+            sim_control,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            dt,
+            n,
+            verbose,
+        )
+    elif solver_type == "fully_coupled":
+        sim_control["fully_coupled"] = True
+        primary_variables, dt, converged, timestep_error = fully_coupled_time_integration(
+            sim_control,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            dt,
+            n,
+            verbose,
+        )
+    else:
+        raise ValueError(
+            f"Unknown solver type: '{solver_type}'\nSupported types: {', '.join(supported_types)}\n"
+        )
+
+    return primary_variables, dt, converged, timestep_error
 
 
 # -------------------------------- Main simulation run function -------------
-def main(config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True):
+def main(  # noqa
+    config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Main simulation run."""
     if config_name is None:
         parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
@@ -218,26 +344,34 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     # ----- Load config and mesh
     config, mesh = preprocessing(config_name, config_dir, verbose)
     material = config["material"]
+    BC_config = config["boundary_conditions"]
+    controls = config["simulation"]
+    # Copy config name and directory to controls
+    controls["config_name"] = config["config_name"]
+    controls["config_dir"] = config["config_dir"]
 
     # ----- Initialize simulation parameters
 
     ## Numerical controls
-    t = config["simulation"]["t_start"]
-    t_end = config["simulation"]["t_end"]
+    n = 0  # Time step counter
+    t = controls["t_start"]
+    t_end = controls["t_end"]
     # initialize timesteps and store 3 timesteps (necessary for higher order)
     # dt = [dt_n, dt_(n-1), dt_(n-2)]
-    dt = config["simulation"]["timestep"] * np.ones(3)
+    dt = controls["timestep"] * np.ones(3)
+    # Gather any important time points as specified in the boundary conditions
+    critical_times = get_critical_times(config["boundary_conditions"], t_end)
 
     ## Initialize vectors
     primary_variables = {}  # storage structure for all primary variables and results
-    p_dofs = np.arange(0, mesh["nn"])
-    T_dofs = np.arange(0, mesh["nn"])
+    p_dofs = np.arange(0, mesh["nn_total"])
+    T_dofs = np.arange(0, mesh["nn_total"])
     primary_variables["p_dofs"] = p_dofs
     primary_variables["T_dofs"] = T_dofs
-    # Vectors of primary DoFs - ndof x 3
-    # [t_n, t_(n-1), t_(n-2)]
-    p = np.zeros((len(p_dofs), 4))
-    T = np.zeros((len(T_dofs), 4))
+    # Vectors of primary DoFs - ndof x 4
+    # [t_n, t_(n-1), t_(n-2), ...]
+    primary_variables["p"] = np.ones((len(p_dofs), 4))
+    primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
 
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
@@ -245,26 +379,30 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
     #                        along the upper surfaces.
     if verbose:
         print("     Assembling linear matrices...")
-    matrices_linear, material, mesh = integrate_linear_matrices(mesh, material)
+    matrices_linear, material, mesh = integrate_linear_matrices(mesh, material, controls)
 
     # --- Initial Conditions
-    # assume uniform, non-uniform to be implemented in future.
-    p[p_dofs, :] = config["initial_conditions"]["p_surf"]
-    T[T_dofs, :] = config["initial_conditions"]["T_surf"]
-    material["T_0"] = T[:, 1]  # initial condition reference temperature
-    primary_variables["p"] = p
-    primary_variables["T"] = T
+    # Update Boundary Conditions for initial step
+    boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+    q = np.zeros((mesh["nn_total"], 1))
+    primary_variables["q"] = q
 
-    outlet_nodes = config["boundary_conditions"]["pressure_fixed"][0]["nodes"]
-    q_out = np.zeros((len(outlet_nodes), 1))
-    primary_variables["q_out"] = q_out
-    primary_variables["T_out"] = T[outlet_nodes, 0]
+    [primary_variables, material] = _assign_initial_conditions(
+        config["initial_conditions"],
+        controls,
+        mesh,
+        material,
+        matrices_linear,
+        primary_variables,
+        boundary_conditions,
+        n,
+        verbose,
+    )
 
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    n = 0  # Time step counter
-    postprocessing(n, mesh, config, primary_variables, t, verbose)
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
     n += 1
 
     # ---- Time integration
@@ -273,11 +411,11 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
             print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
 
         # Update Boundary Conditions
-        boundary_conditions = parsebcs(config["boundary_conditions"], mesh, primary_variables, t)
+        boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
 
         # Perform time integration
-        primary_variables, dt = _lin_extrap_time_integration(
-            config["simulation"],
+        primary_variables, dt, converged, timestep_error = _perform_time_integration(
+            controls,
             mesh,
             material,
             matrices_linear,
@@ -288,24 +426,28 @@ def main(config_name: str | None = None, config_dir: Path | None = None, verbose
             verbose,
         )
 
-        # Post-processing
-        if verbose:
-            print("     Postprocessing...")
-        postprocessing(n, mesh, config, primary_variables, t, verbose)
-
-        # Update time step
-        t, dt = _update_time(t, dt, t_end, config["simulation"]["timestep_max"])
-        n += 1
-        # Check end condition
-        if t >= t_end:
-            if verbose:
-                print("Simulation complete. Output files are stored in: \n" + config["output_directory_full"])
-            break
+        # Check error and update time step
+        t, dt, converged = _update_time(
+            controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
+        )
 
         # Initialize next timestep
         # use roll to update primary variables, column 0 gets overwritten in time integration
-        primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
-        primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+        if converged:
+            if verbose:
+                print("     Postprocessing...")
+            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+            n += 1
+            primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
+            primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+
+        # Check end condition
+        if t > t_end:
+            if verbose:
+                print(
+                    "Simulation complete. Output files are stored in: \n" + controls["output_directory_full"]
+                )
+            break
 
     return primary_variables, mesh
 

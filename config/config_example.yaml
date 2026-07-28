@@ -1,70 +1,115 @@
 mesh:
-  file: box3D.msh
+  file: box_regions.msh
+  regions:
+    - shape: "polyhedron"
+      values: [[0, 0, 45],
+             [50, 0, 45],
+             [50, 73, 45],
+             [0, 73, 45],
+             [0, 0, 35],
+             [50, 0, 35],
+             [50, 73, 10],
+             [0, 73, 10]]
+      region_number: 1
+    - shape: "sphere"
+      values: [[25, 37.5, -10],
+       20]
+      region_number: 1
+    - shape: "cylinder"
+      values: [[25, 37.5, 0],
+       5, [0,0.2,1]]
+      region_number: 1
   dimensions: 3
 
 material:
-  # Rock mass parameters
+  # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  20.0e+9        # Pa
-      density: 2.0             # kg/m^3
-      therm_cond: 3.0e+6          # W/mK
-      specific_heat: 0        # J/kgK
-      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
+      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
+      density: [20, 20, 20]             # kg/m^3
+      therm_cond: [3.0, 3.0, 1.0]          # W/mK
+      specific_heat: [85, 90, 10]        # J/kgK
+      therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
+      porosity: [0.01, 0.05, 0.01]                # -
+      biot_coeff: [0.5, 0.9, 0.5]               # -
+      permeability: [[1.0e-11, 1.0e-11, 1.0e-16],   [1.0e-12, 1.0e-12, 1.0e-17],   1.0e-19]       # m^2
+      rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
+      rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
-  # Fluid parameters
+  # Fluid parameters - single phase flow is assumed
   fluid:
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0.7e-3         # Pa-s
-
-  # Coupled parameters
-  porosity: 0.01                # -
-  biot_coeff: 0.5               # -
-  permeability: 1.0e-13         # m^2
+      viscosity:  0.7e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
 initial_conditions:
-  geothermal_gradient: 0.0      # deg C/m
-  T_surf: 200                   # deg C
-  pressure_gradient: 0.0        # Pa/m
-  p_surf: 1.0e+5
+  assignment: "BC_compatible"
+  T_ini: 286
+  p_ini: 1.0e+5
+  T_grad: 0.1
+  p_grad: 1.0e+3
+  grad_direction_T: [0,1,-1]
+  grad_direction_p: [0,-1,-1]
+
 
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [7], values: [0]}
+        - faces: [y_max]
+          values: [1.0e5]
+          tag: "inflow"
+        - faces: [y_min]
+          values: [1.5e5]
 
   temperature_fixed:
-      - {nodes: [0, 6], values: [70, 200]}
+      - faces: [y_max]
+        values: [286]
+      - faces: [y_min]
+        values: [340]
+      - coords: [[50, 20, 10]]
+        values: [300.0]
 
   fluid_flux:
-      - {nodes: [0], values: [10]}
+      # Fluid flux and temperature flux currently only support nodal values.
+      - coords: [[50, 20, 10]]
+        values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
+        function: "table"
+        tag: "wellbore"
 
   temperature_flux:
-      - {nodes: [], values: []}
+      # Fluid flux and temperature flux currently only support nodal values.
+      - faces: []
+        values: [1]
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 5000.0
-  timestep: 1000.0
+  t_end: 500.0
+  timestep: 10.0
   timestep_min: 1.0
   timestep_max: 1000.0
+  solver_type: "fully_coupled"
 
   # Output
-  output_frequency: 2
+  output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
+  output_viscosity: 1
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  buoyancy_on: 0
+  buoyancy_on: 1
   steady_pressure: 0
   steady_temperature: 0
 
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
+  iterative_controls:
+      NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
+      iter_max: 50 # Maximum number of iterations
+      aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

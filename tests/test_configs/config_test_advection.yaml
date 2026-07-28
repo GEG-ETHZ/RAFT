@@ -10,7 +10,9 @@ material:
       therm_cond: 3.0          # W/mK
       specific_heat: 7829.0        # J/kgK
       therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
-
+      porosity: 0.01                # -
+      biot_coeff: 0.5               # -
+      permeability: 5.0e-13         # m^2 (permeability)
   # Fluid parameters
   fluid:
       bulk_mod: 2.10e+9         # Pa
@@ -20,10 +22,6 @@ material:
       specific_heat: 7829.0       # J/kgK
       viscosity: 0.7e-3         # Pa-s
 
-  # Coupled parameters
-  porosity: 0.01                # -
-  biot_coeff: 0.5               # -
-  permeability: 5.0e-13         # m^2 (permeability)
 
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
@@ -34,16 +32,24 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-      - {nodes: [0, 1, 2, 3, 4, 5, 6, 7], values: [4300, 4300, 4300, 4300, 7, 7, 7, 7]}
+      - nodes: [0, 1, 2, 3]
+        values: [4300]
+      - nodes: [4, 5, 6, 7]
+        values: [7]
 
   temperature_fixed:
-      - {nodes: [0, 1, 2, 3, 4, 5, 6, 7], values: [72, 72, 72, 72, 91, 91, 91, 91]}
+      - nodes: [0, 1, 2, 3]
+        values: [72]
+      - nodes: [4, 5, 6, 7]
+        values: [91]
 
   fluid_flux:
-      - {nodes: [], values: []}
+      - nodes: []
+        values: []
 
   temperature_flux:
-      - {nodes: [], values: []}
+      - nodes: []
+        values: []
 
 simulation:
   # Time
