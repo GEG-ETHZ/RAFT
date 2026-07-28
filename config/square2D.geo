@@ -45,3 +45,21 @@ MeshSize {5, 6} = nL/2;
 Curve Loop(7) = {6};
 //+
 Plane Surface(3) = {7};
+//+
+Field[1] = Cylinder;
+//+
+Field[1].VIn = 0.2;
+//+
+Field[1].XCenter = 40;
+//+
+Field[1].YCenter = 41;
+//+
+Field[1].Radius = 2;
+//+
+Background Field = 1;
+//+
+Field[1].Radius = 5;
+//+
+Field[1].VIn = 0.5;
+//+
+Field[1].VIn = 0.3;

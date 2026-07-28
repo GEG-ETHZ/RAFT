@@ -85,7 +85,6 @@ boundary_conditions:
           function: "ramp"
           tag: "outlet"
 
-
   temperature_flux:
 
 
