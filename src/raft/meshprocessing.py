@@ -395,17 +395,16 @@ def _assign_regions(config_regions: list[dict[str, Any]], mesh: dict[str, Any]) 
         region_number = region_shape["region_number"]
 
         if shape_type == "polyhedron":
-            from scipy.spatial import ConvexHull
-
             values = np.array(values)  # turn value into array of points
-            hull = ConvexHull(values)  # calculate the convex shape formed by the points
+            nsd_spec = np.size(values, axis=1)
+            hull = sp.spatial.ConvexHull(values)  # calculate the convex shape formed by the points
             A, b = (
                 hull.equations[:, :-1],
                 hull.equations[:, -1:],
             )  # extract the equations defining the 0-level set
             # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
             # If Ax + b < 0, then the point is within the polyhedron.
-            elem_in_region = np.all(centroids @ A.T + b.T < tol, axis=1)
+            elem_in_region = np.all(centroids[:, :nsd_spec] @ A.T + b.T < tol, axis=1)
 
         elif shape_type == "sphere":
             center = values[0]
