@@ -536,6 +536,33 @@ def _compute_node_levels(
     return phi, psi, s, on_frac_nodes
 
 
+# Geometry of one already-processed fracture, kept around so any node -- including
+# ones created much later, mid-cut, for a different fracture -- can have its sign
+# w.r.t. this fracture evaluated directly from coordinates. (center_2d, n, tol)
+FracGeom = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]
+
+
+def _evaluate_historical_phi_sign(
+    coords: npt.NDArray[np.float64], frac_geoms: list[FracGeom]
+) -> npt.NDArray[np.float64]:
+    """phi_sign of one or more nodes against every previously-processed fracture.
+
+    phi is affine in nodal coordinates (a signed distance to an infinite line), so this
+    evaluates directly from a node's coordinates -- no interpolation or topology
+    tracking needed, even for a node created moments ago mid-cut. Returns an
+    (n_nodes, len(frac_geoms)) array; n_nodes == 1 for a single new node.
+    """
+    coords = np.atleast_2d(coords)
+    if not frac_geoms:
+        return np.empty((coords.shape[0], 0))
+    cols = []
+    for center_2d, n, tol in frac_geoms:
+        phi = np.dot(coords[:, :2] - center_2d, n)
+        phi[np.abs(phi) < tol] = 0.0
+        cols.append(np.sign(phi))
+    return np.column_stack(cols)
+
+
 @dataclass
 class FractureLevelSet:
     """Geometry and nodal level-set data for a single 2D fracture.
@@ -560,11 +587,20 @@ class FractureLevelSet:
     s: npt.NDArray[np.float64]  # tangential projection
     on_frac_nodes: set[int]  # nodes lying exactly on the fracture segment
 
-    phi_sign: npt.NDArray[np.float64]  # sign of phi
+    phi_sign: npt.NDArray[np.float64]  # sign of phi for the current fracture
+    # (center_2d, n, tol) for every fracture processed before this one, in order.
+    frac_geoms: list[FracGeom]
+    # phi_sign of every current node against every fracture processed so far,
+    # NOT including the current one -- shape (nn, len(frac_geoms)).
+    phi_sign_history: npt.NDArray[np.float64]
 
 
 def _build_fracture_level_set(
-    nodes: npt.NDArray[np.float64], fracture_spec: dict[str, Any], tol: float
+    nodes: npt.NDArray[np.float64],
+    fracture_spec: dict[str, Any],
+    phi_sign_history: npt.NDArray[np.float64],
+    frac_geoms: list[FracGeom],
+    tol: float,
 ) -> FractureLevelSet:
     """Compute fracture geometry and nodal level sets once for reuse across mesh-cutting steps."""
     # Geometric properties
@@ -589,6 +625,8 @@ def _build_fracture_level_set(
         s=s,
         on_frac_nodes=on_frac_nodes,
         phi_sign=phi_sign,
+        frac_geoms=frac_geoms,
+        phi_sign_history=phi_sign_history,
     )
 
 
@@ -724,6 +762,10 @@ class _CutState:
     nodes: npt.NDArray[np.float64]
     phi: npt.NDArray[np.float64]
     phi_sign: npt.NDArray[np.float64]
+    # phi_sign against every fracture processed before the current one -- (nn, k).
+    # Grown by one row alongside `nodes`/`phi_sign` for each newly created node.
+    phi_sign_history: npt.NDArray[np.float64]
+    frac_geoms: list[FracGeom]
     psi: npt.NDArray[np.float64]
     new_node_index: int
 
@@ -905,19 +947,28 @@ def _insert_split_nodes(
     """Add new nodes for one cut element: a single node at each fracture tip, or a
     coincident pair shifted to either side of the fracture for interior fracture nodes.
 
-    Appends to `state.nodes`/`phi_sign`/`psi` and returns the extended `m_nodes` list,
-    together with the shifted (non-tip) nodes so they can be restored afterwards.
+    Appends to `state.nodes`/`phi_sign`/`phi_sign_history`/`psi` and returns the
+    extended `m_nodes` list, together with the shifted (non-tip) nodes so they can be
+    restored afterwards.
+
+    `phi_sign_history` is evaluated at each node's unshifted coordinate `f_coords[i, :]`
+    -- the position the node is ultimately restored to below -- rather than at the
+    shifted pos/neg coordinate, so a node's history stays consistent with where it
+    ends up for deduplication.
     """
     shifted_nodes = []
     shift_dist = 0.5 * tol if tip_element else 0.0
 
     for i in range(len(f_nodes)):
+        hist_row = _evaluate_historical_phi_sign(f_coords[i, :], state.frac_geoms)
+
         if np.any(f_nodes[i] == tip_nodes):
             # For tip nodes, add one node
             state.nodes = np.vstack((state.nodes, f_coords[i, :]))
             m_nodes.append(state.new_node_index)
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, 0.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, 0.0))
         else:
             # Positive side shift
@@ -927,6 +978,7 @@ def _insert_split_nodes(
             shifted_nodes.append((state.new_node_index, f_coords[i, :]))  # Store to revert
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, 1.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, -1.0))
 
             # Negative side shift
@@ -936,6 +988,7 @@ def _insert_split_nodes(
             shifted_nodes.append((state.new_node_index, f_coords[i, :]))  # Store to revert
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, -1.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, -1.0))
 
     return m_nodes, shifted_nodes
@@ -1140,6 +1193,9 @@ def _resolve_zero_level_set_nodes(
 
             state.nodes = np.vstack((state.nodes, state.nodes[node, :]))
             state.phi_sign = np.hstack((state.phi_sign, side_sign))
+            # Duplicate shares the original's coordinates exactly, so its history
+            # w.r.t. earlier fractures is identical -- copy rather than recompute.
+            state.phi_sign_history = np.vstack((state.phi_sign_history, state.phi_sign_history[node, :]))
             state.psi = np.hstack((state.psi, state.psi[node]))
             conn[e] = [state.new_node_index if n2 == node else n2 for n2 in enodes]
             state.new_node_index += 1
@@ -1151,11 +1207,21 @@ def _resolve_zero_level_set_nodes(
 
 
 def _deduplicate_split_nodes(
-    nodes: npt.NDArray[np.float64], phi_sign: npt.NDArray[np.float64], conn: list[list[int]], nsd: int
+    nodes: npt.NDArray[np.float64],
+    phi_sign_history: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    nsd: int,
 ) -> tuple[npt.NDArray[np.float64], list[list[int]], npt.NDArray[np.float64]]:
-    """Remove duplicate nodes (matching coordinates and phi_sign) introduced while cutting."""
-    # Add phi_sign as a nodal coordinate
-    nodes_old = np.hstack((nodes, phi_sign.reshape(-1, 1)))
+    """Remove duplicate nodes introduced while cutting, matching on coordinates AND
+    phi_sign against every fracture considered so far (the current one plus history).
+
+    Keying on the full history -- not just the current fracture's phi_sign -- matters
+    at fracture intersections: two nodes can coincide in space and share the current
+    fracture's sign while sitting on opposite sides of an earlier fracture, in which
+    case they must stay distinct rather than merge.
+    """
+    # Append phi_sign_history columns as extra nodal coordinates
+    nodes_old = np.hstack((nodes, phi_sign_history))
 
     # Round nodes to avoid truncation errors
     decimals = 9
@@ -1170,7 +1236,7 @@ def _deduplicate_split_nodes(
     # Update connectivity
     conn = [nodes_map[sublist].tolist() for sublist in conn]
 
-    return nodes, conn, nodes_new[:, -1]
+    return nodes, conn, nodes_new[:, nsd:]
 
 
 def _cut_tip_boundary_elements(
@@ -1235,6 +1301,8 @@ def _split_elements(
         nodes=mesh["nodes"],
         phi=frac_ls.phi,
         phi_sign=frac_ls.phi_sign,
+        phi_sign_history=frac_ls.phi_sign_history,
+        frac_geoms=frac_ls.frac_geoms,
         psi=frac_ls.psi,
         new_node_index=mesh["nn"],
     )
@@ -1310,23 +1378,32 @@ def _split_elements(
     # exactly but are not cut by the fracture.
     _resolve_zero_level_set_nodes(state, conn, tip_nodes, frac_nodes, tol)
 
-    # ---- Remove duplicate nodes introduced while cutting
-    nodes, conn, phi_sign = _deduplicate_split_nodes(state.nodes, state.phi_sign, conn, nsd)
+    # ---- Remove duplicate nodes introduced while cutting. Key on this fracture's
+    # phi_sign together with the full history so nodes that coincide but sit on
+    # opposite sides of an earlier fracture (e.g. at an intersection) stay distinct.
+    combined_history = np.hstack((state.phi_sign_history, state.phi_sign.reshape(-1, 1)))
+    nodes, conn, phi_sign_history = _deduplicate_split_nodes(state.nodes, combined_history, conn, nsd)
 
-    frac_ls.phi_sign = phi_sign
+    frac_ls.phi_sign = phi_sign_history[:, -1]
+    frac_ls.phi_sign_history = phi_sign_history[:, :-1]
     mesh["nodes"] = nodes
     mesh["conn"] = sorted(conn, key=len)  # Resort conn by node length
+    # Full history including the fracture just processed, for the next iteration
+    # and for anything downstream that wants per-fracture sign of every node.
+    mesh["phi_sign_history"] = phi_sign_history
 
     return mesh, frac_ls
 
 
-def _create_global_fracture_connectivities(  # noqa
+def _create_global_fracture_connectivities(
     mesh: dict[str, Any],
     frac_ls: FractureLevelSet,
     frac_nodes: npt.NDArray[np.float64],
     frac_conn: npt.NDArray[np.int64],
 ) -> dict[str, Any]:
-    """Assemble the mesh and connectivities needed for the fractures."""
+    """Accumulate one fracture's nodes, connectivity, and bookkeeping into the running
+    `mesh["fracture_mesh"]` structure.
+    """
     ne_f = np.size(frac_conn, 0)
 
     if "fracture_mesh" not in mesh:
@@ -1341,6 +1418,7 @@ def _create_global_fracture_connectivities(  # noqa
             "ne": 0,
             "fracture_tangent": [],
             "fracture_normal": [],
+            "tol": [],  # per-fracture tolerance, needed later for matrix-conn matching
         }
     frac_mesh = mesh["fracture_mesh"]
 
@@ -1360,6 +1438,7 @@ def _create_global_fracture_connectivities(  # noqa
     # Fracture unit vectors
     frac_mesh["fracture_tangent"].append(frac_ls.u)
     frac_mesh["fracture_normal"].append(frac_ls.n)
+    frac_mesh["tol"].append(frac_ls.tol)
 
     # Fracture global connectivity
     nn = np.size(mesh["nodes"], 0) + prior_nn
@@ -1369,19 +1448,23 @@ def _create_global_fracture_connectivities(  # noqa
     # belong to this fracture.
     frac_mesh["region_lists"].append(np.arange(prior_ne, prior_ne + ne_f))
 
-    # Create fracture-matrix connectivity
-    conn = mesh["conn"]
-    matrix_nodes = mesh["nodes"][:nn]  # matrix-side node coordinates (pre-fracture-node append)
-    phi_sign = frac_ls.phi_sign
-    tol = frac_ls.tol
+    return mesh
 
-    # Build a node -> matrix-element lookup once, so each fracture element can find
-    # its matching matrix elements by set intersection rather than a full O(ne) scan.
-    node_to_elems: dict[int, set[int]] = {}
-    for e, enodes in enumerate(conn):
-        for node in enodes:
-            node_to_elems.setdefault(node, set()).add(e)
 
+def _find_fracture_matrix_conn(
+    matrix_nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    node_to_elems: dict[int, set[int]],
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64],
+    phi_sign: npt.NDArray[np.float64],
+    tol: float,
+) -> list[list[int]]:
+    """Match one fracture's elements to their neighboring positive/negative matrix
+    elements. `conn`/`matrix_nodes`/`node_to_elems`/`phi_sign` must all correspond to
+    the same (final) matrix element numbering.
+    """
+    ne_f = np.size(frac_conn, 0)
     frac_matrix_conn = []
     for e_f in range(ne_f):
         f_coords = frac_nodes[frac_conn[e_f, :]]
@@ -1417,7 +1500,7 @@ def _create_global_fracture_connectivities(  # noqa
         neg_elem = neg_candidates.pop() if neg_candidates else None
 
         if neg_elem is None and pos_elem is None:
-            debugging_mesh_plot(mesh["nodes"], conn)
+            debugging_mesh_plot(matrix_nodes, conn)
             raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
         elif neg_elem is None or pos_elem is None:
             found_elem = pos_elem if pos_elem is not None else neg_elem
@@ -1430,8 +1513,43 @@ def _create_global_fracture_connectivities(  # noqa
             # append to frac_matrix_conn as [positive side, negative side]
             frac_matrix_conn.append([pos_elem, neg_elem])
 
-    frac_mesh["matrix_conn"].extend(frac_matrix_conn)
+    return frac_matrix_conn
 
+
+def _assemble_fracture_matrix_conn(mesh: dict[str, Any]) -> dict[str, Any]:
+    """Match every fracture's elements to their parent matrix element(s), once, after
+    every fracture has been cut.
+    """
+    frac_mesh = mesh["fracture_mesh"]
+    conn = mesh["conn"]
+    matrix_nodes = mesh["nodes"]
+    phi_sign_history = mesh["phi_sign_history"]
+
+    # Build the node -> matrix-element lookup once for all fractures, rather than
+    # once per fracture as before.
+    node_to_elems: dict[int, set[int]] = {}
+    for e, enodes in enumerate(conn):
+        for node in enodes:
+            node_to_elems.setdefault(node, set()).add(e)
+
+    matrix_conn: list[list[int]] = []
+    for i, region in enumerate(frac_mesh["region_lists"]):
+        # frac_mesh["conn"] is already offset into the accumulated frac_mesh["nodes"]
+        # array, so this fracture's slice of it can be used directly.
+        frac_conn_i = frac_mesh["conn"][region]
+        matrix_conn.extend(
+            _find_fracture_matrix_conn(
+                matrix_nodes,
+                conn,
+                node_to_elems,
+                frac_mesh["nodes"],
+                frac_conn_i,
+                phi_sign_history[:, i],
+                frac_mesh["tol"][i],
+            )
+        )
+
+    frac_mesh["matrix_conn"] = matrix_conn
     return mesh
 
 
@@ -1494,15 +1612,25 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     tol_domain = L * 0.005
     tol_floor = L * 1.0e-9
 
+    # Geometry (center_2d, n, tol) of every fracture processed so far -- used only to
+    # evaluate phi_sign_history for brand-new nodes as they're created mid-cut.
+    frac_geoms: list[FracGeom] = []
+    # phi_sign of every current node against every fracture processed so far. This is
+    # carried forward as-is (never re-evaluated from coordinates) because nodes split
+    # into a coincident +1/-1 pair along an earlier fracture sit exactly on that
+    # fracture's line -- re-deriving their sign from coordinates would collapse both
+    # back to 0 and erase the distinction dedup relied on.
+    phi_sign_history = np.empty((mesh["nn"], 0))
+
     # Loop through each fracture specification
     for fracture in fracture_specs:
         center_2d, half_length, _, u, _ = _get_fracture_geometry_2D(fracture)
-        h_local = _local_element_scale(nodes, mesh["conn"], center_2d, half_length, u, pad=tol_domain)
+        h_local = _local_element_scale(mesh["nodes"], mesh["conn"], center_2d, half_length, u, pad=tol_domain)
         tol = min(tol_domain, 0.2 * h_local) if h_local is not None else tol_domain
         tol = max(tol, tol_floor)
 
         # Compute fracture geometry and nodal level sets once, shared by both helpers below
-        frac_ls = _build_fracture_level_set(nodes, fracture, tol)
+        frac_ls = _build_fracture_level_set(mesh["nodes"], fracture, phi_sign_history, frac_geoms, tol)
 
         # Create fracture nodes and connectivity
         frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
@@ -1512,6 +1640,14 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
         # Assemble global fracture connectivity and matrix-fracture connectivity
         mesh = _create_global_fracture_connectivities(mesh, frac_ls, frac_nodes, frac_conn)
+        mesh = _extract_key_mesh_values(mesh)
+
+        # This fracture is now part of the history every subsequent fracture (and
+        # every node it creates) gets checked against. phi_sign_history is taken
+        # straight from mesh -- it's already been resolved through this fracture's
+        # dedup pass and is authoritative for the next iteration.
+        frac_geoms.append((frac_ls.center_2d, frac_ls.n, frac_ls.tol))
+        phi_sign_history = mesh["phi_sign_history"]
 
     if len(mesh["fracture_mesh"]["conn"]) == 0:
         raise ValueError(
@@ -1519,8 +1655,11 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
             Try changing the fracture definitions or use a different mesh."""
         )
 
+    # Match every fracture element to its parent matrix element(s) now that
+    # mesh["conn"] has its final, stable numbering -- see _assemble_fracture_matrix_conn.
+    mesh = _assemble_fracture_matrix_conn(mesh)
+
     # Re-evaluate key values
-    mesh = _extract_key_mesh_values(mesh)
     mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
     mesh["nn_total"] = mesh["nn"] + mesh["fracture_mesh"]["nn"]
     mesh["nodes_total"] = np.vstack([mesh["nodes"], mesh["fracture_mesh"]["nodes"]])

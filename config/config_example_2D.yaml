@@ -13,6 +13,7 @@ mesh:
   dimensions: 2
   fractures:
         - values: [[22.5, 59, 0.0], [42.5], [11]]
+        - values: [[43, 22, 0.0], [72.5], [11]]
 
 
 material:
@@ -25,7 +26,7 @@ material:
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [[1.0e-16, 1.0e-14],   1.0e-19, 1.0e-17]       # m^2
+      permeability: [[1.0e-16, 3.0e-15],   1.0e-19, 1.0e-17]       # m^2
       rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [40.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
@@ -37,12 +38,12 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity: 1.0e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-3]
-    nusselt: [5.0]
+    aperture: [1.0e-3, 2.0e-3]
+    nusselt: [5.0, 4.0]
 
 initial_conditions:
   assignment: "BC_compatible"
