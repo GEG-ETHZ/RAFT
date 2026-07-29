@@ -34,7 +34,7 @@ repos:
       - id: check-yaml
 
       - id: check-added-large-files
-        exclude: 'config/box_profiling\.msh'
+        args: ['--maxkb=1000']
       - id: no-commit-to-branch # This perfectly replaces the custom bash script by blocking commits AND pushes to main/develop
         args: [--branch, main, --branch, develop]
         stages: [pre-commit, pre-push]

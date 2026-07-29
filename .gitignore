@@ -30,6 +30,8 @@ config/*
 !config/config_example.yaml
 !config/box3D.geo
 !config/box3D.msh
+!config/box_regions.geo
+!config/box_regions.msh
 !config/config_profiling.yaml
 !config/box_profiling.geo
 !config/box_profiling.msh
