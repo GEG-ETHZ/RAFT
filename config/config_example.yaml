@@ -14,11 +14,11 @@ mesh:
     - shape: "sphere"
       values: [[25, 37.5, -10],
        20]
-      region_number: 1
+      region_number: 2
     - shape: "cylinder"
       values: [[25, 37.5, 0],
        5, [0,0.2,1]]
-      region_number: 1
+      region_number: 2
   dimensions: 3
 
 material:
@@ -43,7 +43,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity:  0.7e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity:  [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
 initial_conditions:
   assignment: "BC_compatible"
@@ -65,9 +65,9 @@ boundary_conditions:
           values: [1.5e5]
 
   temperature_fixed:
-      - faces: [y_max]
+      - faces: [z_max]
         values: [286]
-      - faces: [y_min]
+      - faces: [z_min]
         values: [340]
       - coords: [[50, 20, 10]]
         values: [300.0]
@@ -87,11 +87,11 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 500.0
-  timestep: 10.0
+  t_end: 3.0e+7
+  timestep: 9.0e+4
   timestep_min: 1.0
-  timestep_max: 1000.0
-  solver_type: "fully_coupled"
+  timestep_max: 1.0e+5
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1
