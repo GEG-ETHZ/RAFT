@@ -1465,16 +1465,10 @@ def _find_fracture_matrix_conn(
     the same (final) matrix element numbering.
     """
     ne_f = np.size(frac_conn, 0)
-    frac_matrix_conn = []
+    frac_matrix_conn: list[list[int]] = []
     for e_f in range(ne_f):
         f_coords = frac_nodes[frac_conn[e_f, :]]
 
-        # For each node of the fracture element, find the coincident matrix-side
-        # nodes on the positive (phi_sign > 0) and negative (phi_sign < 0) side,
-        # then intersect the sets of elements touching those nodes across all
-        # nodes of the fracture element. Since a fracture element's face is only
-        # ever shared by a single positive-side and a single negative-side matrix
-        # element, each intersection collapses to exactly one element.
         pos_candidates: set[int] | None = None
         neg_candidates: set[int] | None = None
 
@@ -1499,19 +1493,20 @@ def _find_fracture_matrix_conn(
         pos_elem = pos_candidates.pop() if pos_candidates else None
         neg_elem = neg_candidates.pop() if neg_candidates else None
 
-        if neg_elem is None and pos_elem is None:
+        if pos_elem is not None and neg_elem is not None:
+            # append to frac_matrix_conn as [positive side, negative side]
+            frac_matrix_conn.append([pos_elem, neg_elem])
+        elif pos_elem is None and neg_elem is None:
             debugging_mesh_plot(matrix_nodes, conn)
             raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
-        elif neg_elem is None or pos_elem is None:
+        else:
             found_elem = pos_elem if pos_elem is not None else neg_elem
+            assert found_elem is not None
             warnings.warn(
                 f"Only one matrix element (of positive/negative side) found for fracture "
                 f"element {e_f}; appending single-element matrix connectivity."
             )
             frac_matrix_conn.append([found_elem])
-        else:
-            # append to frac_matrix_conn as [positive side, negative side]
-            frac_matrix_conn.append([pos_elem, neg_elem])
 
     return frac_matrix_conn
 
