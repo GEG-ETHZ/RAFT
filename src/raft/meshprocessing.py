@@ -1559,29 +1559,34 @@ def _local_element_scale(
     center: npt.NDArray[np.float64],
     half_length: float,
     u: npt.NDArray[np.float64],
+    n: npt.NDArray[np.float64],
     pad: float,
 ) -> float | None:
-    """Minimum edge length among elements near a fracture's bounding box.
+    """Minimum edge length among elements near a fracture's line.
+
+    Elements are selected with a bounding box aligned to the fracture's own
+    tangent/normal axes (a padded strip along the line) rather than an axis-aligned
+    box spanning its tips -- for a long or diagonally-oriented fracture, an
+    axis-aligned box can otherwise sweep in unrelated, far-off regions of the mesh
+    and let their element sizes set the tolerance for the whole fracture.
 
     Used to scale the node-snapping tolerance to the local mesh resolution rather than
     the overall domain size, which matters for meshes graded finer around fractures.
-    Returns None if no element centroids fall within the padded bounding box.
+    Returns None if no element centroids fall within the padded strip.
     """
-    tip_a = center + half_length * u
-    tip_b = center - half_length * u
-    bbox_min = np.minimum(tip_a, tip_b) - pad
-    bbox_max = np.maximum(tip_a, tip_b) + pad
-
     min_edge_sq = np.inf
     for elem in conn:
         coords = nodes[elem]
         centroid = coords.mean(axis=0)
-        if np.any(centroid < bbox_min) or np.any(centroid > bbox_max):
+        rel = centroid - center
+        s = rel @ u  # tangential coordinate along the fracture
+        d = rel @ n  # normal (perpendicular) distance from the fracture line
+        if abs(s) > half_length + pad or abs(d) > pad:
             continue
         n_nodes = len(elem)
         for i in range(n_nodes):
-            d = coords[(i + 1) % n_nodes] - coords[i]
-            min_edge_sq = min(min_edge_sq, float(d @ d))
+            edge = coords[(i + 1) % n_nodes] - coords[i]
+            min_edge_sq = min(min_edge_sq, float(edge @ edge))
 
     if not np.isfinite(min_edge_sq):
         return None
@@ -1624,9 +1629,11 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
     # Loop through each fracture specification
     for fracture in fracture_specs:
-        center_2d, half_length, _, u, _ = _get_fracture_geometry_2D(fracture)
-        h_local = _local_element_scale(mesh["nodes"], mesh["conn"], center_2d, half_length, u, pad=tol_domain)
-        tol = min(tol_domain, 0.2 * h_local) if h_local is not None else tol_domain
+        center_2d, half_length, _, u, n = _get_fracture_geometry_2D(fracture)
+        h_local = _local_element_scale(
+            mesh["nodes"], mesh["conn"], center_2d, half_length, u, n, pad=tol_domain
+        )
+        tol = min(tol_domain, 0.5 * h_local) if h_local is not None else tol_domain
         tol = max(tol, tol_floor)
 
         # Compute fracture geometry and nodal level sets once, shared by both helpers below
