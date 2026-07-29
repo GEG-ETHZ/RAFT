@@ -17,7 +17,7 @@ mesh:
       region_number: 2
     - shape: "cylinder"
       values: [[25, 37.5, 0],
-       5, [0,0.2,1]]
+       10, [0,0.2,1]]
       region_number: 2
   dimensions: 3
 
@@ -32,8 +32,8 @@ material:
       porosity: [0.01, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
       permeability: [[1.0e-11, 1.0e-11, 1.0e-16],   [1.0e-12, 1.0e-12, 1.0e-17],   1.0e-19]       # m^2
-      rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
-      rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_x: [0.0, -10.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
+      rotation_y: [90.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
   # Fluid parameters - single phase flow is assumed
@@ -43,7 +43,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity:  [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity:  1.0e-3     # Pa-s
 
 initial_conditions:
   assignment: "BC_compatible"
@@ -58,38 +58,34 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-        - faces: [y_max]
-          values: [1.0e5]
-          tag: "inflow"
-        - faces: [y_min]
-          values: [1.5e5]
+      - coords: [[40, 60, 25]]
+        values: [1.0e+5]
+        tag: "wellbore_out"
 
   temperature_fixed:
       - faces: [z_max]
         values: [286]
       - faces: [z_min]
         values: [340]
-      - coords: [[50, 20, 10]]
-        values: [300.0]
+      - coords: [[10, 10, 35]]
+        values: [400.0]
 
   fluid_flux:
-      # Fluid flux and temperature flux currently only support nodal values.
-      - coords: [[50, 20, 10]]
-        values: [[0, 10, 100, 1000, 1000, 2000], [0, 1, 0.02, 0.1, 0.2, 0.1]]
+      - coords: [[10, 10, 35]]
+        values: [[0, 1000, 30000], [0, 0.1, 0.01]]
         function: "table"
-        tag: "wellbore"
+        tag: "wellbore_in"
+
 
   temperature_flux:
-      # Fluid flux and temperature flux currently only support nodal values.
-      - faces: []
-        values: [1]
+
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 3.0e+7
-  timestep: 9.0e+4
-  timestep_min: 1.0
+  t_end: 8.6e+4
+  timestep: 100
+  timestep_min: 100
   timestep_max: 1.0e+5
   solver_type: "linearized"
 
@@ -108,7 +104,7 @@ simulation:
   steady_temperature: 0
 
   # Numerical controls
-  rel_error_T: 1.0e-2 # Relative error for extrapolation
+  rel_error_T: 2.0e-1 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
