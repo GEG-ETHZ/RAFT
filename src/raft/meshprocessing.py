@@ -1458,7 +1458,7 @@ def _find_fracture_matrix_conn(
     frac_nodes: npt.NDArray[np.float64],
     frac_conn: npt.NDArray[np.int64],
     phi_sign: npt.NDArray[np.float64],
-    tol: float,
+    tol: float = 1e-8,
 ) -> list[list[int]]:
     """Match one fracture's elements to their neighboring positive/negative matrix
     elements. `conn`/`matrix_nodes`/`node_to_elems`/`phi_sign` must all correspond to
@@ -1540,7 +1540,6 @@ def _assemble_fracture_matrix_conn(mesh: dict[str, Any]) -> dict[str, Any]:
                 frac_mesh["nodes"],
                 frac_conn_i,
                 phi_sign_history[:, i],
-                frac_mesh["tol"][i],
             )
         )
 
