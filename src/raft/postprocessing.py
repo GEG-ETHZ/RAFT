@@ -379,6 +379,23 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     return scalardata_point
 
 
+def _build_phi_sign_point_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build one point-scalar field per fracture holding its phi_sign level set.
+
+    `mesh["phi_sign_history"]` has one column per fracture (in creation order),
+    with rows corresponding to matrix nodes; missing entirely when fracturing
+    is off.
+    """
+    phi_sign_history = mesh.get("phi_sign_history")
+    if phi_sign_history is None:
+        return []
+
+    return [
+        {"name": f"phi_sign_fracture_{i}", "data": phi_sign_history[:, i].copy()}
+        for i in range(phi_sign_history.shape[1])
+    ]
+
+
 def _build_initial_cell_data(
     mesh: dict[str, Any], material: dict[str, Any], nsd: int
 ) -> list[dict[str, Any]]:
@@ -646,13 +663,15 @@ def export_domain_properties(
     exported alongside the step-0 solution (see `_build_initial_cell_data`
     and `_build_boundary_group_scalars`), plus per-element mesh quality
     metrics (scaled Jacobian, skewness, aspect ratio - see
-    `_build_mesh_quality_cell_data`). Generated right after mesh processing
+    `_build_mesh_quality_cell_data`) and, when fracturing is on, one
+    phi_sign level-set field per fracture (see
+    `_build_phi_sign_point_scalars`). Generated right after mesh processing
     and before linear matrix assembly.
     """
     io_path = _prepare_output_directory(controls)
     filename = os.path.join(io_path, "domain.vtk")
 
-    scalardata_point = _build_boundary_group_scalars(mesh)
+    scalardata_point = _build_boundary_group_scalars(mesh) + _build_phi_sign_point_scalars(mesh)
     scalardata_cell = _build_initial_cell_data(mesh, material, mesh["nsd"]) + _build_mesh_quality_cell_data(
         mesh
     )
