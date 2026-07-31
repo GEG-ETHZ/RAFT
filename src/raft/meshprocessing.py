@@ -987,7 +987,7 @@ def _insert_split_nodes(
     ends up for deduplication.
     """
     shifted_nodes = []
-    shift_dist = 0.5 * tol if tip_element else 0.0
+    shift_dist = 0.01 * tol if tip_element else 0.0
 
     for i in range(len(f_nodes)):
         hist_row = _evaluate_historical_phi_sign(f_coords[i, :], state.frac_geoms)
@@ -1660,6 +1660,102 @@ def _local_element_scale(
     return float(np.sqrt(min_edge_sq))
 
 
+def _node_to_elem_lookup(conn: list[list[int]]) -> dict[int, set[int]]:
+    # Build a node -> matrix-element lookup
+    node_to_elems: dict[int, set[int]] = {}
+    for e, enodes in enumerate(conn):
+        for node in enodes:
+            node_to_elems.setdefault(node, set()).add(e)
+
+    return node_to_elems
+
+
+def _insert_fracture_junctions(
+    mesh: dict[str, Any], fracture_specs: list[dict[str, Any]], tol: float
+) -> dict[str, Any]:
+    """Loop through the fractures and detect any crossings.
+
+    If crossings exist, check if it intersects any existing nodes.
+    If not, add new node and split the element.
+    """
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
+    node_to_elems = _node_to_elem_lookup(conn)
+    n_fractures = len(fracture_specs)
+    new_elem = []
+    elements_to_delete = []
+
+    for indx_1 in range(n_fractures - 1):
+        fracture_1 = fracture_specs[indx_1]
+        center_1, half_length_1, _, u_1, _ = _get_fracture_geometry_2D(fracture_1)
+
+        for indx_2 in range(indx_1 + 1, n_fractures):
+            fracture_2 = fracture_specs[indx_2]
+            center_2, half_length_2, _, u_2, _ = _get_fracture_geometry_2D(fracture_2)
+
+            # Check for intersections
+            Px1 = center_1[0]
+            Py1 = center_1[1]
+            ux1 = u_1[0]
+            uy1 = u_1[1]
+
+            Px2 = center_2[0]
+            Py2 = center_2[1]
+            ux2 = u_2[0]
+            uy2 = u_2[1]
+
+            s = ((Px2 - Px1) * uy1 - (Py2 - Py1) * ux1) / (uy2 * ux1 - uy1 * ux2)
+
+            junction = center_2 + u_2 * s
+            L1 = np.linalg.norm(junction - center_1)
+            L2 = np.linalg.norm(junction - center_2)
+            if half_length_1 < L1 or half_length_2 < L2:
+                # The fractures do not intersect
+                continue
+
+            d = np.linalg.norm(nodes - junction, axis=1)
+            # 1. Check if the fracture exists in the mesh already
+            if np.any(d < tol):
+                continue
+
+            # 2. Find which element it is in
+            nearest_node = int(np.argmin(d))
+            neighbour_elems = node_to_elems[nearest_node]
+            e_m = None
+            for e in neighbour_elems:
+                enodes = conn[e]
+                xI = nodes[enodes, :]
+
+                hull = sp.spatial.ConvexHull(xI)
+                A, b = (
+                    hull.equations[:, :-1],
+                    hull.equations[:, -1:],
+                )  # extract the equations defining the 0-level set
+                # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
+                # If Ax + b < 0, then the point is within the polyhedron.
+                if np.all(junction @ A.T + b.T < 1e-8):
+                    e_m = e  # The junction is in this element
+                    break
+
+            if e_m is None:
+                # No element neighbouring the nearest node to the junction was found to contain it, therefore
+                # the junction must be outside the domain.
+                continue
+
+            # Otherwise, insert the node and split the element.
+            nodes = np.vstack((nodes, junction))
+            added_elem = _triangulate_node_groups([enodes + [np.size(nodes, 0) - 1]], nodes, True)
+            new_elem.extend(added_elem)
+            elements_to_delete.append(e_m)
+
+    conn = _replace_cut_elements(conn, elements_to_delete, np.empty(0, dtype=np.int64), new_elem)
+
+    mesh["nodes"] = nodes
+    mesh["conn"] = conn
+
+    return mesh
+
+
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
     """Create mesh cutting for fracture elements."""
     fracture_specs = config_mesh["fractures"]
@@ -1684,14 +1780,17 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     tol_domain = L * 0.005
     tol_floor = L * 1.0e-9
 
+    # Insert junction nodes before beginning the cutting
+    mesh = _insert_fracture_junctions(mesh, fracture_specs, tol_domain)
+    mesh = _extract_key_mesh_values(mesh)
+
     # Geometry (center_2d, n, tol) of every fracture processed so far -- used only to
     # evaluate phi_sign_history for brand-new nodes as they're created mid-cut.
     frac_geoms: list[FracGeom] = []
     # phi_sign of every current node against every fracture processed so far. This is
     # carried forward as-is (never re-evaluated from coordinates) because nodes split
     # into a coincident +1/-1 pair along an earlier fracture sit exactly on that
-    # fracture's line -- re-deriving their sign from coordinates would collapse both
-    # back to 0 and erase the distinction dedup relied on.
+    # fracture's line.
     phi_sign_history = np.empty((mesh["nn"], 0))
 
     # Loop through each fracture specification
