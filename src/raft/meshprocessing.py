@@ -1441,7 +1441,6 @@ def _create_global_fracture_connectivities(
         mesh["fracture_mesh"] = {
             "nodes": np.empty((0, frac_nodes.shape[1])),
             "conn": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
-            "conn_global": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
             "matrix_conn": [],
             "region_lists": [],  # In the fractures, regions correspond to the fracture number.
             "nn": 0,
@@ -1470,9 +1469,11 @@ def _create_global_fracture_connectivities(
     frac_mesh["fracture_normal"].append(frac_ls.n)
     frac_mesh["tol"].append(frac_ls.tol)
 
-    # Fracture global connectivity
-    nn = np.size(mesh["nodes"], 0) + prior_nn
-    frac_mesh["conn_global"] = np.vstack((frac_mesh["conn_global"], frac_conn + nn))
+    # conn_global (fracture connectivity in combined matrix+fracture global numbering)
+    # is NOT computed here: mesh["nn"] (matrix node count) keeps growing as later
+    # fractures cut further matrix elements, so any offset applied now would go stale
+    # by the time the loop finishes. It's (re)computed once from frac_mesh["conn"] in
+    # `_create_fracture_mesh`, after mesh["nn"] is final.
 
     # Record which fracture-element indices (in the combined, accumulated numbering)
     # belong to this fracture.
@@ -1689,6 +1690,14 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     # Match every fracture element to its parent matrix element(s) now that
     # mesh["conn"] has its final, stable numbering -- see _assemble_fracture_matrix_conn.
     mesh = _assemble_fracture_matrix_conn(mesh)
+
+    # Deduplicate any fracture nodes
+    fmesh = mesh["fracture_mesh"]
+    fmesh["nodes"], fmesh["conn"], _ = _deduplicate_split_nodes(
+        fmesh["nodes"], np.zeros((fmesh["nn"], 1)), fmesh["conn"], nsd
+    )
+    # conn_global is fracture connectivity in combined matrix+fracture global numbering.
+    fmesh["conn_global"] = [[node + mesh["nn"] for node in elem] for elem in fmesh["conn"]]
 
     # Re-evaluate key values
     mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
