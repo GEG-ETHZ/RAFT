@@ -176,7 +176,7 @@ def _assign_ic_bc_compatible(
             print("   Non-linear properties present, using sequential scheme to estimate fields...")
 
         # Use one-pass linear to generate approximate solution
-        num_passes = 1
+        num_passes = 2
         for _ in range(num_passes):
             primary_variables, _, _, _ = lin_extrap_time_integration(
                 sim_control_SS,

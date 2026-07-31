@@ -12,9 +12,9 @@ mesh:
         region_number: 2
   dimensions: 2
   fractures:
-        - values: [[22.5, 59, 0.0], [42.5], [11]]
-        - values: [[43, 22, 0.0], [72.5], [12]]
-        - values: [[23, 32, 0.0], [12.5], [14]]
+         - values: [[22.5, 59, 0.0], [42.5], [11]]
+         - values: [[43, 22, 0.0], [72.5], [12]]
+         - values: [[23, 32, 0.0], [12.5], [14]]
 
 
 material:
@@ -39,11 +39,11 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0.7e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity: 1.0e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-3, 0.8e-3, 1.1e-3]
+    aperture: [1.0e-3, 1.0e-4, 1.1e-6]
     nusselt: [5.0, 4.0, 5.0]
 
 initial_conditions:
@@ -97,7 +97,7 @@ simulation:
   timestep: 10.0
   timestep_min: 10.0
   timestep_max: 100.0
-  solver_type: "fully_coupled"
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1
@@ -118,5 +118,7 @@ simulation:
   rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
-      iter_max: 50 # Maximum number of iterations
+      iter_max: 75 # Maximum number of iterations
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
+      ptc_sigma_max: 10.0
+      ptc_sigma_floor: 1.0e-3

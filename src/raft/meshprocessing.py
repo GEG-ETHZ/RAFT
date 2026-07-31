@@ -525,7 +525,7 @@ def _compute_node_levels(
     psi = np.abs(s) - half_length
 
     # Snap any node numerically collinear with the (infinite) fracture line to phi = 0
-    collinear_mask = np.abs(phi) < tol
+    collinear_mask = np.all((np.abs(phi) < tol, psi < tol), axis=0)
     phi[collinear_mask] = 0.0
 
     # Nodes directly on the physical fracture segment (phi = 0 and psi <= 0) -- a
@@ -646,6 +646,7 @@ def _create_fracture_nodes_conn(  # noqa
     u = frac_ls.u
     tol = frac_ls.tol
     phi = frac_ls.phi
+    psi = frac_ls.psi
 
     # list of all boundary faces in the mesh. Each key is a unique boundary.
     boundary_list = _get_all_edges(conn, ne, nne, nsd, elem_indx)
@@ -685,7 +686,7 @@ def _create_fracture_nodes_conn(  # noqa
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
         nearest_indx = int(np.argmin(d))
-        if phi[nearest_indx] == 0.0:
+        if phi[nearest_indx] == 0.0 and psi[nearest_indx] < tol:
             tip_coords = nodes[nearest_indx, :]
 
         # Check if fracture node at tip_coords already exists
@@ -811,11 +812,11 @@ def _find_collinear_tip_elements(
     tip_index indexes into `tip_nodes`/`frac_nodes` for the matching crack tip.
     """
     zero_nodes = set(np.flatnonzero(phi_sign == 0.0).tolist())
-    if len(zero_nodes) < 2:
+    if not zero_nodes:
         return []
 
-    # Determine which elements have exactly 2 nodes with a zero phi level set
-    candidate_elems = [e for e, enodes in enumerate(conn) if sum(n in zero_nodes for n in enodes) >= 2]
+    # Determine which elements have at least one node already classified as on the fracture
+    candidate_elems = [e for e, enodes in enumerate(conn) if any(n in zero_nodes for n in enodes)]
     if not candidate_elems:
         return []
 
@@ -823,22 +824,33 @@ def _find_collinear_tip_elements(
     u = frac_ls.u
     s = frac_ls.s
     tol = frac_ls.tol
+    phi = frac_ls.phi
     tip_s = {idx: float(np.dot(frac_nodes[idx] - center_2d, u)) for idx in tip_nodes}
 
-    # Check that these are tip elements
     found: list[tuple[int, int, int, int]] = []
     for e in candidate_elems:
         enodes = conn[e]
         faces = _get_element_face_lists(len(enodes), nsd)
         for face_local in faces.values():
             a, b = enodes[face_local[0]], enodes[face_local[1]]
-            if a not in zero_nodes or b not in zero_nodes:
-                continue  # not the edge
-            if np.sign(psi[a]) == np.sign(psi[b]):
+            if a in zero_nodes:
+                near_candidate, other = a, b
+            elif b in zero_nodes:
+                near_candidate, other = b, a
+            else:
+                continue  # neither endpoint is confirmed on the fracture segment
+
+            if abs(phi[other]) >= tol:
+                continue  # other endpoint isn't collinear with the (infinite) fracture line
+
+            if np.sign(psi[near_candidate]) == np.sign(psi[other]):
                 continue  # both collinear, but doesn't straddle a tip tangentially
-            if psi[a] < tol or psi[b] < tol:
-                continue  # the tip already exists as a node
-            near, far = (a, b) if psi[a] < psi[b] else (b, a)
+
+            near, far = (
+                (near_candidate, other) if psi[near_candidate] < psi[other] else (other, near_candidate)
+            )
+            if abs(psi[near]) < tol:
+                continue  # near node is essentially at the tip already, as a node
 
             tip_idx = min(tip_s, key=lambda k: abs(tip_s[k] - s[near]))
             found.append((e, near, far, tip_idx))
@@ -1497,7 +1509,7 @@ def _find_fracture_matrix_conn(
             # append to frac_matrix_conn as [positive side, negative side]
             frac_matrix_conn.append([pos_elem, neg_elem])
         elif pos_elem is None and neg_elem is None:
-            debugging_mesh_plot(matrix_nodes, conn)
+            debugging_mesh_plot(matrix_nodes, conn, None, True)
             raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
         else:
             found_elem = pos_elem if pos_elem is not None else neg_elem
