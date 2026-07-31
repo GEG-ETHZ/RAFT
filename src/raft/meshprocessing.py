@@ -774,17 +774,22 @@ class _CutState:
 def _find_cut_elements(
     conn: list[list[int]],
     ne: int,
+    phi: npt.NDArray[np.float64],
     phi_sign: npt.NDArray[np.float64],
     psi: npt.NDArray[np.float64],
     tol: float,
 ) -> list[int]:
     """Find matrix elements with a true interior cut: nodes of both signs, within the
     tangential extent of the fracture. Excludes vertex-touching and edge-aligned cases.
+
+    A node sitting on the fracture's infinite line but beyond the tip (psi >= tol) never
+    gets its `phi` snapped to exactly 0 by the level-set setup, so skip those nodes.
     """
     matrix_elements_to_cut = []
     for e in range(ne):
         enodes = conn[e]
-        signs = phi_sign[enodes]
+        on_line = np.abs(phi[enodes]) < tol
+        signs = phi_sign[enodes][~on_line]
 
         if np.any(signs > 0) and np.any(signs < 0):  # noqa
             # The element crosses the normal level set
@@ -794,7 +799,7 @@ def _find_cut_elements(
     return matrix_elements_to_cut
 
 
-def _find_collinear_tip_elements(
+def _find_collinear_tip_elements(  # noqa
     conn: list[list[int]],
     nsd: int,
     phi_sign: npt.NDArray[np.float64],
@@ -802,6 +807,7 @@ def _find_collinear_tip_elements(
     frac_ls: FractureLevelSet,
     tip_nodes: list[int],
     frac_nodes: npt.NDArray[np.float64],
+    nodes: npt.NDArray[np.float64],
 ) -> list[tuple[int, int, int, int]]:
     """Find elements with a boundary edge collinear with the fracture line whose two
     endpoints straddle a crack tip tangentially (one within the fracture's tangential
@@ -810,6 +816,12 @@ def _find_collinear_tip_elements(
     Returns (element_index, near_node, far_node, tip_index) tuples: near_node lies
     within the fracture's tangential extent, far_node lies beyond the tip, and
     tip_index indexes into `tip_nodes`/`frac_nodes` for the matching crack tip.
+
+    Skips a match if the tip itself already coincides with an existing matrix node --
+    that case is already handled by the fracture element loop's own tip cut
+    (`_cut_matrix_element`/`_group_split_nodes`), and inserting a second, independent
+    tip node here would create a coincident duplicate that can leave a degenerate,
+    zero-area element behind once nodes are deduplicated.
     """
     zero_nodes = set(np.flatnonzero(phi_sign == 0.0).tolist())
     if not zero_nodes:
@@ -853,6 +865,12 @@ def _find_collinear_tip_elements(
                 continue  # near node is essentially at the tip already, as a node
 
             tip_idx = min(tip_s, key=lambda k: abs(tip_s[k] - s[near]))
+
+            tip_coord = frac_nodes[tip_idx, :]
+            dist_to_existing = np.linalg.norm(nodes - tip_coord, axis=1)
+            if np.any(dist_to_existing < tol):
+                continue  # tip already lands on an existing matrix node -- handled elsewhere
+
             found.append((e, near, far, tip_idx))
     return found
 
@@ -1321,7 +1339,7 @@ def _split_elements(
 
     # Find matrix elements that need cutting, and their centroids -- used below to match
     # each fracture element to its parent, nearest-centroid first, to avoid excessive looping.
-    matrix_elements_to_cut = _find_cut_elements(conn, ne, state.phi_sign, state.psi, tol)
+    matrix_elements_to_cut = _find_cut_elements(conn, ne, state.phi, state.phi_sign, state.psi, tol)
     elements_to_delete = matrix_elements_to_cut.copy()  # Keep a list to delete these elements at the end
     matrix_elements_to_cut_arr = np.array(matrix_elements_to_cut)
     centroids = _compute_element_centroids(matrix_elements_to_cut_arr, conn, state.nodes)
@@ -1335,7 +1353,7 @@ def _split_elements(
     # cut them separately, up front, using the original (pre-cut) connectivity.
     if tip_nodes:
         collinear_matches = _find_collinear_tip_elements(
-            conn, nsd, state.phi_sign, state.psi, frac_ls, tip_nodes, frac_nodes
+            conn, nsd, state.phi_sign, state.psi, frac_ls, tip_nodes, frac_nodes, state.nodes
         )
         if collinear_matches:
             collinear_new_elem, collinear_consumed = _cut_collinear_tip_elements(
