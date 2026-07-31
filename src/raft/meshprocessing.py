@@ -676,7 +676,7 @@ def _create_fracture_nodes_conn(  # noqa
 
                 frac_nodes = np.vstack((frac_nodes, new_node))
 
-    frac_nodes = np.unique(frac_nodes, axis=0)
+    frac_nodes = np.unique(np.round(frac_nodes, 9), axis=0)
 
     # Now check tip elements
     tips = [-1.0, 1.0]
@@ -985,12 +985,25 @@ def _insert_split_nodes(
     -- the position the node is ultimately restored to below -- rather than at the
     shifted pos/neg coordinate, so a node's history stays consistent with where it
     ends up for deduplication.
+
+    A coordinate on an earlier fracture's line evaluates to a historical sign of 0,
+    but `_resolve_zero_level_set_nodes` never leaves an existing node at 0 -- so a
+    fresh node here must be resolved the same way (majority sign of its element's
+    neighbors) or it won't dedup against that existing node.
     """
     shifted_nodes = []
     shift_dist = 0.01 * tol if tip_element else 0.0
+    neighbor_nodes = list(m_nodes)
 
     for i in range(len(f_nodes)):
         hist_row = _evaluate_historical_phi_sign(f_coords[i, :], state.frac_geoms)
+        zero_cols = np.flatnonzero(hist_row[0] == 0.0)
+        if zero_cols.size and neighbor_nodes:
+            neighbor_hist = state.phi_sign_history[neighbor_nodes, :]
+            for col in zero_cols:
+                side_sign = _majority_side_sign(neighbor_hist[:, col].tolist())
+                if side_sign is not None:
+                    hist_row[0, col] = side_sign
 
         if np.any(f_nodes[i] == tip_nodes):
             # For tip nodes, add one node
@@ -1183,6 +1196,17 @@ def _replace_cut_elements(
     return conn
 
 
+def _majority_side_sign(values: list[float] | npt.NDArray[np.float64]) -> float | None:
+    """Resolve an on-line (zero) sign to a side using the majority of nonzero neighbor signs.
+
+    Returns None if there is nothing nonzero to disambiguate against.
+    """
+    nonzero = [v for v in values if v != 0.0]
+    if not nonzero:
+        return None
+    return 1.0 if max(set(nonzero), key=nonzero.count) > 0 else -1.0
+
+
 def _resolve_zero_level_set_nodes(
     state: _CutState,
     conn: list[list[int]],
@@ -1215,10 +1239,10 @@ def _resolve_zero_level_set_nodes(
 
         for e in elems_with_node:
             enodes = conn[e]
-            other_signs = [state.phi_sign[n2] for n2 in enodes if n2 != node and state.phi_sign[n2] != 0.0]
-            if not other_signs:
+            other_signs = [state.phi_sign[n2] for n2 in enodes if n2 != node]
+            side_sign = _majority_side_sign(other_signs)
+            if side_sign is None:
                 continue  # nothing to disambiguate against; leave this occurrence alone
-            side_sign = 1.0 if max(set(other_signs), key=other_signs.count) > 0 else -1.0
             last_side_sign = side_sign
 
             state.nodes = np.vstack((state.nodes, state.nodes[node, :]))
@@ -1355,6 +1379,34 @@ def _cut_tip_boundary_elements(
     return new_elem, matrix_elements_to_cut_arr
 
 
+def _prune_unreferenced_nodes(
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    phi_sign_history: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], list[list[int]], npt.NDArray[np.float64]]:
+    """Drop nodes no longer referenced by any element and renumber connectivity.
+
+    A node cut out of every element that used to reference it (e.g. an on-fracture
+    node superseded by a fresh split-node pair everywhere it appeared) would
+    otherwise survive as a phantom DOF and make the assembled system singular.
+    """
+    referenced = np.zeros(nodes.shape[0], dtype=bool)
+    for enodes in conn:
+        referenced[enodes] = True
+
+    if referenced.all():
+        return nodes, conn, phi_sign_history
+
+    new_index = np.full(nodes.shape[0], -1, dtype=np.int64)
+    new_index[referenced] = np.arange(int(referenced.sum()))
+
+    nodes = nodes[referenced]
+    phi_sign_history = phi_sign_history[referenced]
+    conn = [new_index[enodes].tolist() for enodes in conn]
+
+    return nodes, conn, phi_sign_history
+
+
 def _split_elements(
     mesh: dict[str, Any],
     frac_ls: FractureLevelSet,
@@ -1455,6 +1507,7 @@ def _split_elements(
     # opposite sides of an earlier fracture (e.g. at an intersection) stay distinct.
     combined_history = np.hstack((state.phi_sign_history, state.phi_sign.reshape(-1, 1)))
     nodes, conn, phi_sign_history = _deduplicate_split_nodes(state.nodes, combined_history, conn, nsd)
+    nodes, conn, phi_sign_history = _prune_unreferenced_nodes(nodes, conn, phi_sign_history)
 
     frac_ls.phi_sign = phi_sign_history[:, -1]
     frac_ls.phi_sign_history = phi_sign_history[:, :-1]
@@ -1628,20 +1681,23 @@ def _local_element_scale(
     u: npt.NDArray[np.float64],
     n: npt.NDArray[np.float64],
     pad: float,
+    percentile: float = 1.0,
 ) -> float | None:
-    """Minimum edge length among elements near a fracture's line.
+    """Low-percentile edge length among elements near a fracture's line.
 
-    Elements are selected with a bounding box aligned to the fracture's own
-    tangent/normal axes (a padded strip along the line) rather than an axis-aligned
-    box spanning its tips -- for a long or diagonally-oriented fracture, an
-    axis-aligned box can otherwise sweep in unrelated, far-off regions of the mesh
-    and let their element sizes set the tolerance for the whole fracture.
+    Elements are selected via a bounding box aligned to the fracture's own
+    tangent/normal axes rather than an axis-aligned box, so a long or diagonal
+    fracture doesn't pick up unrelated, far-off element sizes.
 
-    Used to scale the node-snapping tolerance to the local mesh resolution rather than
-    the overall domain size, which matters for meshes graded finer around fractures.
-    Returns None if no element centroids fall within the padded strip.
+    Uses a low percentile rather than the strict minimum, since a prior fracture's
+    cut can leave one or two genuine sliver edges nearby -- taking the minimum would
+    let those drag the tolerance down further with each fracture processed, cascading
+    into more slivers.
+
+    Used to scale the node-snapping tolerance to local mesh resolution rather than
+    overall domain size. Returns None if no element centroids fall within the strip.
     """
-    min_edge_sq = np.inf
+    edge_lengths = []
     for elem in conn:
         coords = nodes[elem]
         centroid = coords.mean(axis=0)
@@ -1653,11 +1709,11 @@ def _local_element_scale(
         n_nodes = len(elem)
         for i in range(n_nodes):
             edge = coords[(i + 1) % n_nodes] - coords[i]
-            min_edge_sq = min(min_edge_sq, float(edge @ edge))
+            edge_lengths.append(float(np.sqrt(edge @ edge)))
 
-    if not np.isfinite(min_edge_sq):
+    if not edge_lengths:
         return None
-    return float(np.sqrt(min_edge_sq))
+    return float(np.percentile(edge_lengths, percentile))
 
 
 def _node_to_elem_lookup(conn: list[list[int]]) -> dict[int, set[int]]:
@@ -1682,7 +1738,6 @@ def _insert_fracture_junctions(
     conn = mesh["conn"]
     node_to_elems = _node_to_elem_lookup(conn)
     n_fractures = len(fracture_specs)
-    new_elem = []
     elements_to_delete = []
 
     for indx_1 in range(n_fractures - 1):
@@ -1690,6 +1745,8 @@ def _insert_fracture_junctions(
         center_1, half_length_1, _, u_1, _ = _get_fracture_geometry_2D(fracture_1)
 
         for indx_2 in range(indx_1 + 1, n_fractures):
+            new_elem = []
+
             fracture_2 = fracture_specs[indx_2]
             center_2, half_length_2, _, u_2, _ = _get_fracture_geometry_2D(fracture_2)
 
@@ -1746,9 +1803,9 @@ def _insert_fracture_junctions(
             nodes = np.vstack((nodes, junction))
             added_elem = _triangulate_node_groups([enodes + [np.size(nodes, 0) - 1]], nodes, True)
             new_elem.extend(added_elem)
-            elements_to_delete.append(e_m)
-
-    conn = _replace_cut_elements(conn, elements_to_delete, np.empty(0, dtype=np.int64), new_elem)
+            elements_to_delete = [e_m]
+            conn = _replace_cut_elements(conn, elements_to_delete, np.empty(0, dtype=np.int64), new_elem)
+            node_to_elems = _node_to_elem_lookup(conn)
 
     mesh["nodes"] = nodes
     mesh["conn"] = conn

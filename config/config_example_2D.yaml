@@ -12,9 +12,9 @@ mesh:
         region_number: 2
   dimensions: 2
   fractures:
-         - values: [[22.5, 49, 0.0], [52.5], [11]]
-         - values: [[23, 28, 0.0], [72.5], [36]]
-         - values: [[-10, 32, 0.0], [32.5], [100]]
+         - values: [[12.5, 49, 0.0], [52.5], [11]]
+         - values: [[-18.4, 28, 0.0], [27.5], [70]]
+         - values: [[-10, 32, 0.0], [22.5], [100]]
 
 
 material:
@@ -44,7 +44,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-3, 1.0e-3, 1.1e-3]
-    nusselt: [5.0, 4.0, 4.0]
+    nusselt: [5, 1, 5]
 
 initial_conditions:
   assignment: "BC_compatible"
@@ -59,10 +59,10 @@ initial_conditions:
 
 boundary_conditions:
   pressure_fixed:
-        - faces: [y_min]
+        - faces: [y_max]
           values: [2.0e5]
           tag: "inflow"
-        - faces: [y_max]
+        - faces: [y_min]
           values: [1.0e5]
 
 
