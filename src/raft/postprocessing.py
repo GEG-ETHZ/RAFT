@@ -9,12 +9,56 @@ import numpy as np
 import numpy.typing as npt
 
 from .matprops import get_viscosity
-from .shapefunctions import getB
+from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
 # (two levels up from /main_folder/src/postprocessing.py)
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
+
+# Mesh quality metrics are evaluated on each element's corner nodes only, using the
+# linear (corner-only) counterpart of its element type - i.e. quadratic elements
+# (Q9, B27) are assessed via the linear shape functions of their corner subset
+# (Q4, B27's corner subset -> B8), since their first nc nodes are the corners.
+_QUALITY_LINEAR_TYPE = {"T3": "T3", "Q4": "Q4", "Q9": "Q4", "T4": "T4", "B8": "B8", "B27": "B8"}
+
+# Local corner-to-corner edges, by linear element type - used for aspect ratio and skewness.
+_QUALITY_EDGES: dict[str, list[tuple[int, int]]] = {
+    "T3": [(0, 1), (1, 2), (2, 0)],
+    "Q4": [(0, 1), (1, 2), (2, 3), (3, 0)],
+    "T4": [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)],
+    "B8": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+# Ideal (equiangular) corner angle, by linear element type - triangular-faced
+# elements (T3, T4) are compared against an equilateral 60 degrees, quad-faced
+# elements (Q4, B8) against a square 90 degrees.
+_QUALITY_IDEAL_ANGLE = {"T3": 60.0, "Q4": 90.0, "T4": 60.0, "B8": 90.0}
+
+# Number of corner nodes, by linear element type.
+_QUALITY_NUM_CORNERS = {"T3": 3, "Q4": 4, "T4": 4, "B8": 8}
+
+# Parametric (parent) coordinates of the element centroid, by linear element type -
+# used as the single evaluation point for the scaled Jacobian.
+_QUALITY_CENTER = {
+    "T3": np.array([1 / 3, 1 / 3]),
+    "Q4": np.array([0.0, 0.0]),
+    "T4": np.array([0.25, 0.25, 0.25]),
+    "B8": np.array([0.0, 0.0, 0.0]),
+}
 
 
 def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
@@ -419,6 +463,99 @@ def _build_fracture_cell_data(
     ]
 
 
+def _element_scaled_jacobian(xI: npt.NDArray[np.float64], linear_etype: str) -> float:
+    """Scaled Jacobian of one element, evaluated once at the parametric cell center."""
+    getGN = GNMATRIX_FUNCS[linear_etype]
+    GN = getGN(_QUALITY_CENTER[linear_etype])
+    J = GN @ xI
+    detJ = np.linalg.det(J)
+    norm_prod = np.prod(np.linalg.norm(J, axis=1))
+    return float(detJ / norm_prod) if norm_prod > 1e-300 else 0.0
+
+
+def _element_aspect_ratio_and_skewness(
+    xI: npt.NDArray[np.float64], edges: list[tuple[int, int]], ideal_angle: float
+) -> tuple[float, float]:
+    """Aspect ratio (longest/shortest edge) and equiangular skewness of one element.
+
+    Skewness compares the largest and smallest angles formed by each pair of edges
+    meeting at a corner against the ideal (equilateral/square) corner angle.
+    """
+    lengths = []
+    vectors_from: dict[int, list[npt.NDArray[np.float64]]] = {}
+    for a, b in edges:
+        v = xI[b] - xI[a]
+        lengths.append(np.linalg.norm(v))
+        vectors_from.setdefault(a, []).append(v)
+        vectors_from.setdefault(b, []).append(-v)
+
+    lengths_arr = np.array(lengths)
+    aspect_ratio = float(lengths_arr.max() / lengths_arr.min())
+
+    theta_min = np.inf
+    theta_max = -np.inf
+    for vecs in vectors_from.values():
+        for i in range(len(vecs)):
+            for j in range(i + 1, len(vecs)):
+                cos_theta = np.dot(vecs[i], vecs[j]) / (np.linalg.norm(vecs[i]) * np.linalg.norm(vecs[j]))
+                theta = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                theta_min = min(theta_min, theta)
+                theta_max = max(theta_max, theta)
+
+    skewness = max(
+        (theta_max - ideal_angle) / (180.0 - ideal_angle),
+        (ideal_angle - theta_min) / ideal_angle,
+    )
+    return aspect_ratio, skewness
+
+
+def _build_mesh_quality_cell_data(mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build per-element mesh quality metrics: scaled Jacobian, skewness, and aspect ratio.
+
+    Elements are processed in the contiguous per-type blocks recorded in `elem_indx`.
+    Quadratic element types (Q9, B27) are assessed via the linear shape functions of
+    their corner subset, since their first nc nodes are the corners (see
+    `_QUALITY_LINEAR_TYPE`); unsupported types (e.g. L2 fracture-line elements) are
+    left at zero.
+    """
+    nsd = mesh["nsd"]
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
+    etype_list = mesh["element_type"]
+    elem_indx = mesh["elem_indx"]
+    ne = len(conn)
+
+    scaled_jacobian = np.zeros(ne)
+    aspect_ratio = np.zeros(ne)
+    skewness = np.zeros(ne)
+
+    start = 0
+    for etype, end in zip(etype_list, elem_indx, strict=True):
+        linear_etype = _QUALITY_LINEAR_TYPE.get(etype)
+        if linear_etype is None:
+            start = end + 1
+            continue
+
+        edges = _QUALITY_EDGES[linear_etype]
+        ideal_angle = _QUALITY_IDEAL_ANGLE[linear_etype]
+        nc = _QUALITY_NUM_CORNERS[linear_etype]
+
+        for e in range(start, end + 1):
+            enodes = conn[e][:nc]
+            xI = nodes[enodes, :nsd]
+
+            scaled_jacobian[e] = _element_scaled_jacobian(xI, linear_etype)
+            aspect_ratio[e], skewness[e] = _element_aspect_ratio_and_skewness(xI, edges, ideal_angle)
+
+        start = end + 1
+
+    return [
+        {"name": "scaled_jacobian", "data": scaled_jacobian},
+        {"name": "skewness", "data": skewness},
+        {"name": "aspect_ratio", "data": aspect_ratio},
+    ]
+
+
 def _write_matrix_output(
     n: int,
     io_path: str,
@@ -433,7 +570,6 @@ def _write_matrix_output(
         print("     Writing matrix to output file...")
 
     nn = mesh["nn"]
-    nsd = mesh["nsd"]
     filename = os.path.join(io_path, f"Matrix.vtk.{n}")
 
     # ----- Extract primary variables
@@ -444,13 +580,8 @@ def _write_matrix_output(
     flux = compute_fluid_flux(mesh, material, p, T, False)
 
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
-    if n == 0:  # In the initial condition, also export BC groups
-        scalardata_point += _build_boundary_group_scalars(mesh)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
-
-    # In the initial condition, also export material properties and regions
-    scalardata_cell = _build_initial_cell_data(mesh, material, nsd) if n == 0 else []
 
     write_mesh2vtk(
         filename,
@@ -459,7 +590,6 @@ def _write_matrix_output(
         mesh["conn"],
         scalardata_point,
         vectordata_point,
-        scalardata_cell,
     )
 
 
@@ -501,6 +631,39 @@ def _write_fracture_output(
         scalardata_point,
         vectordata_point,
         scalardata_cell,
+    )
+
+
+def export_domain_properties(
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+) -> None:
+    """Export the matrix domain's static properties to a standalone VTK file.
+
+    Writes "domain.vtk", containing the per-element material property fields
+    and the per-node boundary group indicators that were previously only
+    exported alongside the step-0 solution (see `_build_initial_cell_data`
+    and `_build_boundary_group_scalars`), plus per-element mesh quality
+    metrics (scaled Jacobian, skewness, aspect ratio - see
+    `_build_mesh_quality_cell_data`). Generated right after mesh processing
+    and before linear matrix assembly.
+    """
+    io_path = _prepare_output_directory(controls)
+    filename = os.path.join(io_path, "domain.vtk")
+
+    scalardata_point = _build_boundary_group_scalars(mesh)
+    scalardata_cell = _build_initial_cell_data(mesh, material, mesh["nsd"]) + _build_mesh_quality_cell_data(
+        mesh
+    )
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        mesh["nodes"],
+        mesh["conn"],
+        scalar_data_point=scalardata_point,
+        scalar_data_cell=scalardata_cell,
     )
 
 
