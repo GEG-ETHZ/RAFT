@@ -14,7 +14,7 @@ mesh:
   fractures:
          - values: [[22.5, 49, 0.0], [42.5], [11]]
          - values: [[43, 22, 0.0], [72.5], [16]]
-         - values: [[-18, 32, 0.0], [12.5], [100]]
+         - values: [[-16, 32, 0.0], [12.5], [100]]
 
 
 material:
@@ -44,7 +44,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-1, 1.0e-4, 1.1e-4]
-    nusselt: [5.0, 4.0, 0.0]
+    nusselt: [5.0, 4.0, 4.0]
 
 initial_conditions:
   assignment: "BC_compatible"

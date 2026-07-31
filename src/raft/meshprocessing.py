@@ -1269,6 +1269,34 @@ def _deduplicate_split_nodes(
     return nodes, conn, nodes_new[:, nsd:]
 
 
+def _snap_point_to_near_edges(
+    point: npt.NDArray[np.float64],
+    node_ids: list[int],
+    nodes: npt.NDArray[np.float64],
+    tol: float,
+) -> npt.NDArray[np.float64]:
+    """Snap `point` onto a polygon edge it lies within `tol` of, if any.
+
+    Existing snapping only checks point-to-node distance, so a point that's merely
+    near an edge (not either endpoint) slips through and later triangulates into a
+    real-but-tiny sliver. Projecting onto the edge makes that degeneracy exact.
+    """
+    n = len(node_ids)
+    for i in range(n):
+        a = nodes[node_ids[i], :]
+        b = nodes[node_ids[(i + 1) % n], :]
+        ab = b - a
+        ab_len_sq = float(np.dot(ab, ab))
+        if ab_len_sq < 1e-30:
+            continue
+        t = float(np.dot(point - a, ab) / ab_len_sq)
+        t_clamped = min(max(t, 0.0), 1.0)
+        proj = a + t_clamped * ab
+        if np.linalg.norm(point - proj) < tol:
+            return proj
+    return point
+
+
 def _cut_tip_boundary_elements(
     state: _CutState,
     conn: list[list[int]],
@@ -1304,11 +1332,25 @@ def _cut_tip_boundary_elements(
                 node for node in m_nodes_orig if (state.phi_sign[node] != 0.0 or state.psi[node] > tol)
             ]
 
+            # Snap the tip onto a nearby edge so any resulting sliver has exactly-zero area.
+            snapped_coord = _snap_point_to_near_edges(f_coords_tip[0, :], m_nodes_orig, state.nodes, tol)
+            f_coords_tip_elem = snapped_coord.reshape(1, -1)
+
             m_nodes, _ = _insert_split_nodes(
-                state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
+                state, m_nodes, f_nodes_tip, f_coords_tip_elem, tip_nodes, True, frac_normal, tol
             )
 
-            new_elem.extend(_triangulate_node_groups([m_nodes], state.nodes, True))
+            tri_elem = _triangulate_node_groups([m_nodes], state.nodes, True)
+
+            # Drop the resulting zero-area triangles.
+            for tri in tri_elem:
+                if len(tri) != 3:
+                    new_elem.append(tri)
+                    continue
+                p0, p1, p2 = state.nodes[tri[0]], state.nodes[tri[1]], state.nodes[tri[2]]
+                area = 0.5 * abs((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]))
+                if area > 1e-8:
+                    new_elem.append(tri)
 
     return new_elem, matrix_elements_to_cut_arr
 
