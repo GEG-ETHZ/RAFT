@@ -13,7 +13,7 @@ mesh:
   dimensions: 2
   fractures:
          - values: [[12.5, 49, 0.0], [52.5], [11]]
-         - values: [[-18.4, 28, 0.0], [27.5], [70]]
+         - values: [[-18, 28, 0.0], [27.5], [70]]
          - values: [[-10, 32, 0.0], [22.5], [100]]
 
 
@@ -93,7 +93,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 50000.0
+  t_end: 500.0
   timestep: 10.0
   timestep_min: 10.0
   timestep_max: 100.0

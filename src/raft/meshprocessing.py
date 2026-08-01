@@ -9,8 +9,46 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy as sp
-from matplotlib.collections import PolyCollection
+from matplotlib.axes import Axes
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.tri import Triangulation
+
+
+def _element_colors(n_elems: int, cmap_name: str = "tab20") -> npt.NDArray[np.float64]:
+    """Distinct-ish RGBA color per element, cycling through a qualitative colormap.
+
+    Used (with alpha) so that overlapping elements blend into a visibly different
+    color instead of one silently occluding the other.
+    """
+    cmap = plt.get_cmap(cmap_name)
+    return cmap(np.arange(n_elems) % cmap.N)
+
+
+def _label_element_ids(
+    ax: Axes,
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    prefix: str = "E",
+) -> None:
+    for elem_id, elem_nodes in enumerate(conn):
+        centroid = np.mean(nodes[elem_nodes], axis=0)
+        ax.text(
+            centroid[0],
+            centroid[1],
+            f"{prefix}{elem_id}",
+            color="black",
+            fontweight="bold",
+            ha="center",
+            va="center",
+            fontsize=6,
+            zorder=4,
+            bbox=dict(  # noqa
+                facecolor="white",
+                alpha=0.8,
+                edgecolor="none",
+                boxstyle="round,pad=0.2",
+            ),
+        )
 
 
 def debugging_mesh_plot(
@@ -37,12 +75,12 @@ def debugging_mesh_plot(
         cbar = fig.colorbar(tc, ax=ax)
         cbar.set_label("Nodal Scalar Value")
 
-        facecolor = "none"
+        facecolor: str | npt.NDArray[np.float64] = "none"
         alpha = 1.0
         plot_title = "Interpolated Nodal Values Mesh Plot"
     else:
-        facecolor = "skyblue"
-        alpha = 0.6
+        facecolor = _element_colors(len(conn))
+        alpha = 0.5
         plot_title = "Mesh Plot"
 
     # 2. Overlay element borders
@@ -81,31 +119,64 @@ def debugging_mesh_plot(
 
     # 5. Add Element IDs at centroids
     if plot_ids:
-        for elem_id, elem_nodes in enumerate(conn):
-            centroid = np.mean(nodes[elem_nodes], axis=0)
-            ax.text(
-                centroid[0],
-                centroid[1],
-                f"E{elem_id}",
-                color="black",
-                fontweight="bold",
-                ha="center",
-                va="center",
-                fontsize=6,
-                zorder=4,
-                bbox=dict(  # noqa
-                    facecolor="white",
-                    alpha=0.8,
-                    edgecolor="none",
-                    boxstyle="round,pad=0.2",
-                ),
-            )
+        _label_element_ids(ax, nodes, conn, prefix="E")
 
     # 6. Final adjustments
     ax.autoscale_view()
     ax.set_aspect("equal")
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.title(plot_title)
+    plt.show()
+
+
+def debugging_mesh_plot_matrix_and_fracture(
+    matrix_nodes: npt.NDArray[np.float64],
+    matrix_conn: list[list[int]],
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64] | list[list[int]],
+    plot_ids: bool = False,
+) -> None:
+    """Plot the matrix and fracture meshes together, each element individually colored.
+
+    Matrix elements are filled polygons; fracture elements are drawn as line segments
+    on top. Overlaps within either mesh blend into a visibly different color, and
+    fracture segments that don't sit on a matrix element boundary stand out clearly.
+    """
+    fig, ax = plt.subplots()
+
+    matrix_verts = [matrix_nodes[elem] for elem in matrix_conn]
+    matrix_mesh = PolyCollection(
+        matrix_verts,
+        closed=True,
+        edgecolor="black",
+        facecolor=_element_colors(len(matrix_conn), "tab20"),
+        alpha=0.5,
+        linewidth=1.0,
+        zorder=1,
+    )
+    ax.add_collection(matrix_mesh)
+
+    frac_segments = [frac_nodes[elem] for elem in frac_conn]
+    frac_mesh = LineCollection(
+        frac_segments,
+        colors=_element_colors(len(frac_segments), "gist_rainbow"),
+        linewidth=1.5,
+        zorder=3,
+    )
+    ax.add_collection(frac_mesh)
+
+    ax.scatter(matrix_nodes[:, 0], matrix_nodes[:, 1], color="black", zorder=2, s=2, label="matrix nodes")
+    ax.scatter(frac_nodes[:, 0], frac_nodes[:, 1], color="red", zorder=4, s=8, label="fracture nodes")
+
+    if plot_ids:
+        _label_element_ids(ax, matrix_nodes, matrix_conn, prefix="M")
+        _label_element_ids(ax, frac_nodes, list(frac_conn), prefix="F")
+
+    ax.autoscale_view()
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize=6)
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.title("Matrix + Fracture Mesh Plot")
     plt.show()
 
 
@@ -1623,8 +1694,11 @@ def _find_fracture_matrix_conn(
             # append to frac_matrix_conn as [positive side, negative side]
             frac_matrix_conn.append([pos_elem, neg_elem])
         elif pos_elem is None and neg_elem is None:
-            debugging_mesh_plot(matrix_nodes, conn, None, True)
-            raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
+            debugging_mesh_plot_matrix_and_fracture(matrix_nodes, conn, frac_nodes, frac_conn, True)
+            xbar = np.mean(f_coords, axis=0)
+            raise ValueError(
+                f"Failed to find corresponding matrix element for fracture element located at {xbar}."
+            )
         else:
             found_elem = pos_elem if pos_elem is not None else neg_elem
             assert found_elem is not None
@@ -1686,13 +1760,8 @@ def _local_element_scale(
     """Low-percentile edge length among elements near a fracture's line.
 
     Elements are selected via a bounding box aligned to the fracture's own
-    tangent/normal axes rather than an axis-aligned box, so a long or diagonal
-    fracture doesn't pick up unrelated, far-off element sizes.
-
-    Uses a low percentile rather than the strict minimum, since a prior fracture's
-    cut can leave one or two genuine sliver edges nearby -- taking the minimum would
-    let those drag the tolerance down further with each fracture processed, cascading
-    into more slivers.
+    tangent/normal axes.Uses a low percentile rather than the strict minimum,
+    to prevent sliver elements from creating more slivers.
 
     Used to scale the node-snapping tolerance to local mesh resolution rather than
     overall domain size. Returns None if no element centroids fall within the strip.
@@ -1775,11 +1844,19 @@ def _insert_fracture_junctions(
             if np.any(d < tol):
                 continue
 
-            # 2. Find which element it is in
-            nearest_node = int(np.argmin(d))
-            neighbour_elems = node_to_elems[nearest_node]
+            # 2. Find which element it is in. A single nearest node isn't a reliable
+            # proxy once an earlier junction has fan-triangulated the area: the true
+            # containing element can belong to a slightly-farther node whose own
+            # untouched wedge happens to cover this point. Search a small neighbourhood
+            # of nearby nodes instead of just the closest one.
+            k = min(5, len(nodes))
+            nearby_nodes = np.argsort(d)[:k]
+            candidate_elems: set[int] = set()
+            for nn in nearby_nodes:
+                candidate_elems |= node_to_elems[int(nn)]
+
             e_m = None
-            for e in neighbour_elems:
+            for e in candidate_elems:
                 enodes = conn[e]
                 xI = nodes[enodes, :]
 
@@ -1795,8 +1872,8 @@ def _insert_fracture_junctions(
                     break
 
             if e_m is None:
-                # No element neighbouring the nearest node to the junction was found to contain it, therefore
-                # the junction must be outside the domain.
+                # No element neighbouring the k nearest nodes to the junction was found
+                # to contain it, therefore the junction must be outside the domain.
                 continue
 
             # Otherwise, insert the node and split the element.

@@ -392,7 +392,7 @@ def _build_phi_sign_point_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     return [
-        {"name": f"phi_sign_fracture_{i}", "data": phi_sign_history[:, i].copy()}
+        {"name": f"signed_normal_level_set_fracture_{i}", "data": phi_sign_history[:, i].copy()}
         for i in range(phi_sign_history.shape[1])
     ]
 
