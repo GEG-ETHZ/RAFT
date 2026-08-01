@@ -146,10 +146,11 @@ def compute_fluid_flux(  # noqa
     region_lists = mesh["region_lists"]
     if isfracture:
         num_regions = len(region_lists)
-        nsd -= 1  # reduce dofs
+        nsd_B = nsd - 1  # reduce dofs
         nodes_global = nodes
     else:
         num_regions = mesh["num_regions"]
+        nsd_B = nsd
 
     # Initialize output arrays
     q = np.zeros((nsd, nn))
@@ -165,9 +166,9 @@ def compute_fluid_flux(  # noqa
     for r in range(num_regions):
         if isfracture:
             w = mat["fracture"]["aperture"][r]
-            kf = w**3 / 12  # longitudinal permeability
-            isotropic = True
             u = mesh["fracture_tangent"][r]
+            kf = w**3 / 12 * u  # longitudinal permeability
+            isotropic = True
             # Project the mesh nodes into local coordinates
             nodes = (nodes_global @ u).reshape(-1, 1)
         else:
@@ -193,8 +194,8 @@ def compute_fluid_flux(  # noqa
 
             enodes = conn[e]  # element nodes
 
-            xI = nodes[enodes, :nsd]  # element physical coordinates
-            B_q = getB(GN_q, xI, nsd)[0]
+            xI = nodes[enodes, :nsd_B]  # element physical coordinates
+            B_q = getB(GN_q, xI, nsd_B)[0]
 
             pe = p[enodes]  # element nodal pressures
             if mu_nonlinear:
