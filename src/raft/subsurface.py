@@ -1,6 +1,7 @@
 """Subsurface simulator - main time integration loop."""
 
 import argparse
+import datetime
 import sys
 from pathlib import Path
 from typing import Any
@@ -339,6 +340,7 @@ def main(  # noqa
 
     if verbose:
         print("RAFT - RESERVOIR ANALYSIS FOR TANGO \n")
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         print("Beginning simulation " + config_name + "\n")
 
     # ----- Load config and mesh

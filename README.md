@@ -43,15 +43,19 @@ $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to dens
 
 ## Running the simulation
 Run a simulation:
-    uv run -m raft **some-config-file.yaml**
+    `uv run -m raft **some-config-file.yaml**`
 
 replace the config file with a specific config file name, such as:
-    uv run -m raft config_example.yaml
+    `uv run -m raft config_example.yaml`
 
 Run the test suite:
-    uv run pytest
+    `uv run pytest`
 
-Config files are read from the "config" directory. Meshes are made via GMSH and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in Paraview, and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
+Creating meshes: [GMSH](https://gmsh.info/)
+
+Viewing results files: [Paraview](https://www.paraview.org/)
+
+Config files are read from the "config" directory. Meshes are made via [GMSH](https://gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
 
 ## Governing Equations and Numerical Methods
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem. This section summarizes the strong and weak forms, spatial and temporal discretization, stabilization, and the linearized solution scheme actually implemented by the solvers in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py) and [`src/raft/solvers.py`](src/raft/solvers.py).
