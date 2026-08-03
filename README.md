@@ -21,6 +21,7 @@ $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to dens
   - [Strong Form Governing Equations](#strong-form-governing-equations)
   - [Weak Form and Finite Element Discretization](#weak-form-and-finite-element-discretization)
   - [Fracture Coupling](#fracture-coupling)
+  - [Mesh Cutting Algorithm](#mesh-cutting-algorithm)
   - [Advection Stabilization (SUPG)](#advection-stabilization-supg)
   - [Time Discretization and Solution Scheme](#time-discretization-and-solution-scheme)
   - [Adaptive Timestep Control](#adaptive-timestep-control)
@@ -40,7 +41,7 @@ $^1$Buyoancy assumes the Boussinesq approximation. Only the perturbation to dens
   - [Branching Strategy](#branching-strategy)
   - [Running Checks](#running-checks)
 
-  ## Running the simulation
+## Running the simulation
 Run a simulation:
     uv run -m raft **some-config-file.yaml**
 
@@ -154,6 +155,18 @@ $$w\rho_f c_f\,\dot{T}_f = w\rho_f c_f \frac{w^2}{12\mu}\frac{\partial p_f}{\par
 where $w$ is the hydraulic aperture, $K_f$ is the fluid bulk modulus (fracture storage is pure fluid compressibility — the fracture walls are treated as rigid, so there is no analogue of the matrix's Biot storage modulus $M$ or pressurization term $\alpha_e\dot T$), $g_s = \vec{g}\cdot\vec{u}$ is the gravity component along the fracture, $\lambda_f$ is the fluid thermal conductivity, and $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face. The **cubic law** gives the effective in-plane (longitudinal) permeability $k_f = w^2/12$, so in-plane Darcy flux is $\vec{q}_\parallel = -\frac{w^3}{12\mu}\nabla p$. **Leak-off** to the matrix uses the same aperture-derived permeability over the half-aperture, $q_\perp = \frac{w}{12\mu}(p_f - p_m)$. **Heat exchange** with the matrix is modeled as a convective boundary condition — rather than assuming local thermal equilibrium across the aperture, which is invalid in highly conductive fractures — as $q_{T\perp} = h(T_f - T_m)$ with $h = \frac{Nu\cdot\lambda_f}{2w}$, where $Nu$ is the Nusselt number (`material.fracture.nusselt`). Steady, fully-developed laminar flow gives $Nu \approx 3.66$–$4.36$ (Bejan, 2013), higher during the thermal transient. Local thermal equilibrium can be enforced by setting an arbitrarily high Nusselt number.
 
 Discretizing with the same shape functions as the bulk mesh gives fracture storage/conductance/capacity matrices analogous to $\textbf{C}_p$, $\textbf{K}_{Dp}$, $\textbf{C}_T$, $\textbf{K}_{DT}$ (using $w/K_f$, $w^3/(12\mu)$, $\rho_f c_f w$, and $\lambda_f w$ respectively in place of the bulk integrands), plus fracture–matrix coupling matrices built from the leak-off and $h$ terms above, all assembled in `integrate_linear_matrices` (`is_fracture=True` pass). Heat advection (including SUPG stabilization) is likewise assembled along the fracture. Fracture hydraulic and thermal properties (`aperture`, `nusselt`) are set per-fracture in [`material.fracture`](#material).
+
+### Fracture Mesh Cutting Algorithm
+Fracture coupling requires a mesh that conforms to each fracture line, so RAFT cuts an ordinary matrix mesh to fit (2D only).
+
+* **Level sets.** Fracture geometry is calculated by level sets, a normal and tangential level set describe the signed distance from the fracture.
+* **Fracture element size follows the matrix mesh.** Fracture nodes aren't placed at any independent resolution — a new node is only added where the fracture line actually crosses an edge of the existing matrix mesh (a sign change in $\phi$ between the edge's two endpoints). So the fracture mesh has exactly as many elements as matrix element edges it passes through, and its element size locally matches the surrounding matrix mesh.
+* **Snapping tolerance.** To prevent sliver elements, fracture nodes snap to the existing matrix node locations when they are close. This can create local deiviations from the linear fracture geomery. The tolerance is determined by the lesser of a domain scale and a local mesh scale. The domain scale is $\approx 0.005\times$ the domain's characteristic length. The mesh scale is the 1st percentile of the local matrix edge length found in a strip along the fracture line. To improve the geometry of the fracture representation and prevent local deviations, use a finer mesh along the fracture line.
+* **Junction placement.** Fracture junctions are placed before any cutting. If the intersection isn't already a mesh node, the containing matrix element is located and a new node is inserted there, splitting that element — so any two crossing fractures always share a common node from the start, before either is cut in.
+* **Matrix cutting.** Matrix elements are split and cut, preserving Q4 geometry when possible, but reverting to T3s when not. This may affect accuracy. Review the mesh quality heuristics (Scaled Jacobian, Skewness, Aspect Ratio). Fracture typically require finer meshes around them to fully resolve the normal boundary layers.
+* **Matrix–fracture correspondence.** Once cutting is complete, each fracture element is matched to the corresponding matrix elements which is the fracture-matrix coupling occurs.
+
+> **IMPORTANT NOTE**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
 
 ### Advection Stabilization (SUPG)
 Standard Galerkin FEM produces spurious oscillations for advection-dominated heat transport (Brooks & Hughes, 1982). RAFT applies Streamline Upwind Petrov–Galerkin (SUPG) stabilization to the temperature residual, adding

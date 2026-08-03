@@ -10,7 +10,7 @@ import numpy.typing as npt
 
 from .matrixassembly import integrate_linear_matrices
 from .parseboundaryconditions import parsebcs
-from .postprocessing import postprocessing
+from .postprocessing import export_domain_properties, postprocessing
 from .preprocessing import preprocessing
 from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
@@ -176,7 +176,7 @@ def _assign_ic_bc_compatible(
             print("   Non-linear properties present, using sequential scheme to estimate fields...")
 
         # Use one-pass linear to generate approximate solution
-        num_passes = 1
+        num_passes = 2
         for _ in range(num_passes):
             primary_variables, _, _, _ = lin_extrap_time_integration(
                 sim_control_SS,
@@ -377,6 +377,10 @@ def main(  # noqa
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
     #                        there should be an edge integral perform to remove its contribution
     #                        along the upper surfaces.
+    if verbose:
+        print("     Exporting domain material properties...")
+    export_domain_properties(mesh, controls, material)
+
     if verbose:
         print("     Assembling linear matrices...")
     matrices_linear, material, mesh = integrate_linear_matrices(mesh, material, controls)
