@@ -296,18 +296,52 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
     return mat
 
 
-def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-    """During the preprocessing step, turn boundary condition groups
+def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:  # noqa
+    """Preprocessing of boundary conditions.
+
+    1.
+    Determine if any wellbore max pressures on/off exist
+
+    2.
+    During the preprocessing step, turn boundary condition groups
     defined by coordinates into node groups.
     """
     BC_dict = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
+    config["simulation"]["wellbore_check"] = 0  # Default 0
+
     if np.size(nodes, 1) < 3:
         nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
 
     for BC_type in BC_dict:
         for group in BC_dict[BC_type]:
             BCnodes = []
+            # Check if wellbore restrictions exist
+            if "wellbore" in group:
+                print("Wellbore group detected:")
+                config["simulation"]["wellbore_check"] += 1
+
+                max_pressure = group["wellbore"].get("maximum_pressure")
+                min_pressure = group["wellbore"].get("minimum_pressure")
+
+                if max_pressure is None and min_pressure is None:
+                    Warning("Wellbore boundary condition specified without maximum or minimum pressure.")
+
+                if max_pressure is None:
+                    max_pressure = 1.0e100
+                    group["wellbore"]["maximum_pressure"] = max_pressure
+                    print("  Maximum pressure unbounded (1.0e+100).")
+                else:
+                    print(f"  Maximum pressure: {max_pressure:.2e}")
+
+                if min_pressure is None:
+                    min_pressure = -1.0e100
+                    group["wellbore"]["minimum_pressure"] = min_pressure
+                    print("  Minimum pressure unbounded (1.0e+100). \n")
+                else:
+                    print(f"  Minimum pressure: {min_pressure:.2e} \n")
+
+            # Convert coordinates to node numbers
             if "coords" in group:
                 for xi in group["coords"]:
                     if np.size(xi, 0) != 3:
@@ -333,7 +367,7 @@ def preprocessing(
 
     mesh = load_mesh(config["mesh"], verbose)
 
-    config = _convert_coordBCs_to_nodeBCs(mesh, config)
+    config = _preprocess_BCs(mesh, config)
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])

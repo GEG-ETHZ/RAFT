@@ -15,9 +15,7 @@ def _createBCpairs(incoming: dict[str, Any]) -> npt.NDArray[np.float64]:
     return np.empty((0, 2), dtype=np.float64)
 
 
-def _evaluateBCfunctions(
-    incoming: dict[str, Any], t: float, nodes: npt.NDArray[np.float64]
-) -> dict[str, Any]:
+def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[np.float64]) -> dict[str, Any]:
     """Evaluate functions defining the boundary condition values."""
     match incoming["function"]:
         case "constant":
@@ -98,7 +96,7 @@ def _gatherBCs(  # noqa: C901
             group["function"] = "constant"  # assume constant value if no function given
 
         # get the precribed value of the BC group
-        group = _evaluateBCfunctions(group, t, mesh["nodes"])
+        group = evaluateBCfunctions(group, t, mesh["nodes"])
         if bctype == 2 and face_flag:
             if "flux_weight_matrix" not in group:
                 flux_mats = integrate_boundary_flux_matrices(mesh, face_conn, group["nodes"], controls)
@@ -120,6 +118,29 @@ def _gatherBCs(  # noqa: C901
     return BCarray
 
 
+def _allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
+    """Allocate WB BCs based on current flags."""
+    WB_config = bc_config["wellbore"]
+
+    for group in WB_config:
+        current_flag = group["curr_BC"]
+
+        if current_flag == "flux":
+            group["function"] = group["function_flux"]
+            group["values"] = group["values_flux"]
+            bc_config["fluid_flux"].append(group)
+        elif current_flag == "pressure":
+            group["function"] = "constant"
+            group["values"] = (
+                [group["wellbore"]["maximum_pressure"]]
+                if group["pres_constraint"] == "max"
+                else [group["wellbore"]["minimum_pressure"]]
+            )
+            bc_config["pressure_fixed"].append(group)
+
+    return bc_config
+
+
 def parsebcs(
     bc_config: dict[str, Any],
     mesh: dict[str, Any],
@@ -138,14 +159,18 @@ def parsebcs(
     p_neumann:        n x 2 vector containing a list of fixed fluid flux nodes and values
                         [ nodes, flux]
     """
-    # for initial pass, directly specify the nodes. In the future, this
-    # function can be modified to find the corresponding nodes based
-    # on specifying the coordinates or to perform edge integration.
-    #
-    # further sophistication is needed to parse the type of boundary condtion too
-    #
-    # pressure, temperature, and time (p, T, t) passed in for future use
+    WB_on = bool("wellbore" in bc_config)
+    # wellbore conditions
+    if WB_on:
+        # save the original lengths
+        original_lengths = {}
+        fields = ["pressure_fixed", "temperature_fixed", "fluid_flux", "temperature_flux"]
+        for key in fields:
+            original_lengths[key] = len(bc_config[key])
+        # allocate WB conditions to flux or pressure
+        bc_config = _allocate_WB_BCs(bc_config)
 
+    # Parse the boundary condition types
     # Temperature - Dirichlet
     T_dirichlet = _gatherBCs(mesh, t, bc_config["temperature_fixed"], 1, controls)
 
@@ -157,6 +182,11 @@ def parsebcs(
 
     # Pressure - Neumann
     p_neumann = _gatherBCs(mesh, t, bc_config["fluid_flux"], 2, controls)
+
+    # Return the config to its original lengths
+    if WB_on:
+        for key in fields:
+            bc_config[key] = bc_config[key][0 : original_lengths[key]]
 
     return {
         "T_dirichlet": T_dirichlet,

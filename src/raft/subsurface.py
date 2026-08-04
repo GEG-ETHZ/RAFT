@@ -10,7 +10,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .matrixassembly import integrate_linear_matrices
-from .parseboundaryconditions import parsebcs
+from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing
 from .preprocessing import preprocessing
 from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
@@ -327,6 +327,98 @@ def _perform_time_integration(
     return primary_variables, dt, converged, timestep_error
 
 
+def _initialize_WB_checks(BC_config: dict[str, Any]) -> dict[str, Any]:
+    """Initialize current and previous flag checks for each wellbore group."""
+    for group in BC_config["wellbore"]:
+        # Set flags
+        group["curr_BC"] = "flux"
+        group["prev_BC"] = "flux"
+        # Initialize constraint type
+        group["pres_constraint"] = "max"
+        # Copy existing constraints
+        group["values_flux"] = group["values"]
+        group["function_flux"] = group["function"]
+    return BC_config
+
+
+def _update_WB_flags(BC_config: dict[str, Any]) -> dict[str, Any]:
+    """Update wellbore flags from previous timestep."""
+    for group in BC_config["wellbore"]:
+        group["prev_BC"] = group["curr_BC"]
+
+    return BC_config
+
+
+def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool):
+    """Print WB constraint violation."""
+    if verbose:
+        tag = group.get("tag")
+        if tag is None:
+            tag = "(untagged)"
+
+        announcement = f"  {constraint} constraint exceeded in wellbore '{tag}'. Switching constraint."
+        print(f"\033[96m {announcement} \033[00m")
+
+
+def _check_BC_constraints(
+    BC_config: dict[str, Any], primary_variables: dict[str, Any], t: float, WB_on: int, verbose: bool
+) -> (bool, dict[str, Any]):
+    """Check whether the BC constraints are satisfied, and update the flags accordingly."""
+    if not WB_on:
+        return True, BC_config
+
+    constraints_satisfied = True
+    p = primary_variables["p"][:, 0]
+    q = primary_variables["q"][:, 0]
+
+    WB_config = BC_config["wellbore"]
+    n_WB = len(WB_config)
+    for indx in range(n_WB):
+        group = WB_config[indx]
+        curr_BC = group["curr_BC"]
+        prev_BC = group["prev_BC"]
+        # Only 1 swap allowed per timestep to prevent oscillations
+        if curr_BC != prev_BC:
+            continue
+
+        if curr_BC == "flux":
+            p_local = p[group["nodes"]]
+            p_max = group["wellbore"]["maximum_pressure"]
+            p_min = group["wellbore"]["minimum_pressure"]
+            # Check max pressure
+            if np.any(p_local >= p_max):
+                WB_config[indx]["curr_BC"] = "pressure"
+                WB_config[indx]["pres_constraint"] = "max"
+                constraints_satisfied = False
+                _announce_WB_change(group, "Max pressure", verbose)
+                break
+            # Check min pressure
+            if np.any(p_local <= p_min):
+                WB_config[indx]["curr_BC"] = "pressure"
+                WB_config[indx]["pres_constraint"] = "min"
+                constraints_satisfied = False
+                _announce_WB_change(group, "Min pressure", verbose)
+                break
+
+        if curr_BC == "pressure":
+            q_local = q[group["nodes"]]
+            # Determine flux constraint
+            group_local = group.copy()
+            group_local["function"] = group_local["function_flux"]
+            group_local["values"] = group_local["values_flux"]
+            group_local = evaluateBCfunctions(group_local, t, np.empty((0, 0)))
+            q_goal = group_local["BCvalues"]
+
+            # Check against current fluxes. If exceeded, switch back over.
+            if np.any(np.abs(q_local) >= np.abs(q_goal)):
+                WB_config[indx]["curr_BC"] = "flux"
+                constraints_satisfied = False
+                _announce_WB_change(group, "Fluid flux", verbose)
+                break
+
+    return constraints_satisfied, BC_config
+
+
 # -------------------------------- Main simulation run function -------------
 def main(  # noqa
     config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True
@@ -375,6 +467,11 @@ def main(  # noqa
     primary_variables["p"] = np.ones((len(p_dofs), 4))
     primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
 
+    ## Wellbore boundary conditions
+    WB_on = controls["wellbore_check"]
+    if WB_on:
+        BC_config = _initialize_WB_checks(BC_config)
+
     # Linear Matrix Assembly
     #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
     #                        there should be an edge integral perform to remove its contribution
@@ -416,36 +513,46 @@ def main(  # noqa
         if verbose:
             print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
 
-        # Update Boundary Conditions
-        boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+        while True:
+            # Update Boundary Conditions
+            boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
 
-        # Perform time integration
-        primary_variables, dt, converged, timestep_error = _perform_time_integration(
-            controls,
-            mesh,
-            material,
-            matrices_linear,
-            primary_variables,
-            boundary_conditions,
-            dt,
-            n,
-            verbose,
-        )
+            # Perform time integration
+            primary_variables, dt, converged, timestep_error = _perform_time_integration(
+                controls,
+                mesh,
+                material,
+                matrices_linear,
+                primary_variables,
+                boundary_conditions,
+                dt,
+                n,
+                verbose,
+            )
+
+            # Check BC constraints satisfied
+            BC_satisfied, BC_config = _check_BC_constraints(BC_config, primary_variables, t, WB_on, verbose)
+            if BC_satisfied:
+                break
 
         # Check error and update time step
+        t0 = t
         t, dt, converged = _update_time(
             controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
         )
 
         # Initialize next timestep
-        # use roll to update primary variables, column 0 gets overwritten in time integration
         if converged:
             if verbose:
                 print("     Postprocessing...")
-            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t0, verbose)
             n += 1
+            # rollover update primary variables, column 0 gets overwritten in time integration
             primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
             primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+            # update any WB boundary condition flags
+            if WB_on:
+                BC_config = _update_WB_flags(BC_config)
 
         # Check end condition
         if t > t_end:

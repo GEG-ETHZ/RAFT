@@ -272,7 +272,7 @@ def _export_flow_logs(
     filename = os.path.join(io_path, name)  # results folder path
 
     # ---- Collect tagged groups
-    bc_types_to_log = ("pressure_fixed", "fluid_flux")
+    bc_types_to_log = ("pressure_fixed", "fluid_flux", "wellbore")
     tagged_groups: list[dict[str, Any]] = []
     for bc_type in bc_types_to_log:
         for entry in BC_config.get(bc_type, []):
