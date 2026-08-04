@@ -349,7 +349,7 @@ def _update_WB_flags(BC_config: dict[str, Any]) -> dict[str, Any]:
     return BC_config
 
 
-def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool):
+def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool) -> None:
     """Print WB constraint violation."""
     if verbose:
         tag = group.get("tag")
@@ -362,7 +362,7 @@ def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool):
 
 def _check_BC_constraints(
     BC_config: dict[str, Any], primary_variables: dict[str, Any], t: float, WB_on: int, verbose: bool
-) -> (bool, dict[str, Any]):
+) -> tuple[bool, dict[str, Any]]:
     """Check whether the BC constraints are satisfied, and update the flags accordingly."""
     if not WB_on:
         return True, BC_config
