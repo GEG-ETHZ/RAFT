@@ -12,8 +12,8 @@ mesh:
         region_number: 2
   dimensions: 2
   fractures:
-         - values: [[12.5, 49, 0.0], [52.5], [11]]
-         - values: [[-18, 28, 0.0], [27.5], [70]]
+         - values: [[12.5, 49, 0.0], [52.5], [9]]
+         - values: [[18, 28, 0.0], [62.5], [35]]
          - values: [[-10, 32, 0.0], [22.5], [100]]
 
 
@@ -25,9 +25,9 @@ material:
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
       specific_heat: [8, 80, 10]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
-      porosity: [0.01, 0.05, 0.01]                # -
+      porosity: [0.1, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [[1.0e-16, 3.0e-15],   1.0e-19, 1.0e-17]       # m^2
+      permeability: [[1.0e-15, 3.0e-14],   1.0e-19, 1.0e-17]       # m^2
       rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [40.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
@@ -39,7 +39,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 1.0e-3 #[1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
@@ -58,34 +58,40 @@ initial_conditions:
 
 
 boundary_conditions:
+  wellbore:
+        - coords: [[22.5, 37.5]]
+          values: [[0, 0.001], 100]
+          function: "ramp"
+          tag: "inlet"
+          wellbore:
+              maximum_pressure: 3.0e+7
+              minimum_pressure: 1.0e+4
+        - coords: [[40, 48]]
+          values: [[0, -0.001], 100]
+          function: "ramp"
+          tag: "outlet"
+          wellbore:
+              maximum_pressure: 17.0e+6
+              minimum_pressure: 1.0e+3
   pressure_fixed:
-        - faces: [y_max]
-          values: [2.0e5]
-          tag: "inflow"
         - faces: [y_min]
-          values: [1.0e5]
-
-
+          values: [2.0e6]
+          tag: "inflow"
+        - faces: [y_max]
+          values: [1.0e6]
 
   temperature_fixed:
       - faces: [y_max]
-        values: [473]
+        values: [273]
       - faces: [y_min]
-        values: [500]
+        values: [373]
       - coords: [[22.5, 37.5]]
         function: "ramp"
-        values: [[487, 343], 10]
+        values: [[323, 403], 100]
 
 
   fluid_flux:
-        - coords: [[22.5, 37.5]]
-          values: [[0, 0.001], 10]
-          function: "ramp"
-          tag: "inlet"
-        # - coords: [[40, 41]]
-        #   values: [[0, -0.001], 10]
-        #   function: "ramp"
-        #   tag: "outlet"
+
 
   temperature_flux:
 
@@ -93,10 +99,10 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 500.0
-  timestep: 10.0
-  timestep_min: 10.0
-  timestep_max: 100.0
+  t_end: 500000.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 10000.0
   solver_type: "linearized"
 
   # Output

@@ -354,6 +354,7 @@ Boundary conditions are specified in groups. Each group can be applied using one
 * **`temperature_fixed`**: Dirichlet boundary conditions for temperature.
 * **`fluid_flux`**: Neumann boundary conditions for fluid flow flux.
 * **`temperature_flux`**: Neumann boundary conditions for heat flux.
+* **`wellbore`**: A fluid-flux boundary condition that automatically swaps to a fixed pressure when a pressure limit is reached (and back again once the flux implied by that pressure would exceed the original flux target). See [Wellbore Constraints](#wellbore-constraints) below.
 
 **Geometry Specification Methods:**
 Each boundary condition group must specify nodes using exactly one of the following methods:
@@ -391,6 +392,23 @@ Each boundary condition group must specify nodes using exactly one of the follow
 * groupname_flow: sum of flow rates over the group nodes.
 * groupname_temperature: flow-weighted average temperature over the group nodes.
 
+#### Wellbore Constraints
+A `wellbore` group is specified like a `fluid_flux` group, plus a nested `wellbore` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
+
+```yaml
+wellbore:
+  - coords: [[x, y, z]]
+    values: [[0, 0.001], 100]
+    function: "ramp"
+    tag: "inlet"
+    wellbore:
+        maximum_pressure: 16.0e+6
+        minimum_pressure: 1.0e+4
+```
+
+* **`maximum_pressure`** / **`minimum_pressure`** *(float, optional)*: Pressure limits at the wellbore nodes. Either may be omitted to leave that side unbounded.
+
+At each timestep the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
 
 ### `simulation`
  Simulation controls
