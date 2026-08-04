@@ -296,15 +296,55 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
     return mat
 
 
+def _find_lineBC_connectivity(
+    mesh: dict[str, Any], line: list[list[float]]
+) -> tuple[list[int], list[list[int]]]:
+    """Find the line boundary condition connectivity.
+    Line boundary conditions find the shortest path between the start and
+    end points following pre-existing nodes and edges in the mesh.
+
+    Throws a warning if the deviation is large.
+    """
+    nodes = mesh["nodes"]  # noqa
+    conn = mesh["conn"]  # noqa
+    # Calculate line direction vector
+    A = np.asarray(line[0])  # [x,y,z]
+    B = np.asarray(line[1])  # [x,y,z]
+    u = (B - A) / np.linalg.norm(B - A)  # tangent vector # noqa
+    n = ...  # normal vector # noqa
+
+    # Import tolerance function from meshprocessing
+    tol = local_element_scale(...)  # noqa
+
+    # Create node-edge map
+
+    # Determine shortest path A -> B weighted by edge length
+
+    line_nodes = []  # All nodes involved in the
+    line_conn = []  # List of list of edge connectivities [[A, P1], [P1, P2], [P2, B]]
+
+    # Check tolerance
+    d = nodes[line_nodes, :] * n  # noqa
+    if np.any(d) > tol:
+        # Throw warning stating that deviation from the line is high
+        placeholder = 0  # noqa
+
+    # Check total line length
+    # Report length of line compared to true line distance |B-A|
+
+    # Return nodes and connectivity
+    return line_nodes, line_conn
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
-    1.
-    Determine if any wellbore max pressures on/off exist
+    1. Determine if any wellbore max pressures on/off exist
 
-    2.
-    During the preprocessing step, turn boundary condition groups
+    2. During the preprocessing step, turn boundary condition groups
     defined by coordinates into node groups.
+
+    3. Line boundary conditions need to find nodes and connectivity.
     """
     BC_dict = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
@@ -353,6 +393,10 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, A
                     closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
                     BCnodes.append(closest_node)
                 group["nodes"] = BCnodes
+
+            if "lines" in group:
+                for line in group:
+                    line_nodes, line_conn = _find_lineBC_connectivity(mesh, line)
 
     config["boundary_conditions"] = BC_dict
     return config
