@@ -80,6 +80,7 @@ boundary_conditions:
         - faces: [y_max]
           values: [1.0e6]
 
+
   temperature_fixed:
       - faces: [y_max]
         values: [273]
@@ -91,7 +92,8 @@ boundary_conditions:
 
 
   fluid_flux:
-
+        - lines: [[[43.4, 20.0], [53, 37.5]], [[-40.0, 35.9], [-33.7, 27.3]]]
+          values: [0.0001]
 
   temperature_flux:
 
@@ -99,7 +101,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 500000.0
+  t_end: 50.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 10000.0
