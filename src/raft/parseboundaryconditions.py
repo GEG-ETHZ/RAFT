@@ -58,12 +58,12 @@ def _gatherBCs(  # noqa: C901
     Boundary condition type necessary for flux integrals, not yet implemented.
     """
     BCarray = np.empty((0, 2))
-    face_flag = False
-    line_flag = False
-    face_conn = []
-    face_nn = 0
     # for each BC group
     for group in incoming:
+        face_flag = False
+        line_flag = False
+        face_conn = []
+        face_nn = 0
         # gather all the corresponding nodes
         if "nodes" in group:
             # directly append the nodes

@@ -59,20 +59,20 @@ initial_conditions:
 
 boundary_conditions:
   wellbore:
-        - coords: [[22.5, 37.5]]
+        - lines: [[[43.4, 20.0], [53, 37.5]]]
           values: [[0, 0.001], 100]
           function: "ramp"
           tag: "inlet"
           wellbore:
               maximum_pressure: 3.0e+7
               minimum_pressure: 1.0e+4
-        - coords: [[40, 48]]
+        - lines: [[[-40.0, 35.9], [-33.7, 27.3]]]
           values: [[0, -0.001], 100]
           function: "ramp"
           tag: "outlet"
           wellbore:
-              maximum_pressure: 17.0e+6
-              minimum_pressure: 1.0e+3
+              maximum_pressure: 3.0e+7
+              minimum_pressure: 1.0e+4
   pressure_fixed:
         - faces: [y_min]
           values: [2.0e6]
@@ -86,14 +86,12 @@ boundary_conditions:
         values: [273]
       - faces: [y_min]
         values: [373]
-      - coords: [[22.5, 37.5]]
+      - lines: [[[43.4, 20.0], [53, 37.5]]]
         function: "ramp"
         values: [[323, 403], 100]
 
 
   fluid_flux:
-        - lines: [[[43.4, 20.0], [53, 37.5]], [[-40.0, 35.9], [-33.7, 27.3]]]
-          values: [0.0001]
 
   temperature_flux:
 
@@ -101,7 +99,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 50.0
+  t_end: 500000.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 10000.0

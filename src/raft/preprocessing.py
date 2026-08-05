@@ -431,7 +431,10 @@ def _find_lineBC_connectivity(
 
     # Shortest path A -> B weighted by edge length, following existing mesh edges
     graph = _build_mesh_edge_graph(mesh)
-    dist, predecessors = dijkstra(graph, directed=False, indices=start_node, return_predecessors=True)
+    dist, predecessors = dijkstra(
+        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
+    )
+    dist, predecessors = dist[0], predecessors[0]
 
     if np.isinf(dist[end_node]):
         raise RuntimeError(
@@ -441,7 +444,7 @@ def _find_lineBC_connectivity(
     path = [end_node]
     node = end_node
     while node != start_node:
-        node = predecessors[node]
+        node = int(predecessors[node])
         path.append(node)
     path.reverse()
 
