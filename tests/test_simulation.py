@@ -290,6 +290,21 @@ def test_patch_z() -> None:
     assert test_pass
 
 
+def test_line_bc_patch_flux_2D() -> None:
+    """Check exact linear approximation when x_min/x_max are specified as line BCs instead of faces."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Line BC - flux - 2D Q4"
+    config_filename = "config_test_line_bc.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 0
+    plot_on = False
+    test_pass = test_checks.check_patch_test_flux(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_fracture_single() -> None:
     """Verify mesh-cutting correctness for a single, fully-interior 2D fracture."""
     case_dir = _test_data_dir()

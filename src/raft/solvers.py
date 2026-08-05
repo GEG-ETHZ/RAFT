@@ -516,7 +516,7 @@ def fully_coupled_time_integration(  # noqa
                     aitken_state["variables_km1"],
                     aitken_state["relax_dofs"],
                     aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][0],
+                    aitken_state["aitken_coefficient"][iteration],
                 )
             else:
                 d_new = d

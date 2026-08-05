@@ -1,13 +1,16 @@
 """Import mesh, calculate material properties, apply defaults."""
 
+import warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+import scipy.sparse
 import yaml
+from scipy.sparse.csgraph import dijkstra
 
-from .meshprocessing import load_mesh
+from .meshprocessing import _get_element_face_lists, load_mesh
 
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
@@ -296,15 +299,182 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
     return mat
 
 
+def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
+    # Local node-index pairs for each element edge (distinct from face lists:
+    # for 3D solids a face has >2 nodes, an edge always has 2).
+    if nne == 8:  # B8
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [1, 2],
+            "edge2": [2, 3],
+            "edge3": [3, 0],
+            "edge4": [4, 5],
+            "edge5": [5, 6],
+            "edge6": [6, 7],
+            "edge7": [7, 4],
+            "edge8": [0, 4],
+            "edge9": [1, 5],
+            "edge10": [2, 6],
+            "edge11": [3, 7],
+        }
+    elif nne == 4 and nsd == 3:  # T4
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [0, 2],
+            "edge2": [0, 3],
+            "edge3": [1, 2],
+            "edge4": [1, 3],
+            "edge5": [2, 3],
+        }
+    elif nsd == 2:  # Q4 / T3 -- edges coincide with the face (boundary-segment) list
+        return _get_element_face_lists(nne, nsd)
+    else:
+        raise NotImplementedError(f"Edge extraction for {nne}-node elements in {nsd} dimensions.")
+    return edges
+
+
+def _build_mesh_edge_graph(mesh: dict[str, Any]) -> scipy.sparse.csr_matrix:
+    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
+
+    edge_set: set[tuple[int, int]] = set()
+    edge_lists = _get_element_edge_lists(nne[0], nsd)
+    counter = 0
+
+    for elem in range(ne):
+        if elem > elem_indx[counter]:
+            counter += 1
+            edge_lists = _get_element_edge_lists(nne[counter], nsd)
+
+        elem_conn = conn[elem]
+        for local_edge in edge_lists.values():
+            n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
+            edge_set.add((n1, n2) if n1 < n2 else (n2, n1))
+
+    row, col, weight = [], [], []
+    for n1, n2 in edge_set:
+        d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
+        row += [n1, n2]
+        col += [n2, n1]
+        weight += [d, d]
+
+    return scipy.sparse.csr_matrix((weight, (row, col)), shape=(mesh["nn"], mesh["nn"]))
+
+
+_LINE_DEVIATION_TOL = 1.0e-3  # 1 mm; assumes mesh coordinates are in meters
+
+
+def _clip_line_to_domain(
+    A: npt.NDArray[np.float64],
+    B: npt.NDArray[np.float64],
+    mins: npt.NDArray[np.float64],
+    maxs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Clip segment A-B to the mesh's axis-aligned bounding box (slab method)."""
+    d = B - A
+    t0, t1 = 0.0, 1.0
+    for axis in range(len(A)):
+        if abs(d[axis]) < 1e-14:
+            if A[axis] < mins[axis] or A[axis] > maxs[axis]:
+                raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
+            continue
+        t_near = (mins[axis] - A[axis]) / d[axis]
+        t_far = (maxs[axis] - A[axis]) / d[axis]
+        t_low, t_high = min(t_near, t_far), max(t_near, t_far)
+        t0 = max(t0, t_low)
+        t1 = min(t1, t_high)
+        if t0 > t1:
+            raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
+
+    return A + t0 * d, A + t1 * d
+
+
+def _find_lineBC_connectivity(
+    mesh: dict[str, Any], line: list[list[float]]
+) -> tuple[list[int], list[list[int]]]:
+    """Find the line boundary condition connectivity.
+    Line boundary conditions find the shortest path between the start and
+    end points following pre-existing nodes and edges in the mesh.
+
+    Throws a warning if the deviation is large.
+    """
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # Calculate line direction vector
+    A = np.asarray(line[0], dtype=float)[:nsd]
+    B = np.asarray(line[1], dtype=float)[:nsd]
+    length_AB = float(np.linalg.norm(B - A))
+
+    if length_AB == 0.0:
+        raise RuntimeError("Line boundary condition start and end points are identical.")
+
+    u = (B - A) / length_AB  # tangent vector
+
+    # Clip to the domain so points prescribed outside the mesh snap to the
+    # nearest node at the line/boundary intersection, not to some arbitrary
+    # far-off corner node.
+    mins = nodes[:, :nsd].min(axis=0)
+    maxs = nodes[:, :nsd].max(axis=0)
+    A_clipped, B_clipped = _clip_line_to_domain(A, B, mins, maxs)
+
+    start_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - A_clipped, axis=1)))
+    end_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - B_clipped, axis=1)))
+
+    if start_node == end_node:
+        raise RuntimeError("Line boundary condition start and end nodes snap to the same mesh node.")
+
+    # Shortest path A -> B weighted by edge length, following existing mesh edges
+    graph = _build_mesh_edge_graph(mesh)
+    dist, predecessors = dijkstra(
+        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
+    )
+    dist, predecessors = dist[0], predecessors[0]
+
+    if np.isinf(dist[end_node]):
+        raise RuntimeError(
+            "No connected path of mesh edges found between the line boundary condition endpoints."
+        )
+
+    path = [end_node]
+    node = end_node
+    while node != start_node:
+        node = int(predecessors[node])
+        path.append(node)
+    path.reverse()
+
+    line_nodes = path
+    line_conn = [[path[i], path[i + 1]] for i in range(len(path) - 1)]
+
+    # Check deviation of the snapped path from the requested line
+    rel = nodes[line_nodes, :nsd] - A
+    perp = rel - np.outer(rel @ u, u)
+    deviation = np.linalg.norm(perp, axis=1)
+
+    if np.any(deviation > _LINE_DEVIATION_TOL):
+        warnings.warn(
+            f"Exact line not found in mesh, snapping to nearest nodes. "
+            f"True line distance = {length_AB}, mesh path distance = {dist[end_node]}",
+            stacklevel=2,
+        )
+
+    return line_nodes, line_conn
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
-    1.
-    Determine if any wellbore max pressures on/off exist
+    1. Determine if any wellbore max pressures on/off exist
 
-    2.
-    During the preprocessing step, turn boundary condition groups
+    2. During the preprocessing step, turn boundary condition groups
     defined by coordinates into node groups.
+
+    3. Line boundary conditions need to find nodes and connectivity.
     """
     BC_dict = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
@@ -317,26 +487,26 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, A
         for group in BC_dict[BC_type]:
             BCnodes = []
             # Check if wellbore restrictions exist
-            if "wellbore" in group:
+            if "constraints" in group:
                 print("Wellbore group detected:")
                 config["simulation"]["wellbore_check"] += 1
 
-                max_pressure = group["wellbore"].get("maximum_pressure")
-                min_pressure = group["wellbore"].get("minimum_pressure")
+                max_pressure = group["constraints"].get("maximum_pressure")
+                min_pressure = group["constraints"].get("minimum_pressure")
 
                 if max_pressure is None and min_pressure is None:
                     Warning("Wellbore boundary condition specified without maximum or minimum pressure.")
 
                 if max_pressure is None:
                     max_pressure = 1.0e100
-                    group["wellbore"]["maximum_pressure"] = max_pressure
+                    group["constraints"]["maximum_pressure"] = max_pressure
                     print("  Maximum pressure unbounded (1.0e+100).")
                 else:
                     print(f"  Maximum pressure: {max_pressure:.2e}")
 
                 if min_pressure is None:
                     min_pressure = -1.0e100
-                    group["wellbore"]["minimum_pressure"] = min_pressure
+                    group["constraints"]["minimum_pressure"] = min_pressure
                     print("  Minimum pressure unbounded (1.0e+100). \n")
                 else:
                     print(f"  Minimum pressure: {min_pressure:.2e} \n")
@@ -353,6 +523,20 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, A
                     closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
                     BCnodes.append(closest_node)
                 group["nodes"] = BCnodes
+
+            if "lines" in group:
+                for line in group["lines"]:
+                    line_nodes, line_conn = _find_lineBC_connectivity(mesh, line)
+
+                    if group.get("line_nodes") is None:
+                        group["line_nodes"] = line_nodes
+                    else:
+                        group["line_nodes"].extend(line_nodes)
+
+                    if group.get("line_conn") is None:
+                        group["line_conn"] = line_conn
+                    else:
+                        group["line_conn"].extend(line_conn)
 
     config["boundary_conditions"] = BC_dict
     return config

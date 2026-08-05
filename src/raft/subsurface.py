@@ -383,8 +383,8 @@ def _check_BC_constraints(
 
         if curr_BC == "flux":
             p_local = p[group["nodes"]]
-            p_max = group["wellbore"]["maximum_pressure"]
-            p_min = group["wellbore"]["minimum_pressure"]
+            p_max = group["constraints"]["maximum_pressure"]
+            p_min = group["constraints"]["minimum_pressure"]
             # Check max pressure
             if np.any(p_local >= p_max):
                 WB_config[indx]["curr_BC"] = "pressure"
@@ -408,6 +408,10 @@ def _check_BC_constraints(
             group_local["values"] = group_local["values_flux"]
             group_local = evaluateBCfunctions(group_local, t, np.empty((0, 0)))
             q_goal = group_local["BCvalues"]
+
+            if "flux_weight_matrix" in group:
+                weight_matrix = group["flux_weight_matrix"]
+                q_goal = np.sum(weight_matrix @ np.asanyarray(q_goal))
 
             # Check against current fluxes. If exceeded, switch back over.
             if np.any(np.abs(q_local) >= np.abs(q_goal)):
@@ -478,7 +482,7 @@ def main(  # noqa
     #                        along the upper surfaces.
     if verbose:
         print("     Exporting domain material properties...")
-    export_domain_properties(mesh, controls, material)
+    export_domain_properties(mesh, controls, material, BC_config)
 
     if verbose:
         print("     Assembling linear matrices...")

@@ -58,20 +58,23 @@ def _gatherBCs(  # noqa: C901
     Boundary condition type necessary for flux integrals, not yet implemented.
     """
     BCarray = np.empty((0, 2))
-    face_flag = False
-    face_conn = []
-    face_nn = 0
     # for each BC group
     for group in incoming:
+        face_flag = False
+        line_flag = False
+        face_conn = []
+        face_nn = 0
         # gather all the corresponding nodes
         if "nodes" in group:
             # directly append the nodes
             # covers "nodes" and "coords" cases, which have been mapped in pre-processing
             BCnodes = group["nodes"]
 
-            # on second passes, check that if nodes is an amalgamation of faces
+            # on second passes, check if nodes is an amalgamation of faces
             if "faces" in group:
                 face_flag = True
+            if "lines" in group:
+                line_flag = True
         elif "faces" in group:
             # load the groups of faces determined in the pre-processing
             BCnodes = []
@@ -81,6 +84,13 @@ def _gatherBCs(  # noqa: C901
                     face_flag = True
                     face_conn.extend(mesh["boundaries"][face + "_conn"])
                     face_nn += len(mesh["boundaries"][face])
+        elif "lines" in group:
+            # load the line groups determined in the pre-processing
+            BCnodes = []
+            line_conn = group["line_conn"]
+            BCnodes.extend(group["line_nodes"])
+            if bctype == 2:
+                line_flag = True
         else:
             raise NotImplementedError("Invalid BC geometry specification")
 
@@ -97,9 +107,21 @@ def _gatherBCs(  # noqa: C901
 
         # get the precribed value of the BC group
         group = evaluateBCfunctions(group, t, mesh["nodes"])
+        # Evaluate face flux integrals
         if bctype == 2 and face_flag:
             if "flux_weight_matrix" not in group:
-                flux_mats = integrate_boundary_flux_matrices(mesh, face_conn, group["nodes"], controls)
+                flux_mats = integrate_boundary_flux_matrices(
+                    mesh, face_conn, group["nodes"], controls, "face"
+                )
+                group["flux_weight_matrix"] = flux_mats["A"]
+
+            group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
+        # Evaluate line flux integrals
+        if bctype == 2 and line_flag:
+            if "flux_weight_matrix" not in group:
+                flux_mats = integrate_boundary_flux_matrices(
+                    mesh, line_conn, group["nodes"], controls, "line"
+                )
                 group["flux_weight_matrix"] = flux_mats["A"]
 
             group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
@@ -132,9 +154,9 @@ def _allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
         elif current_flag == "pressure":
             group["function"] = "constant"
             group["values"] = (
-                [group["wellbore"]["maximum_pressure"]]
+                [group["constraints"]["maximum_pressure"]]
                 if group["pres_constraint"] == "max"
-                else [group["wellbore"]["minimum_pressure"]]
+                else [group["constraints"]["minimum_pressure"]]
             )
             bc_config["pressure_fixed"].append(group)
 

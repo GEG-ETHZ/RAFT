@@ -194,7 +194,7 @@ The resulting $\textbf{p}^n$ is substituted directly into the (now-linear) tempe
 
 $$\left[c_{v0}\textbf{C}_T - \textbf{K}_{AT}(\textbf{p}^n) - \textbf{K}_{DT} - \textbf{K}_{stabT}(\textbf{p}^n)\right]\textbf{T}^n = \textbf{F}_{\Gamma T} - c_{v1}\textbf{C}_T\textbf{T}^{n-1} \equiv \textbf{A}_T \textbf{T}^n = \textbf{b}_T$$
 
-Pressure is solved first (rather than temperature) because at typical reservoir permeabilities ($k_f \gtrsim 10^{-16}\,m^2$) the characteristic timescale of pressure diffusion (hours–days) is much shorter than that of thermal transport (weeks), so pressure is expected to evolve faster than temperature between timesteps. This is a one-pass solve. The extrapolated temperature is checked against the actually-solved temperature and convergence is reported against [`rel_error_T`](#simulation). If the error between the expolated and solved temperatures is too large, the timestep is reduced in proportion to the error and the timestep is repeated until acceptable error is achieved or the minimum timestep is reached.
+Pressure is solved first (rather than temperature) because at typical reservoir permeabilities ($k_f \gtrsim 10^{-16}\,m^2$) the characteristic timescale of pressure diffusion (hours–days) is much shorter than that of thermal transport (weeks-years), so pressure is expected to evolve faster than temperature between timesteps. This is a one-pass solve. The extrapolated temperature is checked against the actually-solved temperature and convergence is reported against [`rel_error_T`](#simulation). If the error between the expolated and solved temperatures is too large, the timestep is reduced in proportion to the error and the timestep is repeated until acceptable error is achieved or the minimum timestep is reached.
 
 **`"fully_coupled"` — monolithic Newton-Raphson**, in [`fully_coupled_time_integration`](src/raft/solvers.py). Pressure and temperature are assembled into a single combined system and evaluated at $t^n$ (fully implicit), then solved iteratively with Newton-Raphson using the tangent matrices below, subject to [`iterative_controls`](#simulation): `NR_tol`, `iter_max`, and optional Aitken $\Delta^2$ relaxation ([`_aitken_relax`](src/raft/solvers.py)) to accelerate/stabilize convergence between iterations. If convergence is not achieved, the timestep is reduced and the non-linear solve is attempted again. If the minimum timestep is reached and the solver is unable to find a converged solution, the simulation ends.
 
@@ -347,7 +347,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * `"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
 
 ### `boundary_conditions`
-Boundary conditions are specified in groups. Each group can be applied using one of three geometric specification methods: node indices, coordinate proximity, or named faces. Each group can also specify either constant or time-dependent values.
+Boundary conditions are specified in groups. Each group can be applied using one of four geometric specification methods: node indices, coordinate proximity, named faces, or lines. Each group can also specify either constant or time-dependent values.
 
 **Boundary Condition Types:**
 * **`pressure_fixed`**: Dirichlet boundary conditions for fluid pressure.
@@ -357,11 +357,16 @@ Boundary conditions are specified in groups. Each group can be applied using one
 * **`wellbore`**: A fluid-flux boundary condition that automatically swaps to a fixed pressure when a pressure limit is reached (and back again once the flux implied by that pressure would exceed the original flux target). See [Wellbore Constraints](#wellbore-constraints) below.
 
 **Geometry Specification Methods:**
-Each boundary condition group must specify nodes using exactly one of the following methods:
+Each boundary condition group must specify nodes using one or a combination of the following methods:
 
 * **`nodes`** *(list of integers)*: Direct node IDs where the boundary condition is applied.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
-* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included.
+* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Fluxes are integrated over the face.
+  * Fluid fluxes: Specify `values` in $m^3/s / m^2$.
+  * Temperature fluxes: Specify `values` in $W / m^2$.
+* **`lines`** *(list of `[start, end]` point pairs)*: Each pair defines a line segment (points matching the spatial dimensions, as in `coords`). The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. The line is snipped to the domain boundaries. If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning but and reports the true vs. prescribed line lengths. You can view the nodes with `line` boundary conditions in `domain.vtk` under the `line_BC_nodes` field. Fluxes are integrated over the prescribed line.
+  * Fluid fluxes: Specify `values` in $m^3/s / m$.
+  * Temperature fluxes: Specify `values` in $W / m$.
 
 **Value Specification:**
  The function applied to the nodes is determined by the field `function`. Each group should contain a field named `"values"` which depends on the type of function being applied.
@@ -393,7 +398,7 @@ Each boundary condition group must specify nodes using exactly one of the follow
 * groupname_temperature: flow-weighted average temperature over the group nodes.
 
 #### Wellbore Constraints
-A `wellbore` group is specified like a `fluid_flux` group, plus a nested `wellbore` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
+A `wellbore` group is specified like a `fluid_flux` group, plus a nested `constraints` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
 
 ```yaml
 wellbore:
@@ -401,14 +406,16 @@ wellbore:
     values: [[0, 0.001], 100]
     function: "ramp"
     tag: "inlet"
-    wellbore:
+    constraints:
         maximum_pressure: 16.0e+6
         minimum_pressure: 1.0e+4
 ```
 
 * **`maximum_pressure`** / **`minimum_pressure`** *(float, optional)*: Pressure limits at the wellbore nodes. Either may be omitted to leave that side unbounded.
 
-At each timestep the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
+At each timestep, the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Each group is evaluated collectively - any one pressure node exceeding the constraints triggers the swap. For fluid flux constraints, line and face geometry types are integrated over the line/face and the prescribed integrated total flux is compared against the current integrated total flux.
+
+Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
 
 ### `simulation`
  Simulation controls

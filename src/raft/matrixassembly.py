@@ -1399,17 +1399,44 @@ def integrate_NLpressure_matrices(  # noqa
 
 
 def integrate_boundary_flux_matrices(
-    mesh: dict[str, Any], conn_face: list[list[int]], node_order: Sequence[int], controls: dict[str, Any]
+    mesh: dict[str, Any],
+    conn_face: list[list[int]],
+    node_order: Sequence[int],
+    controls: dict[str, Any],
+    intgrl_type: str,
 ) -> dict[str, csc_matrix[Any]]:
     """Integrate lower dimensional boundary integrals for flux BCs."""
     ne = np.size(conn_face, 0)
     nne = np.size(conn_face, 1)
-    nsd = mesh["nsd"] - 1
     nodes = mesh["nodes"]  # (nn,  nsd) - nodal degrees of freedom
-    etype = mesh["element_type"]
     axisymmetry = bool(controls["axisymmetric_on"])
     elem_indx = [ne - 1]
     nne_list = [nne]
+
+    if intgrl_type == "face":
+        # Faces of elements (assumed exterior)
+        nsd = mesh["nsd"] - 1
+        etype = mesh["element_type"]
+        match etype[-1]:
+            case "B8":
+                etype = "Q4"
+                nq = 2
+            case "T4":
+                etype = "T3"
+                nq = 1
+            case "T3":
+                etype = "L2"
+                nq = 2
+            case "Q4":
+                etype = "L2"
+                nq = 2
+            case _:
+                raise NotImplementedError(f"Face elements of {etype}.")
+    else:
+        # Lines
+        nsd = 1
+        etype = "L2"
+        nq = 2
 
     # ----- Local face numbering
     # Map each global node id in conn_face to a local index.
@@ -1420,22 +1447,6 @@ def integrate_boundary_flux_matrices(
 
     conn_face_local = [[global_to_local[int(n)] for n in enodes] for enodes in conn_face]
     # conn_face_local is used for assembly then mapped back to global
-
-    match etype[-1]:
-        case "B8":
-            etype = "Q4"
-            nq = 2
-        case "T4":
-            etype = "T3"
-            nq = 1
-        case "T3":
-            etype = "L2"
-            nq = 2
-        case "Q4":
-            etype = "L2"
-            nq = 2
-        case _:
-            raise NotImplementedError(f"Face elements of {etype}.")
 
     # ----- Vectorized matrix assembly
     # Assemble lists of rows, columns, and entries and then assemble the sparse
@@ -1457,16 +1468,25 @@ def integrate_boundary_flux_matrices(
     for e in range(ne):
         enodes = conn_face[e]  # global node ids, used for geometry
 
-        # calculate face normal
         xI = nodes[enodes, :]
-        if nsd == 2:
-            n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
-        else:
-            n = np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
+        if intgrl_type == "face":
+            # calculate face normal
+            # Faces
+            if nsd == 2:
+                n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
+            else:
+                n = np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
 
-        # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
-        ax = np.argmax(abs(n))
-        xI = np.delete(xI, ax, 1)
+            # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
+            ax = np.argmax(abs(n))
+            xI = np.delete(xI, ax, 1)
+        else:
+            # Lines
+            # For lines, shift each element edge to its first node
+            A = xI[0, :]
+            B = xI[1, :]
+            xI = np.zeros((2, 1))
+            xI[1] = np.linalg.norm(B - A)
 
         detJe_q = getB(GN_q, xI, nsd)[1]
         wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand

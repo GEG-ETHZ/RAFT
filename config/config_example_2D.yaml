@@ -59,20 +59,20 @@ initial_conditions:
 
 boundary_conditions:
   wellbore:
-        - coords: [[22.5, 37.5]]
+        - lines: [[[43.4, 20.0], [53, 37.5]]]
           values: [[0, 0.001], 100]
           function: "ramp"
           tag: "inlet"
-          wellbore:
+          constraints:
               maximum_pressure: 3.0e+7
               minimum_pressure: 1.0e+4
-        - coords: [[40, 48]]
+        - lines: [[[-40.0, 35.9], [-33.7, 27.3]]]
           values: [[0, -0.001], 100]
           function: "ramp"
           tag: "outlet"
-          wellbore:
-              maximum_pressure: 17.0e+6
-              minimum_pressure: 1.0e+3
+          constraints:
+              maximum_pressure: 3.0e+7
+              minimum_pressure: 1.0e+4
   pressure_fixed:
         - faces: [y_min]
           values: [2.0e6]
@@ -80,18 +80,18 @@ boundary_conditions:
         - faces: [y_max]
           values: [1.0e6]
 
+
   temperature_fixed:
       - faces: [y_max]
         values: [273]
       - faces: [y_min]
         values: [373]
-      - coords: [[22.5, 37.5]]
+      - lines: [[[43.4, 20.0], [53, 37.5]]]
         function: "ramp"
         values: [[323, 403], 100]
 
 
   fluid_flux:
-
 
   temperature_flux:
 
