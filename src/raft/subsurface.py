@@ -411,7 +411,6 @@ def _check_BC_constraints(
 
             if "flux_weight_matrix" in group:
                 weight_matrix = group["flux_weight_matrix"]
-                q_local = np.sum(weight_matrix @ np.asanyarray(q_local))
                 q_goal = np.sum(weight_matrix @ np.asanyarray(q_goal))
 
             # Check against current fluxes. If exceeded, switch back over.
