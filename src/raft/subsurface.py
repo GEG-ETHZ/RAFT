@@ -482,7 +482,7 @@ def main(  # noqa
     #                        along the upper surfaces.
     if verbose:
         print("     Exporting domain material properties...")
-    export_domain_properties(mesh, controls, material)
+    export_domain_properties(mesh, controls, material, BC_config)
 
     if verbose:
         print("     Assembling linear matrices...")

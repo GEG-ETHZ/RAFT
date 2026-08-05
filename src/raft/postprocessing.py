@@ -380,6 +380,18 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     return scalardata_point
 
 
+def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build a single indicator field marking every node involved in any line boundary condition."""
+    data = np.zeros(mesh["nn"])
+    for bc_type in BC_config:
+        for group in BC_config[bc_type]:
+            line_nodes = group.get("line_nodes")
+            if line_nodes:
+                data[np.asarray(line_nodes)] = 1
+
+    return [{"name": "line_BC_nodes", "data": data}]
+
+
 def _build_phi_sign_point_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     """Build one point-scalar field per fracture holding its phi_sign level set.
 
@@ -656,23 +668,27 @@ def export_domain_properties(
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
+    BC_config: dict[str, Any],
 ) -> None:
     """Export the matrix domain's static properties to a standalone VTK file.
 
     Writes "domain.vtk", containing the per-element material property fields
-    and the per-node boundary group indicators that were previously only
-    exported alongside the step-0 solution (see `_build_initial_cell_data`
-    and `_build_boundary_group_scalars`), plus per-element mesh quality
-    metrics (scaled Jacobian, skewness, aspect ratio - see
+    and the per-node boundary group indicators (see `_build_initial_cell_data`
+    and `_build_boundary_group_scalars`), a combined indicator for all line
+    boundary condition nodes (see `_build_lineBC_scalars`), plus per-element
+    mesh quality metrics (scaled Jacobian, skewness, aspect ratio - see
     `_build_mesh_quality_cell_data`) and, when fracturing is on, one
     phi_sign level-set field per fracture (see
-    `_build_phi_sign_point_scalars`). Generated right after mesh processing
-    and before linear matrix assembly.
+    `_build_phi_sign_point_scalars`).
     """
     io_path = _prepare_output_directory(controls)
     filename = os.path.join(io_path, "domain.vtk")
 
-    scalardata_point = _build_boundary_group_scalars(mesh) + _build_phi_sign_point_scalars(mesh)
+    scalardata_point = (
+        _build_boundary_group_scalars(mesh)
+        + _build_phi_sign_point_scalars(mesh)
+        + _build_lineBC_scalars(mesh, BC_config)
+    )
     scalardata_cell = _build_initial_cell_data(mesh, material, mesh["nsd"]) + _build_mesh_quality_cell_data(
         mesh
     )
