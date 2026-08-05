@@ -398,7 +398,7 @@ Each boundary condition group must specify nodes using one or a combination of t
 * groupname_temperature: flow-weighted average temperature over the group nodes.
 
 #### Wellbore Constraints
-A `wellbore` group is specified like a `fluid_flux` group, plus a nested `wellbore` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
+A `wellbore` group is specified like a `fluid_flux` group, plus a nested `constraints` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
 
 ```yaml
 wellbore:
@@ -406,14 +406,16 @@ wellbore:
     values: [[0, 0.001], 100]
     function: "ramp"
     tag: "inlet"
-    wellbore:
+    constraints:
         maximum_pressure: 16.0e+6
         minimum_pressure: 1.0e+4
 ```
 
 * **`maximum_pressure`** / **`minimum_pressure`** *(float, optional)*: Pressure limits at the wellbore nodes. Either may be omitted to leave that side unbounded.
 
-At each timestep the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
+At each timestep, the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Each group is evaluated collectively - any one pressure node exceeding the constraints triggers the swap. For fluid flux constraints, line and face geometry types are integrated over the line/face and the prescribed integrated total flux is compared against the current integrated total flux.
+
+Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
 
 ### `simulation`
  Simulation controls

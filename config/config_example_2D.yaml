@@ -63,14 +63,14 @@ boundary_conditions:
           values: [[0, 0.001], 100]
           function: "ramp"
           tag: "inlet"
-          wellbore:
+          constraints:
               maximum_pressure: 3.0e+7
               minimum_pressure: 1.0e+4
         - lines: [[[-40.0, 35.9], [-33.7, 27.3]]]
           values: [[0, -0.001], 100]
           function: "ramp"
           tag: "outlet"
-          wellbore:
+          constraints:
               maximum_pressure: 3.0e+7
               minimum_pressure: 1.0e+4
   pressure_fixed:

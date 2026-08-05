@@ -154,9 +154,9 @@ def _allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
         elif current_flag == "pressure":
             group["function"] = "constant"
             group["values"] = (
-                [group["wellbore"]["maximum_pressure"]]
+                [group["constraints"]["maximum_pressure"]]
                 if group["pres_constraint"] == "max"
-                else [group["wellbore"]["minimum_pressure"]]
+                else [group["constraints"]["minimum_pressure"]]
             )
             bc_config["pressure_fixed"].append(group)
 

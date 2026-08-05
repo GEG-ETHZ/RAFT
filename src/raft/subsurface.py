@@ -383,8 +383,8 @@ def _check_BC_constraints(
 
         if curr_BC == "flux":
             p_local = p[group["nodes"]]
-            p_max = group["wellbore"]["maximum_pressure"]
-            p_min = group["wellbore"]["minimum_pressure"]
+            p_max = group["constraints"]["maximum_pressure"]
+            p_min = group["constraints"]["minimum_pressure"]
             # Check max pressure
             if np.any(p_local >= p_max):
                 WB_config[indx]["curr_BC"] = "pressure"

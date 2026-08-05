@@ -487,26 +487,26 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, A
         for group in BC_dict[BC_type]:
             BCnodes = []
             # Check if wellbore restrictions exist
-            if "wellbore" in group:
+            if "constraints" in group:
                 print("Wellbore group detected:")
                 config["simulation"]["wellbore_check"] += 1
 
-                max_pressure = group["wellbore"].get("maximum_pressure")
-                min_pressure = group["wellbore"].get("minimum_pressure")
+                max_pressure = group["constraints"].get("maximum_pressure")
+                min_pressure = group["constraints"].get("minimum_pressure")
 
                 if max_pressure is None and min_pressure is None:
                     Warning("Wellbore boundary condition specified without maximum or minimum pressure.")
 
                 if max_pressure is None:
                     max_pressure = 1.0e100
-                    group["wellbore"]["maximum_pressure"] = max_pressure
+                    group["constraints"]["maximum_pressure"] = max_pressure
                     print("  Maximum pressure unbounded (1.0e+100).")
                 else:
                     print(f"  Maximum pressure: {max_pressure:.2e}")
 
                 if min_pressure is None:
                     min_pressure = -1.0e100
-                    group["wellbore"]["minimum_pressure"] = min_pressure
+                    group["constraints"]["minimum_pressure"] = min_pressure
                     print("  Minimum pressure unbounded (1.0e+100). \n")
                 else:
                     print(f"  Minimum pressure: {min_pressure:.2e} \n")
