@@ -17,7 +17,7 @@ def _base_bc_config() -> dict[str, Any]:
                 "values": [0.01],
                 "function": "constant",
                 "tag": "well1",
-                "wellbore": {"maximum_pressure": 1.0e7, "minimum_pressure": 1.0e4},
+                "constraints": {"maximum_pressure": 1.0e7, "minimum_pressure": 1.0e4},
             }
         ],
         "pressure_fixed": [],
