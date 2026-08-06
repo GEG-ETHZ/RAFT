@@ -466,7 +466,7 @@ def _find_lineBC_connectivity(
     return line_nodes, line_conn
 
 
-def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:  # noqa
+def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
     1. Determine if any wellbore max pressures on/off exist
@@ -488,27 +488,33 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, A
             BCnodes = []
             # Check if wellbore restrictions exist
             if "constraints" in group:
-                print("Wellbore group detected:")
+                if verbose:
+                    print("Wellbore group detected:")
                 config["simulation"]["wellbore_check"] += 1
 
                 max_pressure = group["constraints"].get("maximum_pressure")
                 min_pressure = group["constraints"].get("minimum_pressure")
 
                 if max_pressure is None and min_pressure is None:
-                    Warning("Wellbore boundary condition specified without maximum or minimum pressure.")
+                    warnings.warn(
+                        "Wellbore boundary condition specified without maximum or minimum pressure.",
+                        stacklevel=2,
+                    )
 
                 if max_pressure is None:
                     max_pressure = 1.0e100
                     group["constraints"]["maximum_pressure"] = max_pressure
-                    print("  Maximum pressure unbounded (1.0e+100).")
-                else:
+                    if verbose:
+                        print("  Maximum pressure unbounded (1.0e+100).")
+                elif verbose:
                     print(f"  Maximum pressure: {max_pressure:.2e}")
 
                 if min_pressure is None:
                     min_pressure = -1.0e100
                     group["constraints"]["minimum_pressure"] = min_pressure
-                    print("  Minimum pressure unbounded (1.0e+100). \n")
-                else:
+                    if verbose:
+                        print("  Minimum pressure unbounded (1.0e+100). \n")
+                elif verbose:
                     print(f"  Minimum pressure: {min_pressure:.2e} \n")
 
             # Convert coordinates to node numbers
@@ -551,7 +557,7 @@ def preprocessing(
 
     mesh = load_mesh(config["mesh"], verbose)
 
-    config = _preprocess_BCs(mesh, config)
+    config = _preprocess_BCs(mesh, config, verbose)
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])

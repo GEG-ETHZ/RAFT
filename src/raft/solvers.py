@@ -500,7 +500,8 @@ def fully_coupled_time_integration(  # noqa
 
             # Check for nan or inf data and break
             if np.any(np.isnan(d)) or np.any(np.isinf(d)):
-                print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                if verbose:
+                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
                 break
 
             # Apply relaxation
@@ -526,7 +527,8 @@ def fully_coupled_time_integration(  # noqa
             iteration += 1
 
         if iteration >= iter_max:
-            print(" - CONVERGENCE FAILED")
+            if verbose:
+                print(" - CONVERGENCE FAILED")
             break
 
     # Calculate reaction flow rates at prescribed DoFs

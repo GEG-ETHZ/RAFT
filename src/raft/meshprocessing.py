@@ -193,7 +193,7 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
         with open(meshfile) as f:
             lines: list[str] = [line.strip() for line in f.readlines()]
     except FileNotFoundError:
-        print("Error: File {meshfile} not found.")
+        print(f"Error: File {meshfile} not found.")
         return None, None
 
     # Find the start of nodes and elements sections
