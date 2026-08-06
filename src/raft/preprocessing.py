@@ -74,7 +74,6 @@ DEFAULTS: dict[str, Any] = {
         "output_log": 0,
         "output_viscosity": 0,
         "rate_order": 1,
-        "fully_coupled": 0,
         "advection_on": 0,
         "pressurization_on": 0,
         "buoyancy_on": 0,

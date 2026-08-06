@@ -128,6 +128,7 @@ def _build_steady_state_controls(sim_control: dict[str, Any]) -> dict[str, Any]:
     sim_control_SS["buoyancy_on"] = 0
     sim_control_SS["steady_pressure"] = 1
     sim_control_SS["steady_temperature"] = 1
+    sim_control_SS["fully_coupled"] = False
     return sim_control_SS
 
 
@@ -296,6 +297,7 @@ def _perform_time_integration(
     supported_types = ["linearized", "fully_coupled"]
 
     if solver_type == "linearized":
+        sim_control["fully_coupled"] = False
         primary_variables, dt, converged, timestep_error = lin_extrap_time_integration(
             sim_control,
             mesh,

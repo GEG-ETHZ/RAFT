@@ -429,6 +429,7 @@ Output Controls
 * **`output_frequency`** *(integer, default: `1`)*: Controls how often outputs are written (every $N$ timesteps).
 * **`output_vtk`** *(integer/boolean, default: `0`)*: If set to `1`, enables writing mesh and solution fields to `.vtk` files for visualization.
 * **`output_viscosity`** *(integer/boolean, default: `0`)*: If set to `1`, enables output of fluid viscosity fields.
+* **`output_log`** *(integer/boolean, default: `0`)*: If set to `1`, logs console output to a file in the output directory.
 * **`output_directory`** *(string, optional)*: Custom output directory path. Defaults to `outputs/` under the repository root.
 
 Physical controls
