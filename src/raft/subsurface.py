@@ -9,9 +9,10 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .logging_utils import RunLogger
 from .matrixassembly import integrate_linear_matrices
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
-from .postprocessing import export_domain_properties, postprocessing
+from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
 from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
@@ -434,139 +435,146 @@ def main(  # noqa
         args = parser.parse_args()
         config_name = args.config
 
-    if verbose:
-        print("RAFT - RESERVOIR ANALYSIS FOR TANGO \n")
-        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        print("Beginning simulation " + config_name + "\n")
-
-    # ----- Load config and mesh
-    config, mesh = preprocessing(config_name, config_dir, verbose)
-    material = config["material"]
-    BC_config = config["boundary_conditions"]
-    controls = config["simulation"]
-    # Copy config name and directory to controls
-    controls["config_name"] = config["config_name"]
-    controls["config_dir"] = config["config_dir"]
-
-    # ----- Initialize simulation parameters
-
-    ## Numerical controls
-    n = 0  # Time step counter
-    t = controls["t_start"]
-    t_end = controls["t_end"]
-    # initialize timesteps and store 3 timesteps (necessary for higher order)
-    # dt = [dt_n, dt_(n-1), dt_(n-2)]
-    dt = controls["timestep"] * np.ones(3)
-    # Gather any important time points as specified in the boundary conditions
-    critical_times = get_critical_times(config["boundary_conditions"], t_end)
-
-    ## Initialize vectors
-    primary_variables = {}  # storage structure for all primary variables and results
-    p_dofs = np.arange(0, mesh["nn_total"])
-    T_dofs = np.arange(0, mesh["nn_total"])
-    primary_variables["p_dofs"] = p_dofs
-    primary_variables["T_dofs"] = T_dofs
-    # Vectors of primary DoFs - ndof x 4
-    # [t_n, t_(n-1), t_(n-2), ...]
-    primary_variables["p"] = np.ones((len(p_dofs), 4))
-    primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
-
-    ## Wellbore boundary conditions
-    WB_on = controls["wellbore_check"]
-    if WB_on:
-        BC_config = _initialize_WB_checks(BC_config)
-
-    # Linear Matrix Assembly
-    #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
-    #                        there should be an edge integral perform to remove its contribution
-    #                        along the upper surfaces.
-    if verbose:
-        print("     Exporting domain material properties...")
-    export_domain_properties(mesh, controls, material, BC_config)
-
-    if verbose:
-        print("     Assembling linear matrices...")
-    matrices_linear, material, mesh = integrate_linear_matrices(mesh, material, controls)
-
-    # --- Initial Conditions
-    # Update Boundary Conditions for initial step
-    boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
-    q = np.zeros((mesh["nn_total"], 1))
-    primary_variables["q"] = q
-
-    [primary_variables, material] = _assign_initial_conditions(
-        config["initial_conditions"],
-        controls,
-        mesh,
-        material,
-        matrices_linear,
-        primary_variables,
-        boundary_conditions,
-        n,
-        verbose,
-    )
-
-    # --- Export initial condition
-    if verbose:
-        print("Export initial condition")
-    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
-    n += 1
-
-    # ---- Time integration
-    while True:
+    with RunLogger() as run_logger:
         if verbose:
-            print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+            print("RAFT - RESERVOIR ANALYSIS FOR TANGO \n")
+            print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            print("Beginning simulation " + config_name + "\n")
 
-        while True:
-            # Update Boundary Conditions
-            boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+        # ----- Load config and mesh
+        config, mesh = preprocessing(config_name, config_dir, verbose)
+        material = config["material"]
+        BC_config = config["boundary_conditions"]
+        controls = config["simulation"]
+        # Copy config name and directory to controls
+        controls["config_name"] = config["config_name"]
+        controls["config_dir"] = config["config_dir"]
 
-            # Perform time integration
-            primary_variables, dt, converged, timestep_error = _perform_time_integration(
-                controls,
-                mesh,
-                material,
-                matrices_linear,
-                primary_variables,
-                boundary_conditions,
-                dt,
-                n,
-                verbose,
-            )
+        if controls["output_log"]:
+            run_logger.attach_file(prepare_output_directory(controls))
 
-            # Check BC constraints satisfied
-            BC_satisfied, BC_config = _check_BC_constraints(BC_config, primary_variables, t, WB_on, verbose)
-            if BC_satisfied:
-                break
+        # ----- Initialize simulation parameters
 
-        # Check error and update time step
-        t0 = t
-        t, dt, converged = _update_time(
-            controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
+        ## Numerical controls
+        n = 0  # Time step counter
+        t = controls["t_start"]
+        t_end = controls["t_end"]
+        # initialize timesteps and store 3 timesteps (necessary for higher order)
+        # dt = [dt_n, dt_(n-1), dt_(n-2)]
+        dt = controls["timestep"] * np.ones(3)
+        # Gather any important time points as specified in the boundary conditions
+        critical_times = get_critical_times(config["boundary_conditions"], t_end)
+
+        ## Initialize vectors
+        primary_variables = {}  # storage structure for all primary variables and results
+        p_dofs = np.arange(0, mesh["nn_total"])
+        T_dofs = np.arange(0, mesh["nn_total"])
+        primary_variables["p_dofs"] = p_dofs
+        primary_variables["T_dofs"] = T_dofs
+        # Vectors of primary DoFs - ndof x 4
+        # [t_n, t_(n-1), t_(n-2), ...]
+        primary_variables["p"] = np.ones((len(p_dofs), 4))
+        primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
+
+        ## Wellbore boundary conditions
+        WB_on = controls["wellbore_check"]
+        if WB_on:
+            BC_config = _initialize_WB_checks(BC_config)
+
+        # Linear Matrix Assembly
+        #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
+        #                        there should be an edge integral perform to remove its contribution
+        #                        along the upper surfaces.
+        if verbose:
+            print("     Exporting domain material properties...")
+        export_domain_properties(mesh, controls, material, BC_config)
+
+        if verbose:
+            print("     Assembling linear matrices...")
+        matrices_linear, material, mesh = integrate_linear_matrices(mesh, material, controls)
+
+        # --- Initial Conditions
+        # Update Boundary Conditions for initial step
+        boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+        q = np.zeros((mesh["nn_total"], 1))
+        primary_variables["q"] = q
+
+        [primary_variables, material] = _assign_initial_conditions(
+            config["initial_conditions"],
+            controls,
+            mesh,
+            material,
+            matrices_linear,
+            primary_variables,
+            boundary_conditions,
+            n,
+            verbose,
         )
 
-        # Initialize next timestep
-        if converged:
-            if verbose:
-                print("     Postprocessing...")
-            postprocessing(n, mesh, controls, material, BC_config, primary_variables, t0, verbose)
-            n += 1
-            # rollover update primary variables, column 0 gets overwritten in time integration
-            primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
-            primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
-            # update any WB boundary condition flags
-            if WB_on:
-                BC_config = _update_WB_flags(BC_config)
+        # --- Export initial condition
+        if verbose:
+            print("Export initial condition")
+        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+        n += 1
 
-        # Check end condition
-        if t > t_end:
+        # ---- Time integration
+        while True:
             if verbose:
-                print(
-                    "Simulation complete. Output files are stored in: \n" + controls["output_directory_full"]
+                print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+
+            while True:
+                # Update Boundary Conditions
+                boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+
+                # Perform time integration
+                primary_variables, dt, converged, timestep_error = _perform_time_integration(
+                    controls,
+                    mesh,
+                    material,
+                    matrices_linear,
+                    primary_variables,
+                    boundary_conditions,
+                    dt,
+                    n,
+                    verbose,
                 )
-            break
 
-    return primary_variables, mesh
+                # Check BC constraints satisfied
+                BC_satisfied, BC_config = _check_BC_constraints(
+                    BC_config, primary_variables, t, WB_on, verbose
+                )
+                if BC_satisfied:
+                    break
+
+            # Check error and update time step
+            t0 = t
+            t, dt, converged = _update_time(
+                controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
+            )
+
+            # Initialize next timestep
+            if converged:
+                if verbose:
+                    print("     Postprocessing...")
+                postprocessing(n, mesh, controls, material, BC_config, primary_variables, t0, verbose)
+                n += 1
+                # rollover update primary variables, column 0 gets overwritten in time integration
+                primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
+                primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+                # update any WB boundary condition flags
+                if WB_on:
+                    BC_config = _update_WB_flags(BC_config)
+
+            # Check end condition
+            if t > t_end:
+                if verbose:
+                    print(
+                        "Simulation complete. Output files are stored in: \n"
+                        + controls["output_directory_full"]
+                    )
+                break
+
+        return primary_variables, mesh
 
 
 if __name__ == "__main__":

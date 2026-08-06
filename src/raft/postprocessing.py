@@ -326,7 +326,7 @@ def _sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.ND
     return data
 
 
-def _prepare_output_directory(controls: dict[str, Any]) -> str:
+def prepare_output_directory(controls: dict[str, Any]) -> str:
     """Resolve this run's output directory, creating it if needed, and record it on config."""
     base_path = controls.get("output_directory", _DEFAULT_OUTPUT_DIR)
     config_stem = Path(controls["config_name"]).stem
@@ -681,7 +681,7 @@ def export_domain_properties(
     phi_sign level-set field per fracture (see
     `_build_phi_sign_point_scalars`).
     """
-    io_path = _prepare_output_directory(controls)
+    io_path = prepare_output_directory(controls)
     filename = os.path.join(io_path, "domain.vtk")
 
     scalardata_point = (
@@ -717,7 +717,7 @@ def postprocessing(
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
     """
-    io_path = _prepare_output_directory(controls)
+    io_path = prepare_output_directory(controls)
     output_now = (n % controls["output_frequency"]) == 0
 
     if output_now and controls["output_vtk"]:

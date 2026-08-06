@@ -108,6 +108,7 @@ simulation:
   # Output
   output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
+  output_log: 1        # log console output to file
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
   output_viscosity: 1
 

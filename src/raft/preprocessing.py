@@ -71,6 +71,7 @@ DEFAULTS: dict[str, Any] = {
         "solver_type": "linearized",
         "output_frequency": 1,
         "output_vtk": 0,
+        "output_log": 0,
         "output_viscosity": 0,
         "rate_order": 1,
         "fully_coupled": 0,
