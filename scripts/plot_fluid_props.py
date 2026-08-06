@@ -78,26 +78,26 @@ for P_MPa in pressures_MPa:
         d_cp_dP_list.append(d_cp_dP)
         d_visc_dP_list.append(d_visc_dP)
 
-    density = np.array(density)
-    cp = np.array(cp)
-    viscosity = np.array(viscosity)
+    density_arr = np.array(density)
+    cp_arr = np.array(cp)
+    viscosity_arr = np.array(viscosity)
 
     # Temperature derivatives (Col 2)
     d_density_dT = np.array(d_density_dT_exact)  # noqa
-    d_cp_dT = np.gradient(cp, temperatures_C)  # noqa
-    d_visc_dT = np.gradient(viscosity, temperatures_C)  # noqa
+    d_cp_dT = np.gradient(cp_arr, temperatures_C)  # noqa
+    d_visc_dT = np.gradient(viscosity_arr, temperatures_C)  # noqa
 
     # Pressure derivatives (Col 3)
     d_density_dP = np.array(d_density_dP_exact)  # noqa
-    d_cp_dP = np.array(d_cp_dP_list)  # noqa
-    d_visc_dP = np.array(d_visc_dP_list)  # noqa
+    d_cp_dP_arr = np.array(d_cp_dP_list)  # noqa
+    d_visc_dP_arr = np.array(d_visc_dP_list)  # noqa
 
     label = f"{P_MPa:g} MPa"
 
     # Column 1: Values
-    axes[0, 0].plot(temperatures_C, density, label=label)
-    axes[1, 0].plot(temperatures_C, cp, label=label)
-    axes[2, 0].plot(temperatures_C, viscosity, label=label)
+    axes[0, 0].plot(temperatures_C, density_arr, label=label)
+    axes[1, 0].plot(temperatures_C, cp_arr, label=label)
+    axes[2, 0].plot(temperatures_C, viscosity_arr, label=label)
 
     # Column 2: Temperature Derivatives (∂ / ∂T)
     axes[0, 1].plot(temperatures_C, d_density_dT, label=label)
@@ -106,8 +106,8 @@ for P_MPa in pressures_MPa:
 
     # Column 3: Pressure Derivatives (∂ / ∂P)
     axes[0, 2].plot(temperatures_C, d_density_dP, label=label)
-    axes[1, 2].plot(temperatures_C, d_cp_dP, label=label)
-    axes[2, 2].plot(temperatures_C, d_visc_dP, label=label)
+    axes[1, 2].plot(temperatures_C, d_cp_dP_arr, label=label)
+    axes[2, 2].plot(temperatures_C, d_visc_dP_arr, label=label)
 
 # Axis Labels
 axes[0, 0].set_ylabel("Density (kg/m³)")
