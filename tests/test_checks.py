@@ -589,24 +589,22 @@ def check_NL_viscosity(
     T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
     T_exact = T0 + (T1 - T0) * T_exact
 
-    # Viscosity
+    # Viscosity - real-fluid (CoolProp) viscosity. Self-consistent with the local pressure
+    # via fixed-point refinement: p_exact depends on visc_exact(p), and vice versa.
     visc_coeff = mat["fluid"]["viscosity"]
-    visc_exact = visc_coeff[0] * np.exp(
-        visc_coeff[1] / T_exact + visc_coeff[2] * T_exact + visc_coeff[3] * T_exact**2
-    )
-
-    # pressure
     k = mat["solid"]["permeability"]
-    p_exact = np.empty(100)
-    p_exact[0] = p0
     dx = x[1] * L
-    for i in range(1, 100):
-        p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
+    p_exact = np.full(100, config["initial_conditions"]["p_ini"])
+    for _ in range(3):
+        visc_exact, _ = get_viscosity(T_exact, p_exact, visc_coeff)
+        p_exact[0] = p0
+        for i in range(1, 100):
+            p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
 
     # extract results
     p = results["p"][:, 0]
     T = results["T"][:, 0]
-    visc_approx, _ = get_viscosity(T[line_1], visc_coeff)
+    visc_approx, _ = get_viscosity(T[line_1], p[line_1], visc_coeff)
 
     if plot_on:
         plt.figure()

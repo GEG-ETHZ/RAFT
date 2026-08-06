@@ -10,6 +10,7 @@ import scipy.sparse
 import yaml
 from scipy.sparse.csgraph import dijkstra
 
+from .matprops import COOLPROP_FLUID
 from .meshprocessing import _get_element_face_lists, load_mesh
 
 # ----- Default values for config file
@@ -118,26 +119,14 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     """
     # Viscosity
     mu = config["material"]["fluid"]["viscosity"]
-    if isinstance(mu, float):  # constant
-        config["simulation"]["viscosity_nonconstant"] = 0
-    elif not isinstance(mu, list) or len(mu) < 1:  # not a list
+    if not isinstance(mu, (int, float)):
         raise ValueError(f"Incompatible viscosity format: {mu}")
-    elif len(mu) == 1:  # single list -> transfer to float
-        config["material"]["fluid"]["viscosity"] = mu[0]
-        config["simulation"]["viscosity_nonconstant"] = 0
-    else:  # non-constant function
-        coeff = np.zeros((4,))
-        for i in range(len(mu)):
-            coeff[i] = mu[i]
-        if verbose:
-            print(
-                f"""\nViscosity = {coeff[0]:.2e} * exp({coeff[1]:.2e} / T
-                + {coeff[2]:.2e} * T + {coeff[3]:.2e} * T^2 )"""
-            )
-            print("T is assumed in K.")
-
-        config["material"]["fluid"]["viscosity"] = coeff
+    elif mu == 0:  # non-constant: real-fluid viscosity from CoolProp
         config["simulation"]["viscosity_nonconstant"] = 1
+        if verbose:
+            print(f"\nViscosity computed from CoolProp ({COOLPROP_FLUID}) as a function of T and p.")
+    else:  # constant
+        config["simulation"]["viscosity_nonconstant"] = 0
 
     # Axisymmetry
     axisymmetric_on = config["simulation"]["axisymmetric_on"]

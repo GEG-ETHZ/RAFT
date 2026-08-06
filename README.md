@@ -152,7 +152,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
-  * **`viscosity`** *(float or list, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Viscosity also supports a list of floats `[A, B, C, D]` for non-linear viscosity form: $\mu = A e^{-B/T + CT + DT^2}$
+  * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Set to `0` to instead use a temperature- and pressure-dependent, real-fluid viscosity (water) looked up from CoolProp. Temperature and pressure are clipped to $274$–$600\,\text{K}$ and $0.1$–$100\,\text{MPa}$ before the lookup, to keep solver iterates within CoolProp's valid range; pressures should stay comfortably within this range, since the lower bound sits close to water's saturation curve at higher temperatures.
 
 * **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s), used in the [fracture governing equations](theory.md#fracture-coupling). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.

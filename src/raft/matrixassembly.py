@@ -1110,7 +1110,8 @@ def integrate_nonlinear_matrices(  # noqa
                 # If mu is nonlinear, the pressure diffusion is also non-linear and must
                 # be re-integrated at each timestep.
                 T_q = N_q @ Te  # quadrature point temperatures
-                mu_q, dmu_dT_q = get_viscosity(T_q, mu)  # quadrature point viscosities
+                P_q = N_q @ pe  # quadrature point pressures
+                mu_q, dmu_dT_q = get_viscosity(T_q, P_q, mu)  # quadrature point viscosities
 
                 advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
                 kf_b = (
@@ -1251,6 +1252,7 @@ def integrate_NLpressure_matrices(  # noqa
     coupling (responsive to the same nonlinear viscosity) in the same pass.
     """
     T = primary_variables["T"][:, 0]
+    p = primary_variables["p"][:, 0]
     mu_coeff = mat["fluid"]["viscosity"]
     alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
@@ -1329,8 +1331,10 @@ def integrate_NLpressure_matrices(  # noqa
 
             # vectorized integration
             Te = T[enodes_dof].reshape(-1, 1)  # element nodal temperatures
+            pe = p[enodes_dof].reshape(-1, 1)  # element nodal pressures
             T_q = N_q @ Te  # quadrature point temperatures
-            mu_q, _ = get_viscosity(T_q, mu_coeff)  # quadrature point viscosities
+            P_q = N_q @ pe  # quadrature point pressures
+            mu_q, _ = get_viscosity(T_q, P_q, mu_coeff)  # quadrature point viscosities
 
             kf_b = (
                 ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)

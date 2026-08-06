@@ -20,13 +20,13 @@ material:
       therm_cond:   3         # W/mK
       therm_expansion: 00.0e-6 # 1/K
       specific_heat: 30       # J/kgK
-      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]        # m^2 (permeability)
+      viscosity: 0        # 0 -> non-constant, real-fluid viscosity from CoolProp
 
 
 initial_conditions:
   assignment: "BC_compatible"
   T_ini: 286
-  p_ini: 1.0e+5
+  p_ini: 8.0e+7
   T_grad: 0.1
   p_grad: 1.0e+3
 
@@ -34,7 +34,7 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - faces: [z_min]
-        values: [0]
+        values: [8.0e+7]
 
   temperature_fixed:
       - faces: [z_min]

@@ -158,10 +158,8 @@ def compute_fluid_flux(  # noqa
 
     # Material properties - fluid
     mu = mat["fluid"]["viscosity"]
-    mu_nonlinear = False
-    if isinstance(mu, np.ndarray):
-        mu_nonlinear = True
-        mu_coeff = mu
+    mu_nonlinear = mu == 0
+    mu_coeff = mu
 
     for r in range(num_regions):
         if isfracture:
@@ -200,7 +198,7 @@ def compute_fluid_flux(  # noqa
             pe = p[enodes]  # element nodal pressures
             if mu_nonlinear:
                 Te = T[enodes]
-                mu, _ = get_viscosity(Te, mu_coeff)
+                mu, _ = get_viscosity(Te, pe, mu_coeff)
                 mu = mu[:, None]
 
             gradp_all = B_q @ pe
@@ -353,7 +351,7 @@ def _build_point_scalars(
     ]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
-            mu, _ = get_viscosity(T, mat["fluid"]["viscosity"])
+            mu, _ = get_viscosity(T, p, mat["fluid"]["viscosity"])
         else:
             mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})

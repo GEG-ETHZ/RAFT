@@ -39,7 +39,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
+      viscosity: 0        # 0 -> non-constant, real-fluid viscosity from CoolProp
 
   # Fracture parameters
   fracture:
