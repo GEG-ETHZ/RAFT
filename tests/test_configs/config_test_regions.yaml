@@ -90,7 +90,7 @@ simulation:
   rate_order: 1     # order of rate of change approximation
   advection_on: 0
   pressurization_on: 0
-  buoyancy_on: 0
+  gravity: 0.0
   steady_pressure: 1
   steady_temperature: 1
 

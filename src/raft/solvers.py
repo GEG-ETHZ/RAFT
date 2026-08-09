@@ -146,7 +146,6 @@ def lin_extrap_time_integration(
     rate_order = sim_control["rate_order"]
     adv_on = sim_control["advection_on"]
     prez_on = sim_control["pressurization_on"]
-    buoy_on = sim_control["buoyancy_on"]
     steady_pres = sim_control["steady_pressure"]
     steady_temp = sim_control["steady_temperature"]
     mu_nonlinear = sim_control["viscosity_nonconstant"]
@@ -185,7 +184,7 @@ def lin_extrap_time_integration(
     if verbose:
         print("     Solving pressure equations...")
     F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-    F_bT = buoy_on * (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+    F_bT = (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
 
     # Assemble combined matrices
     A = (cv[0] * KM) + Kpp
@@ -371,7 +370,6 @@ def fully_coupled_time_integration(  # noqa
 
     adv_on = sim_control["advection_on"]
     prez_on = sim_control["pressurization_on"]
-    buoy_on = sim_control["buoyancy_on"]
     steady_pres = sim_control["steady_pressure"]
     steady_temp = sim_control["steady_temperature"]
     mu_nonlinear = sim_control["viscosity_nonconstant"]
@@ -454,9 +452,7 @@ def fully_coupled_time_integration(  # noqa
         T_n = T[:, 0].reshape(-1, 1)
         p_n = p[:, 0].reshape(-1, 1)
 
-        F_bT = (
-            (KbT @ (T[:, 0] - material["T_0"])).reshape(-1, 1) if buoy_on else np.zeros((nn, 1))
-        )  # Buoyancy force vector
+        F_bT = (KbT @ (T[:, 0] - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
         F_pT = (KpT @ Tdot).reshape(-1, 1) if prez_on else np.zeros((nn, 1))  # Pressurization force vector
 
         KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
@@ -483,7 +479,7 @@ def fully_coupled_time_integration(  # noqa
 
             # Assemble Jacobian matrix
             App = -KM * cv[0] - Kpp  # correct
-            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p
+            ApT = prez_on * (cv[0] * KpT) + (KbT + KpT_mu_b) + KpT_mu_p
             ATp = -(KATp + K_stab_Tp) * adv_on  # correct
             ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct
 

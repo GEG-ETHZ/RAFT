@@ -79,7 +79,7 @@ DEFAULTS: dict[str, Any] = {
         "rate_order": 1,
         "advection_on": 0,
         "pressurization_on": 0,
-        "buoyancy_on": 0,
+        "gravity": 0.0,
         "steady_pressure": 0,
         "steady_temperature": 0,
         "axisymmetric_on": 0,

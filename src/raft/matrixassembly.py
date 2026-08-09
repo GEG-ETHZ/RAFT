@@ -16,10 +16,10 @@ from .matprops import get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
-def _get_gravity(nsd: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+def _get_gravity(nsd: int, magnitude: float) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     ng = np.zeros((nsd, 1))
     ng[nsd - 1] = 1.0  # gravity normal
-    return -9.81 * ng, ng
+    return magnitude * ng, ng
 
 
 def _make_sparse(
@@ -608,7 +608,7 @@ def integrate_linear_matrices(  # noqa
         mu = mat["fluid"]["viscosity"]
         alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
-    g, ng = _get_gravity(mesh["nsd"])
+    g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
     (
@@ -1058,7 +1058,7 @@ def integrate_nonlinear_matrices(  # noqa
             vec_counter_mm = 0
 
     # ----- gravity vector
-    g, ng = _get_gravity(mesh["nsd"])
+    g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
@@ -1258,7 +1258,7 @@ def integrate_NLpressure_matrices(  # noqa
     rho_f = mat["fluid"]["density"]
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
-    g, ng = _get_gravity(mesh["nsd"])
+    g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
 
     list_of_matrices = ["Kpp", "KbT"]
 

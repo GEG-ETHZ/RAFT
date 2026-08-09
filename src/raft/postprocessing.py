@@ -359,7 +359,7 @@ def _build_point_scalars(
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
     if controls["output_density"]:
-        if controls["buoyancy_on"]:
+        if controls["gravity"] != 0.0:
             rho, _ = get_density(T, p, T0, mat["fluid"]["therm_expansion"], mat["fluid"]["density"])
         else:
             rho = mat["fluid"]["density"] * np.ones(mesh["nn"])

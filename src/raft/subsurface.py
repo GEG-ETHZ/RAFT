@@ -119,13 +119,10 @@ def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
 def _build_steady_state_controls(sim_control: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
-    Pressurization is neglected since it is time-dependent, and buoyancy is neglected
-    because the steady-state initial condition has no reference temperature. Buoyancy
-    is instead accounted for in the hydrostatic pressure, which does not affect flow.
+    Pressurization is neglected since it is time-dependent.
     """
     sim_control_SS = sim_control.copy()
     sim_control_SS["pressurization_on"] = 0
-    sim_control_SS["buoyancy_on"] = 0
     sim_control_SS["steady_pressure"] = 1
     sim_control_SS["steady_temperature"] = 1
     sim_control_SS["fully_coupled"] = False
