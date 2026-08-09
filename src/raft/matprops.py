@@ -4,18 +4,14 @@ import CoolProp.CoolProp as CP  # noqa: N817
 import numpy as np
 import numpy.typing as npt
 
-# Fluid used for CoolProp-based (nonconstant) viscosity, selected when the config
-# viscosity is set to 0.
-COOLPROP_FLUID = "WATER"
-
 _abstract_state: CP.AbstractState | None = None
 
 
-def _get_abstract_state() -> CP.AbstractState:
-    """Lazily create and cache the CoolProp AbstractState used for viscosity lookups."""
+def _get_abstract_state(fluid_type: str) -> CP.AbstractState:
+    """Create and cache the CoolProp AbstractState used for viscosity lookups."""
     global _abstract_state
     if _abstract_state is None:
-        _abstract_state = CP.AbstractState("HEOS", COOLPROP_FLUID)
+        _abstract_state = CP.AbstractState("HEOS", fluid_type)
     return _abstract_state
 
 
@@ -23,6 +19,7 @@ def get_viscosity(
     T: npt.NDArray[np.float64],
     P: npt.NDArray[np.float64],
     viscosity_coefficients: float,
+    fluid_type: str,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get viscosity and its temperature derivative, at temperature T [K] and pressure P [Pa].
 
@@ -42,7 +39,7 @@ def get_viscosity(
     T_arr = np.clip(T_arr, 274.0, 600.0)
     P_arr = np.broadcast_to(np.asarray(P, dtype=float), T_arr.shape)
     P_arr = np.clip(P_arr, 1.0e5, 1.0e8)
-    AS = _get_abstract_state()
+    AS = _get_abstract_state(fluid_type)
 
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a central difference.
     dT = 0.5  # K
@@ -68,6 +65,7 @@ def get_density(
     T0: npt.NDArray[np.float64],
     alpha: float,
     rho_0: float,
+    fluid_type: str,  # noqa
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get density and its temperature derivative, at temperature T [K] and pressure P [Pa]."""
     density = rho_0 * (1 - alpha * (T - T0))

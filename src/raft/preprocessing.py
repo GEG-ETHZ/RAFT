@@ -10,7 +10,6 @@ import scipy.sparse
 import yaml
 from scipy.sparse.csgraph import dijkstra
 
-from .matprops import COOLPROP_FLUID
 from .meshprocessing import _get_element_face_lists, load_mesh
 
 # ----- Default values for config file
@@ -37,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
             "rotation_z": 0.0,  # rotation of local coordinates around z-axis (degrees)
         },
         "fluid": {
+            "fluid_type": "WATER",  # Fluid name for property lookup
             "bulk_mod": 2.0e9,  # Pa
             "density": 1000,  # kg/m^3
             "reference_temperature": 293,  # K
@@ -119,6 +119,7 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     This primarily includes non-constant material properties, but also includes
     non-feasible combinations of settings.
     """
+    fluid_name = config["material"]["fluid"]["fluid_type"]
     # Viscosity
     mu = config["material"]["fluid"]["viscosity"]
     if not isinstance(mu, (int, float)):
@@ -126,7 +127,18 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     elif mu == 0:  # non-constant: real-fluid viscosity from CoolProp
         config["simulation"]["viscosity_nonconstant"] = 1
         if verbose:
-            print(f"\nViscosity computed from CoolProp ({COOLPROP_FLUID}) as a function of T and p.")
+            print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
+    else:  # constant
+        config["simulation"]["viscosity_nonconstant"] = 0
+
+    # Density
+    rho = config["material"]["fluid"]["density"]
+    if not isinstance(rho, (int, float)):
+        raise ValueError(f"Incompatible density format: {rho}")
+    elif mu == 0:  # non-constant: real-fluid viscosity from CoolProp
+        config["simulation"]["density_nonconstant"] = 1
+        if verbose:
+            print(f"\nDensity computed from CoolProp ({fluid_name}) as a function of T and p.")
     else:  # constant
         config["simulation"]["viscosity_nonconstant"] = 0
 

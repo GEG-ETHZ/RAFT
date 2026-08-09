@@ -1011,6 +1011,7 @@ def integrate_nonlinear_matrices(  # noqa
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
 
+    fluid_type = mat["fluid"]["fluid_type"]
     mu = mat["fluid"]["viscosity"]
     cp_f = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
@@ -1111,7 +1112,7 @@ def integrate_nonlinear_matrices(  # noqa
                 # be re-integrated at each timestep.
                 T_q = N_q @ Te  # quadrature point temperatures
                 P_q = N_q @ pe  # quadrature point pressures
-                mu_q, dmu_dT_q = get_viscosity(T_q, P_q, mu)  # quadrature point viscosities
+                mu_q, dmu_dT_q = get_viscosity(T_q, P_q, mu, fluid_type)  # quadrature point viscosities
 
                 advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
                 kf_b = (
@@ -1253,6 +1254,7 @@ def integrate_NLpressure_matrices(  # noqa
     """
     T = primary_variables["T"][:, 0]
     p = primary_variables["p"][:, 0]
+    fluid_type = mat["fluid"]["fluid_type"]
     mu_coeff = mat["fluid"]["viscosity"]
     alpha_f = mat["fluid"]["therm_expansion"]
     rho_f = mat["fluid"]["density"]
@@ -1334,7 +1336,7 @@ def integrate_NLpressure_matrices(  # noqa
             pe = p[enodes_dof].reshape(-1, 1)  # element nodal pressures
             T_q = N_q @ Te  # quadrature point temperatures
             P_q = N_q @ pe  # quadrature point pressures
-            mu_q, _ = get_viscosity(T_q, P_q, mu_coeff)  # quadrature point viscosities
+            mu_q, _ = get_viscosity(T_q, P_q, mu_coeff, fluid_type)  # quadrature point viscosities
 
             kf_b = (
                 ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)

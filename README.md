@@ -128,7 +128,7 @@ Each fracture specification requires three fields:
 
 Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
 
-> **IMPORTANT NOTE**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
+> **IMPORTANT NOTE FOR FRACTURE SPECIFICATIONS**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
 
 ### `material`
 * **`solid`**: Rock mass properties. Rock mass properties are defined per region. If regions are defined, RAFT expects a list with a number of entries equal to the number of regions. Region numbers correspond to property indices.
@@ -147,13 +147,19 @@ Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here;
 These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R_z$ to rotate the local coordinate system along which the rock mass anisotropy is defined. The rotation is applied to both anisotropic permeability ($K = R \operatorname{diag}(k) R^T$) and anisotropic solid thermal conductivity ($\Lambda_s = R \operatorname{diag}(\lambda_s) R^T$).
 
 * **`fluid`**: Fluid phase properties.
+  * **`fluid_type`** *(string, default: `"WATER"`)*: Set the working fluid in the reservoir. Required when using nonlinear properties, as it controls the property lookup in CoolProp. E.g. `"WATER"` for water or `"CO2"` for supercritical CO2.
   * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
   * **`density`** *(float, default: `1000.0`)*: Fluid density in $\text{kg/m}^3$.
-  * **`reference_temperature`** *(float, default: `293.0`)*: Reference temperature at which density is prescribed in $K$.
+    * **Nonlinear Option:** Set to `0` to instead use a temperature- and pressure-dependent density curve from CoolProp.
+  * **`reference_temperature`** *(float, default: `293.0`)*: Reference temperature at which density is prescribed. Not used when nonlinear density is specified.
   * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
+    * **Nonlinear Option:** Not used when nonlinear density is specified. Instead, the instantaneous thermal expansion coefficient is calculated as $\alpha_f = -\frac{1}{\rho_f} \frac{\partial \rho_f}{\partial T} \big|_p$. This controls the pressurization.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.
-  * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$. Set to `0` to instead use a temperature- and pressure-dependent, real-fluid viscosity (water) looked up from CoolProp. Temperature and pressure are clipped to $274$–$600\,\text{K}$ and $0.1$–$100\,\text{MPa}$ before the lookup, to keep solver iterates within CoolProp's valid range; pressures should stay comfortably within this range, since the lower bound sits close to water's saturation curve at higher temperatures.
+  * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
+    * **Nonlinear Option:** Set to `0` to instead use a temperature- and pressure-dependent, real-fluid viscosity (water) looked up from CoolProp.
+
+> **IMPORTANT NOTE FOR NONLINEAR FLUID PROPERTIES**: When using non-linear material properties, the magnitude of pressure and temperature matter. Temperature __must__ be specified in Kelvin, while pressure boundary conditions should be specified above the fluid's saturation point. Temperature and pressure are clipped to $274$–$600\,\text{K}$ and $0.1$–$100\,\text{MPa}$ before the lookup, to keep solver iterates within CoolProp's valid range; pressures should stay comfortably within this range, since the lower bound sits close to water's saturation curve at higher temperatures.
 
 * **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s), used in the [fracture governing equations](theory.md#fracture-coupling). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.
