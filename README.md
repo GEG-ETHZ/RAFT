@@ -149,6 +149,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 * **`fluid`**: Fluid phase properties.
   * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
   * **`density`** *(float, default: `1000.0`)*: Fluid density in $\text{kg/m}^3$.
+  * **`reference_temperature`** *(float, default: `293.0`)*: Reference temperature at which density is prescribed in $K$.
   * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.
   * **`specific_heat`** *(float, default: `4180.0`)*: Fluid specific heat capacity in $\text{J/kg}\cdot\text{K}$.

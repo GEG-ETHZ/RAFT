@@ -36,10 +36,11 @@ material:
   fluid:
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
+      reference_temperature: 413 # Reference temperature for density (C/K)
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0        # 0 -> non-constant, real-fluid viscosity from CoolProp
+      viscosity: 0        # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:
@@ -111,12 +112,13 @@ simulation:
   output_log: 1        # log console output to file
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
   output_viscosity: 1
+  output_density: 1
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  buoyancy_on: 0
+  buoyancy_on: 1
   steady_pressure: 0
   steady_temperature: 0
   axisymmetric_on: 0

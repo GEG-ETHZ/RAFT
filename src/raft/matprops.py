@@ -6,7 +6,7 @@ import numpy.typing as npt
 
 # Fluid used for CoolProp-based (nonconstant) viscosity, selected when the config
 # viscosity is set to 0.
-COOLPROP_FLUID = "Water"
+COOLPROP_FLUID = "WATER"
 
 _abstract_state: CP.AbstractState | None = None
 
@@ -60,3 +60,18 @@ def get_viscosity(
         dmudT.flat[i] = (mu_plus - mu_minus) / (2 * dT)
 
     return mu.reshape(np.shape(T)), dmudT.reshape(np.shape(T))
+
+
+def get_density(
+    T: npt.NDArray[np.float64],
+    P: npt.NDArray[np.float64],  # noqa
+    T0: npt.NDArray[np.float64],
+    alpha: float,
+    rho_0: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Get density and its temperature derivative, at temperature T [K] and pressure P [Pa]."""
+    density = rho_0 * (1 - alpha * (T - T0))
+
+    drho_dT = rho_0 * alpha * np.ones(np.shape(T))
+
+    return density, drho_dT

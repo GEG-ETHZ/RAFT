@@ -39,6 +39,7 @@ DEFAULTS: dict[str, Any] = {
         "fluid": {
             "bulk_mod": 2.0e9,  # Pa
             "density": 1000,  # kg/m^3
+            "reference_temperature": 293,  # K
             "therm_cond": 0.6,  # W/mK
             "therm_expansion": 200.0e-6,  # 1/K
             "specific_heat": 4180.0,  # J/kgK
@@ -74,6 +75,7 @@ DEFAULTS: dict[str, Any] = {
         "output_vtk": 0,
         "output_log": 0,
         "output_viscosity": 0,
+        "output_density": 0,
         "rate_order": 1,
         "advection_on": 0,
         "pressurization_on": 0,
@@ -284,6 +286,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
         mat["solid"]["therm_expansion_eff"][r] = alpha_e
         mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
+        mat["T_0"] = mat["fluid"]["reference_temperature"] * np.ones(mesh["nn_total"])
 
     return mat
 

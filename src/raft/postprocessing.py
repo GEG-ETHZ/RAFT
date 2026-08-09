@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matprops import get_viscosity
+from .matprops import get_density, get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
@@ -343,18 +343,27 @@ def _build_point_scalars(
     mat: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
+    T0: npt.NDArray[np.float64],
 ) -> list[dict[str, Any]]:
     """Build the per-node scalar fields (temperature, pressure, optional viscosity) for VTK export."""
     scalardata_point = [
         {"name": "T", "data": _sanitize(T.copy())},
         {"name": "p", "data": _sanitize(p.copy())},
     ]
+
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
             mu, _ = get_viscosity(T, p, mat["fluid"]["viscosity"])
         else:
             mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
+
+    if controls["output_density"]:
+        if controls["buoyancy_on"]:
+            rho, _ = get_density(T, p, T0, mat["fluid"]["therm_expansion"], mat["fluid"]["density"])
+        else:
+            rho = mat["fluid"]["density"] * np.ones(mesh["nn"])
+        scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
 
     return scalardata_point
 
@@ -603,11 +612,12 @@ def _write_matrix_output(
     # ----- Extract primary variables
     p = primary_variables["p"][0:nn, 0]
     T = primary_variables["T"][0:nn, 0]
+    T0 = material["T_0"][0:nn]
 
     # --- Calculate fluxes
     flux = compute_fluid_flux(mesh, material, p, T, False)
 
-    scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
+    scalardata_point = _build_point_scalars(controls, mesh, material, p, T, T0)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
 
@@ -641,11 +651,12 @@ def _write_fracture_output(
     # ----- Extract primary variables
     p = primary_variables["p"][nn:(nn_tot), 0]
     T = primary_variables["T"][nn:(nn_tot), 0]
+    T0 = material["T_0"][nn:(nn_tot)]
 
     # --- Calculate fluxes
     flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True)
 
-    scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
+    scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T, T0)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
 

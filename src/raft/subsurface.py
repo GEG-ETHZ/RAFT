@@ -274,9 +274,6 @@ def _assign_initial_conditions(
             f"Supported types: {', '.join(supported_types)}\n"
         )
 
-    # use initial conditions as the reference temperature for buoyancy
-    material["T_0"] = primary_variables["T"][:, 0]  # initial condition reference temperature
-
     return primary_variables, material
 
 

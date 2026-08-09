@@ -340,12 +340,12 @@ def check_buoyancy(
     T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
     T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
     dT = T0 - T1
-
-    beta = rho_f * alpha_f * g * dT * L / 2
+    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    beta = rho_f * alpha_f * g * dT / 2 / L
 
     # analytical solution
     x = np.linspace(0, L, 100) / L
-    p_exact = beta * (x**2 - x)
+    p_exact = (beta * L**2 * (x - 1) + p1) * (x)
 
     # extract T and normalize
     p = results["p"][:, 0]
@@ -357,9 +357,23 @@ def check_buoyancy(
         plt.ylabel("p")
         plt.title(test_name)
 
+        # mu = mat["fluid"]["viscosity"]
+        # k = mat["solid"]["permeability"]
+        # q_exact = -k/mu * (2*beta * x - beta * L + p1/L)*x
+        # indx = np.argsort(d_1)
+        # dx = d_1[2]*np.ones(np.shape(d_1))
+        # #dx[0] = 0.5*dx[0]
+        # #dx[-1] = 0.5*dx[-1]
+        # p_num = p[line_1][indx]
+        # q_num = -k/mu * np.gradient(p_num) / dx
+        # plt.figure()
+        # plt.plot(x, q_exact, "r--")
+        # plt.plot(d_1/L, q_num, "ko")
+        # plt.ylabel("q")
+
     # calculate error
     x = d_1 / L
-    p_exact = beta * (x**2 - x)
+    p_exact = (beta * L**2 * (x - 1) + p1) * (x)
     err_ex = sum((p_exact - p[line_1]) ** 2)
     # The error here is calculated pased on the nodal solutions.
 

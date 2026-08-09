@@ -15,6 +15,20 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_buoyancy() -> None:
+    """Test buoyancy against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Buoyancy Test"
+    config_filename = "config_test_buoyancy.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = True
+    test_pass = test_checks.check_buoyancy(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_axisymmetry() -> None:
     """Check axisymmetry against exact solution."""
     case_dir = _test_data_dir()
@@ -213,20 +227,6 @@ def test_patch_anisotropy() -> None:
     plot_on = False
     test_pass = test_checks.check_patch_test(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_buoyancy() -> None:
-    """Test buoyancy against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Buoyancy Test"
-    config_filename = "config_test_buoyancy.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_buoyancy(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
     assert test_pass
 
