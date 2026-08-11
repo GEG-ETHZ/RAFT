@@ -350,13 +350,13 @@ def lin_extrap_time_integration(  # noqa
             R, fixed_dofs, NR, mesh, iteration, NR_tol
         )
 
-        if converged and iteration > 1:
+        if converged and iteration > 0:
             if verbose:
                 print(" - CONVERGED")
             break
         else:  # Update iteration
             # Assemble Jacobian matrix
-            A = -KM * cv[0] - Kpp - Kpp_dmudp + KbT_dmudp
+            A = -KM * cv[0] - Kpp - Kpp_dmudp - KbT_dmudp
             b = R["p"]
 
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE, np.zeros(np.size(nE, 0)))
@@ -562,7 +562,7 @@ def fully_coupled_time_integration(  # noqa
             R, fixed_dofs, NR, mesh, iteration, NR_tol
         )
 
-        if converged and iteration > 1:
+        if converged and iteration > 0:
             if verbose:
                 print(" - CONVERGED")
             break
@@ -573,7 +573,7 @@ def fully_coupled_time_integration(  # noqa
             K_stab_Tp = matrices_non_linear["K_stab_Tp"]
 
             # Assemble Jacobian matrix
-            App = -KM * cv[0] - Kpp - Kpp_dmudp + KbT_dmudp  # correct  # correct
+            App = -KM * cv[0] - Kpp - Kpp_dmudp - KbT_dmudp  # correct  # correct
             ApT = prez_on * (cv[0] * KpT) + (KbT + KpT_mu_b) + KpT_mu_p
             ATp = -(KATp + K_stab_Tp) * adv_on  # correct
             ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct

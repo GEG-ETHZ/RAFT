@@ -177,7 +177,7 @@ def _assign_ic_bc_compatible(
 
         # Use one-pass linear to generate approximate solution
         num_passes = 2
-        for _ in range(num_passes):
+        for i in range(num_passes):
             primary_variables, _, _, _ = lin_extrap_time_integration(
                 sim_control_SS,
                 mesh,
@@ -189,7 +189,8 @@ def _assign_ic_bc_compatible(
                 n,
                 verbose,
             )
-
+            # For debugging
+            # postprocessing(n+i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose) # noqa
         # Perform fully coupled solution
         if verbose:
             print("   Solving for fully-coupled steady-state condition...")
