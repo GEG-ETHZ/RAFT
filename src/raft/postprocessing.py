@@ -199,7 +199,7 @@ def compute_fluid_flux(  # noqa
             pe = p[enodes]  # element nodal pressures
             if mu_nonlinear:
                 Te = T[enodes]
-                mu, _ = get_viscosity(Te, pe, mu_coeff, fluid_type)
+                mu, _, _ = get_viscosity(Te, pe, mu_coeff, fluid_type)
                 mu = mu[:, None]
 
             gradp_all = B_q @ pe
@@ -355,7 +355,7 @@ def _build_point_scalars(
     fluid_type = mat["fluid"]["fluid_type"]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
-            mu, _ = get_viscosity(T, p, mat["fluid"]["viscosity"], fluid_type)
+            mu, _, _ = get_viscosity(T, p, mat["fluid"]["viscosity"], fluid_type)
         else:
             mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})

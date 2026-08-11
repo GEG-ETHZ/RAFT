@@ -469,7 +469,7 @@ def main(  # noqa
         primary_variables["T_dofs"] = T_dofs
         # Vectors of primary DoFs - ndof x 4
         # [t_n, t_(n-1), t_(n-2), ...]
-        primary_variables["p"] = np.ones((len(p_dofs), 4))
+        primary_variables["p"] = 1e5 * np.ones((len(p_dofs), 4))
         primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
 
         ## Wellbore boundary conditions

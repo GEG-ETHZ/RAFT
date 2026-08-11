@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Select fluid: 'Water' or 'CO2'
-fluid = "CO2"  # Change to 'CO2' for Carbon Dioxide
+fluid = "Water"  # Change to 'CO2' for Carbon Dioxide
 
 # Pressures in MPa
-pressures_MPa = [10, 15, 20]  # noqa
+pressures_MPa = [10, 20, 30]  # noqa
 
 # Initialize AbstractState object
 AS = CP.AbstractState("HEOS", fluid)
@@ -31,7 +31,7 @@ for P_MPa in pressures_MPa:
         T_max_C = 400.0 if fluid == "Water" else 150.0
         T_min_C = 5.0 if fluid == "Water" else 0.0
 
-    temperatures_C = np.linspace(T_min_C, T_max_C, 200)  # noqa
+    temperatures_C = np.linspace(T_min_C, T_max_C, 300)  # noqa
     temperatures_K = temperatures_C + 273.15  # noqa
 
     density = []
@@ -43,7 +43,7 @@ for P_MPa in pressures_MPa:
     d_cp_dP_list = []  # noqa
     d_visc_dP_list = []  # noqa
 
-    dP_Pa = 1e3  # 1 kPa perturbation for central difference wrt pressure # noqa
+    dP_Pa = 1e1  # 1 kPa perturbation for central difference wrt pressure # noqa
 
     # Calculate properties via AbstractState
     for T_K in temperatures_K:

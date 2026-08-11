@@ -881,8 +881,11 @@ def _integrate_pressure_flow_terms(
     N_q: npt.NDArray[np.float64],
     B_q: npt.NDArray[np.float64],
     wJe_q: npt.NDArray[np.float64],
+    gradT: npt.NDArray[np.float64],
+    gradP: npt.NDArray[np.float64],
     kf: npt.NDArray[np.float64] | float,
     mu_q: npt.NDArray[np.float64],
+    dmu_dp_q: npt.NDArray[np.float64],
     kf_b: npt.NDArray[np.float64],
     isotropic_perm: bool,
     kf_b_scalar: bool = False,
@@ -892,10 +895,18 @@ def _integrate_pressure_flow_terms(
     `kf_b_scalar` distinguishes the bulk mesh (KbT is a matmul product, the default) from
     the fracture mesh (KbT reduces to a scalar product once projected onto the tangent).
     """
-    return {
+    matrices = {
         "Kpp": _vectorized_quad_point_integration(B_q, kf / mu_q, B_q, wJe_q, isotropic_perm),
         "KbT": _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, kf_b_scalar),
     }
+
+    # viscosity pressure dependence
+    integrand_Kpp = -dmu_dp_q / mu_q**2 * (kf * gradP if isotropic_perm else kf @ gradP)
+    matrices["Kpp_dmudp"] = _vectorized_quad_point_integration(B_q, integrand_Kpp, N_q, wJe_q, isotropic_perm)
+    integrand_KbT = -dmu_dp_q / mu_q * kf_b @ gradT
+    matrices["KbT_dmudp"] = _vectorized_quad_point_integration(N_q, integrand_KbT, N_q, wJe_q, kf_b_scalar)
+
+    return matrices
 
 
 def _integrate_viscosity_temperature_correction(
@@ -1022,7 +1033,9 @@ def integrate_nonlinear_matrices(  # noqa
     if fully_coupled:
         list_of_matrices.extend(["KATp", "K_stab_Tp"])
     if mu_nonlinear:
-        list_of_matrices.extend(["Kpp", "KbT", "KpT_mu_b", "KpT_mu_p", "KATT_mu", "K_stab_TT_mu"])
+        list_of_matrices.extend(
+            ["Kpp", "KbT", "Kpp_dmudp", "KbT_dmudp", "KpT_mu_b", "KpT_mu_p", "KATT_mu", "K_stab_TT_mu"]
+        )
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
     (
@@ -1112,7 +1125,11 @@ def integrate_nonlinear_matrices(  # noqa
                 # be re-integrated at each timestep.
                 T_q = N_q @ Te  # quadrature point temperatures
                 P_q = N_q @ pe  # quadrature point pressures
-                mu_q, dmu_dT_q = get_viscosity(T_q, P_q, mu, fluid_type)  # quadrature point viscosities
+                gradT = B_q @ Te  # qudarature point temperature gradient
+                gradP = B_q @ pe  # quadrature point pressure gradient
+                mu_q, dmu_dT_q, dmu_dp_q = get_viscosity(
+                    T_q, P_q, mu, fluid_type
+                )  # quadrature point viscosities
 
                 advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
                 kf_b = (
@@ -1124,7 +1141,7 @@ def integrate_nonlinear_matrices(  # noqa
                 # KbT = dFb / dT - Buoyancy
                 element_matrices.update(
                     _integrate_pressure_flow_terms(
-                        N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm, is_fracture
+                        N_q, B_q, wJe_q, gradT, gradP, kf, mu_q, dmu_dp_q, kf_b, isotropic_perm, is_fracture
                     )
                 )
 
@@ -1140,8 +1157,6 @@ def integrate_nonlinear_matrices(  # noqa
             element_matrices["K_stab_TT"] = _vectorized_quad_point_integration(
                 B_q, supg.integrand_Kstab, B_q, wJe_q, False
             )
-
-            gradT = B_q @ Te
 
             # ---------------------------------- Viscosity correction
             if mu_nonlinear:
@@ -1163,9 +1178,10 @@ def integrate_nonlinear_matrices(  # noqa
                     )
                 )
 
-                # viscosity wrt T
                 if mu_nonlinear:
                     # If non-linear viscosity, integrate the viscosity tangents
+
+                    # viscosity wrt T
                     # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
                     # KpT_mu_b = dFb / dmu * dmu / dT - for buoyancy
                     T_0e = mat["T_0"][enodes_dof]
@@ -1262,7 +1278,7 @@ def integrate_NLpressure_matrices(  # noqa
     fracture_on = bool(controls["fracture_on"])
     g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
 
-    list_of_matrices = ["Kpp", "KbT"]
+    list_of_matrices = ["Kpp", "KbT", "Kpp_dmudp", "KbT_dmudp"]
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
     (
@@ -1336,14 +1352,16 @@ def integrate_NLpressure_matrices(  # noqa
             pe = p[enodes_dof].reshape(-1, 1)  # element nodal pressures
             T_q = N_q @ Te  # quadrature point temperatures
             P_q = N_q @ pe  # quadrature point pressures
-            mu_q, _ = get_viscosity(T_q, P_q, mu_coeff, fluid_type)  # quadrature point viscosities
+            gradT = B_q @ Te  # qudarature point temperature gradient
+            gradP = B_q @ pe  # quadrature point pressure gradient
+            mu_q, _, dmu_dp_q = get_viscosity(T_q, P_q, mu_coeff, fluid_type)  # quadrature point viscosities
 
             kf_b = (
                 ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)
             )  # kf component in gravity direction
 
             element_matrices = _integrate_pressure_flow_terms(
-                N_q, B_q, wJe_q, kf, mu_q, kf_b, isotropic_perm, is_fracture
+                N_q, B_q, wJe_q, gradT, gradP, kf, mu_q, dmu_dp_q, kf_b, isotropic_perm, is_fracture
             )
 
             # ----- Fracture-matrix pressure coupling

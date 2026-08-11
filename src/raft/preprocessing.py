@@ -135,12 +135,12 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     rho = config["material"]["fluid"]["density"]
     if not isinstance(rho, (int, float)):
         raise ValueError(f"Incompatible density format: {rho}")
-    elif mu == 0:  # non-constant: real-fluid viscosity from CoolProp
+    elif rho == 0:  # non-constant: real-fluid density from CoolProp
         config["simulation"]["density_nonconstant"] = 1
         if verbose:
             print(f"\nDensity computed from CoolProp ({fluid_name}) as a function of T and p.")
     else:  # constant
-        config["simulation"]["viscosity_nonconstant"] = 0
+        config["simulation"]["density_nonconstant"] = 0
 
     # Axisymmetry
     axisymmetric_on = config["simulation"]["axisymmetric_on"]

@@ -120,115 +120,6 @@ def _partition_and_solve_matrix(
     return d.ravel()
 
 
-# ------------------------ Primary time integration function with linearized extrapoloation --------
-def lin_extrap_time_integration(
-    sim_control: dict[str, Any],
-    mesh: dict[str, Any],
-    material: dict[str, Any],
-    matrices_linear: dict[str, Any],
-    primary_variables: dict[str, Any],
-    boundary_conditions: dict[str, Any],
-    dt: list[float],
-    n: int,
-    verbose: bool,
-) -> tuple[dict[str, Any], list[float], bool, float]:
-    """Assemble FEM matrices and vectors and solve for solution at next timestep.
-
-    Solution uses a linearized extrapoloation which lags temperature. Error
-    is calculated between the predicted and calculated temperatures for convergence.
-    """
-    # extract vectors of nodal dofs
-    p = primary_variables["p"]
-    T = primary_variables["T"]
-    p_dofs = primary_variables["p_dofs"]
-    T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    adv_on = sim_control["advection_on"]
-    prez_on = sim_control["pressurization_on"]
-    steady_pres = sim_control["steady_pressure"]
-    steady_temp = sim_control["steady_temperature"]
-    mu_nonlinear = sim_control["viscosity_nonconstant"]
-    # extract mesh characteristics
-    nn = mesh["nn_total"]
-
-    # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
-
-    # unpack boundary conditions
-    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
-        boundary_conditions, p_dofs, T_dofs
-    )
-
-    # Begin the one-pass extrapolated linearization by solving pressure
-    # first using an extrapolated pressure
-    # One-pass update: solve pressure, then temperature
-
-    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
-    T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
-
-    KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
-    KpT = matrices_linear["KpT"]  # Pressurization matrix
-
-    if mu_nonlinear:
-        print("     Assembling non-linear pressure matrices...")
-        matrices_pressure_nonlinear = integrate_NLpressure_matrices(
-            mesh, material, primary_variables, sim_control
-        )
-        Kpp = matrices_pressure_nonlinear["Kpp"]  # Pressure conductance matrix
-        KbT = matrices_pressure_nonlinear["KbT"]  # Buoyancy matrix
-    else:
-        Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
-        KbT = matrices_linear["KbT"]  # Buoyancy matrix
-
-    if verbose:
-        print("     Solving pressure equations...")
-    F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-    F_bT = (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
-
-    # Assemble combined matrices
-    A = (cv[0] * KM) + Kpp
-    pdot = (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
-    b = -KM @ pdot + F_extp + F_bT + F_pT
-
-    nE = p_fix.astype(int)  # essential DoFs
-    nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
-    p[:, 0] = _partition_and_solve_matrix(A, b, p_dofs, nE, p_bar)
-
-    # Calculate reaction flow rates at prescribed DoFs
-    KEE = A[np.ix_(nE, nE)]
-    KEF = A[np.ix_(nE, nF)]
-    pF = p[nF, 0]
-    q = np.zeros((nn, 1))
-    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
-    q = q + F_extp
-
-    # Update nonlinear matrices with new pressure
-    if verbose:
-        print("     Assembling non-linear temperature matrices...")
-    matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
-
-    KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
-    KTT = matrices_linear["KTT"]  # thermal conduction matrix
-    C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
-
-    if verbose:
-        print("     Solving temperature equations...")
-    A = (cv[0] * C) + KTA + KTT
-    Tdot = (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-    b = -C @ Tdot + F_extT
-
-    T[:, 0] = _partition_and_solve_matrix(A, b, T_dofs, T_fix, T_bar)
-
-    # Check for extrapolation error
-    converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)
-
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q"] = q  # outlet flow rates
-    return primary_variables, dt, converged, timestep_error
-
-
 def _check_convergence_fullycoupled(
     R: dict[str, Any],
     fixed_dofs: dict[str, Any],
@@ -339,6 +230,206 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+# ------------------------ Primary time integration function with linearized extrapoloation --------
+def lin_extrap_time_integration(  # noqa
+    sim_control: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    matrices_linear: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    dt: list[float],
+    n: int,
+    verbose: bool,
+) -> tuple[dict[str, Any], list[float], bool, float]:
+    """Assemble FEM matrices and vectors and solve for solution at next timestep.
+
+    Solution uses a linearized extrapoloation which lags temperature. Error
+    is calculated between the predicted and calculated temperatures for convergence.
+    """
+    # extract vectors of nodal dofs
+    p = primary_variables["p"].copy()
+    T = primary_variables["T"].copy()
+    p_dofs = primary_variables["p_dofs"]
+    T_dofs = primary_variables["T_dofs"]
+    # extract controls and tolerances
+    # extract controls and tolerances
+    rate_order = sim_control["rate_order"]
+    iter_max = sim_control["iterative_controls"]["iter_max"]
+    NR_tol = sim_control["iterative_controls"]["NR_tol"]
+    aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
+
+    adv_on = sim_control["advection_on"]
+    prez_on = sim_control["pressurization_on"]
+    steady_pres = sim_control["steady_pressure"]
+    steady_temp = sim_control["steady_temperature"]
+    mu_nonlinear = sim_control["viscosity_nonconstant"]
+    # extract mesh characteristics
+    nn = mesh["nn_total"]
+
+    # calculate rate coefficients
+    cv, cx = rate_coefficients(dt, rate_order)
+
+    # unpack boundary conditions
+    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
+        boundary_conditions, p_dofs, T_dofs
+    )
+    fixed_dofs = {}
+    fixed_dofs["p"] = p_fix
+
+    # Apply fixed boundary conditions
+    p[p_fix, :] = p_bar.reshape(-1, 1)
+
+    # Begin the one-pass extrapolated linearization by solving pressure
+    # first using an extrapolated pressure
+    # One-pass update: solve pressure iteratively, then temperature
+
+    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
+    T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
+
+    KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
+    KpT = matrices_linear["KpT"]  # Pressurization matrix
+
+    nE = p_fix.astype(int)  # essential DoFs
+    nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
+
+    # Begin Newton-Raphson iterative solver
+    converged = False
+    iteration = 0  # noqa
+    # Store iteration residuals for debugging
+    NR = {}
+    R = {}
+    NR["all"] = np.zeros(iter_max + 1)
+    NR["p"] = np.zeros(iter_max + 1)
+    # Initialize relaxation
+    aitken_state = {}
+    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
+    aitken_state["variables_km1"] = p[:, 0].reshape(-1, 1)
+    aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
+    aitken_state["relax_dofs"] = p_dofs
+
+    if verbose:
+        print("      ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION   ", end="")
+
+    while True:
+        if verbose:
+            print(
+                f"\r     ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True
+            )
+
+        # Compute residual vectors
+        if mu_nonlinear:
+            matrices_pressure_nonlinear = integrate_NLpressure_matrices(
+                mesh, material, primary_variables, sim_control
+            )
+            Kpp = matrices_pressure_nonlinear["Kpp"]  # Pressure conductance matrix
+            KbT = matrices_pressure_nonlinear["KbT"]  # Buoyancy matrix
+
+            Kpp_dmudp = matrices_pressure_nonlinear["Kpp_dmudp"]
+            KbT_dmudp = matrices_pressure_nonlinear["KbT_dmudp"]
+        else:
+            Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
+            KbT = matrices_linear["KbT"]  # Buoyancy matrix
+            Kpp_dmudp = sp.csc_matrix((nn, nn))
+            KbT_dmudp = sp.csc_matrix((nn, nn))
+
+        F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
+        F_bT = (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+
+        p_dot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
+        p_n = p[:, 0].reshape(-1, 1)
+
+        F_bT = (KbT @ (T[:, 0] - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+        F_pT = (KpT @ T_dot).reshape(-1, 1) if prez_on else np.zeros((nn, 1))  # Pressurization force vector
+
+        # Pressure residual
+        R["p"] = -KM @ p_dot - Kpp @ p_n + F_extp + F_bT + F_pT
+
+        # Check convergence
+        converged, iteration_error = _check_convergence_fullycoupled(
+            R, fixed_dofs, NR, mesh, iteration, NR_tol
+        )
+
+        if converged and iteration > 1:
+            if verbose:
+                print(" - CONVERGED")
+            break
+        else:  # Update iteration
+            # Assemble Jacobian matrix
+            A = -KM * cv[0] - Kpp - Kpp_dmudp + KbT_dmudp
+            b = R["p"]
+
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE, np.zeros(np.size(nE, 0)))
+
+            NR_step = 1.0
+            p_n += NR_step * delta_var.reshape(-1, 1)
+
+            # Check for nan or inf data and break
+            if np.any(np.isnan(p_n)) or np.any(np.isinf(p_n)):
+                if verbose:
+                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                break
+
+            # Apply relaxation
+            if aitken_on:
+                (
+                    d_new,
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration + 1],
+                    aitken_state["variables_km1"],
+                ) = _aitken_relax(
+                    iteration,
+                    p_n,
+                    aitken_state["variables_km1"],
+                    aitken_state["relax_dofs"],
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration],
+                )
+            else:
+                d_new = p_n
+
+            p[:, 0] = d_new[p_dofs, 0]
+            iteration += 1
+
+        if iteration >= iter_max:
+            if verbose:
+                print(" - CONVERGENCE FAILED")
+            break
+    # ---- Calculate reaction flow rates at prescribed DoFs
+    KEE = A[np.ix_(nE, nE)]
+    KEF = A[np.ix_(nE, nF)]
+    pF = p[nF, 0]
+    q = np.zeros((nn, 1))
+    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
+    q = q + F_extp
+
+    # ---- Update temperature matrices with new pressure
+    if verbose:
+        print("     Assembling non-linear temperature matrices...")
+    matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
+
+    KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
+    KTT = matrices_linear["KTT"]  # thermal conduction matrix
+    C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
+
+    # ---- Solve temperature
+    if verbose:
+        print("     Solving temperature equations...")
+    A = (cv[0] * C) + KTA + KTT
+    Tdot = (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
+    b = -C @ Tdot + F_extT
+
+    T[:, 0] = _partition_and_solve_matrix(A, b, T_dofs, T_fix, T_bar)
+
+    # ---- Check for extrapolation error
+    converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)
+
+    primary_variables["p"] = p
+    primary_variables["T"] = T
+    primary_variables["q"] = q  # outlet flow rates
+    return primary_variables, dt, converged, timestep_error
+
+
 # --------------- Fully coupled time integration with Newton-Raphson iterations.
 def fully_coupled_time_integration(  # noqa
     sim_control: dict[str, Any],
@@ -440,12 +531,16 @@ def fully_coupled_time_integration(  # noqa
             KpT_mu_b = matrices_non_linear["KpT_mu_b"]
             KpT_mu_p = matrices_non_linear["KpT_mu_p"]
             KTA_mu = matrices_non_linear["KATT_mu"] + matrices_non_linear["K_stab_TT_mu"]
+            Kpp_dmudp = matrices_non_linear["Kpp_dmudp"]
+            KbT_dmudp = matrices_non_linear["KbT_dmudp"]
         else:
             Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
             KbT = matrices_linear["KbT"]  # Buoyancy matrix
             KpT_mu_b = sp.csc_matrix((nn, nn))
             KpT_mu_p = sp.csc_matrix((nn, nn))
             KTA_mu = sp.csc_matrix((nn, nn))
+            Kpp_dmudp = sp.csc_matrix((nn, nn))
+            KbT_dmudp = sp.csc_matrix((nn, nn))
 
         Tdot = (cv[0] * T[:, 0] + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
         pdot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
@@ -478,7 +573,7 @@ def fully_coupled_time_integration(  # noqa
             K_stab_Tp = matrices_non_linear["K_stab_Tp"]
 
             # Assemble Jacobian matrix
-            App = -KM * cv[0] - Kpp  # correct
+            App = -KM * cv[0] - Kpp - Kpp_dmudp + KbT_dmudp  # correct  # correct
             ApT = prez_on * (cv[0] * KpT) + (KbT + KpT_mu_b) + KpT_mu_p
             ATp = -(KATp + K_stab_Tp) * adv_on  # correct
             ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct
