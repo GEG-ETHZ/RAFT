@@ -173,12 +173,33 @@ def _assign_ic_bc_compatible(
         # viscosity is a function of temperature, fully coupled steady-state
         # solution is required.
         if verbose:
-            print("   Non-linear properties present, using sequential scheme to estimate fields...")
+            print("   Non-linear properties present, using iterative sequential scheme to estimate fields...")
 
         # Use one-pass linear to generate approximate solution
-        num_passes = 2
-        for i in range(num_passes):
-            primary_variables, _, _, _ = lin_extrap_time_integration(
+        primary_variables_ini = primary_variables.copy()
+        tries = [2, 6, 10]
+        for num_passes in tries:
+            primary_variables = primary_variables_ini.copy()
+            for i in range(num_passes):
+                primary_variables, _, _, _ = lin_extrap_time_integration(
+                    sim_control_SS,
+                    mesh,
+                    material,
+                    matrices_linear,
+                    primary_variables,
+                    boundary_conditions,
+                    [1, 1, 1],
+                    n,
+                    verbose,
+                )
+                # For debugging
+                # postprocessing(n+i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose) # noqa
+            # Perform fully coupled solution
+            if verbose:
+                print("   Solving for fully-coupled steady-state condition...")
+
+            sim_control_SS["fully_coupled"] = True
+            primary_variables, _, converged, _ = fully_coupled_time_integration(
                 sim_control_SS,
                 mesh,
                 material,
@@ -189,24 +210,12 @@ def _assign_ic_bc_compatible(
                 n,
                 verbose,
             )
-            # For debugging
-            # postprocessing(n+i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose) # noqa
-        # Perform fully coupled solution
-        if verbose:
-            print("   Solving for fully-coupled steady-state condition...")
-
-        sim_control_SS["fully_coupled"] = True
-        primary_variables, _, converged, _ = fully_coupled_time_integration(
-            sim_control_SS,
-            mesh,
-            material,
-            matrices_linear,
-            primary_variables,
-            boundary_conditions,
-            [1, 1, 1],
-            n,
-            verbose,
-        )
+            if converged:
+                break
+            else:
+                print(
+                    "   Unable to find compatible boundary condition, trying again with more sequential iterations."  # noqa
+                )
         if not converged:
             raise RuntimeError("Failed to converge during assignment of initial conditions.")
     else:
