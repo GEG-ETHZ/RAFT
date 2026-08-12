@@ -77,10 +77,9 @@ def get_density(
     fluid_type: str,  # noqa
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get density and its temperature derivative, at temperature T [K] and pressure P [Pa]."""
-    if rho_0 != 0:
-        density = rho_0 * (1 - alpha * (T - T0))
+    density = rho_0 * (1 - alpha * (T - T0))
 
-        drho_dT = rho_0 * alpha * np.ones(np.shape(T))
-        drho_dp = 0 * np.ones(np.shape(T))
+    drho_dT = rho_0 * alpha * np.ones(np.shape(T))
+    drho_dp = 0 * np.ones(np.shape(T))
 
     return density, drho_dT, drho_dp
