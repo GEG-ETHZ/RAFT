@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.sparse import csc_matrix, hstack, vstack
 
-from .matprops import get_viscosity
+from .matprops import get_density, get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
@@ -1018,16 +1018,24 @@ def integrate_nonlinear_matrices(  # noqa
     T = primary_variables["T"][:, 0]
     mu_nonlinear = bool(controls["viscosity_nonconstant"])
     mu_linear = not mu_nonlinear
+    # density_nonlinear = bool(controls["density_nonconstant"])
+    density_nonlinear = True
+    density_linear = not density_nonlinear
     fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
 
     fluid_type = mat["fluid"]["fluid_type"]
     mu = mat["fluid"]["viscosity"]
+    mu_q = mu
     cp_f = mat["fluid"]["specific_heat"]
-    rho_f = mat["fluid"]["density"]
+    rho_f0 = mat["fluid"]["density"]
+    rho_f_q = rho_f0
     if mu_nonlinear:
         alpha_f = mat["fluid"]["therm_expansion"]
+    if density_nonlinear:
+        alpha_f = mat["fluid"]["therm_expansion"]
+        T0 = mat["fluid"]["reference_temperature"]
 
     list_of_matrices = ["KATT", "K_stab_TT"]
     if fully_coupled:
@@ -1085,8 +1093,8 @@ def integrate_nonlinear_matrices(  # noqa
         lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
 
         # advection velocity = advection_conductivity * pressure gradient
-        if mu_linear:
-            advec_conduct = cp_f * rho_f * kf / mu  # advection conductivity
+        if mu_linear and density_linear:
+            advec_conduct = cp_f * rho_f_q * kf / mu  # advection conductivity
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -1131,9 +1139,9 @@ def integrate_nonlinear_matrices(  # noqa
                     T_q, P_q, mu, fluid_type
                 )  # quadrature point viscosities
 
-                advec_conduct = cp_f * rho_f * kf / mu_q  # advection conductivity
+                advec_conduct = cp_f * rho_f_q * kf / mu_q  # advection conductivity
                 kf_b = (
-                    ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f @ (g.T @ u if is_fracture else g.T)
+                    ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f_q @ (g.T @ u if is_fracture else g.T)
                 )  # kf component in gravity direction
 
                 # Integrate the tangent matrices
@@ -1147,6 +1155,14 @@ def integrate_nonlinear_matrices(  # noqa
 
             # ----------------------------------- Advection and stabilization
             # Calculate fluxes, stabilization coefficicent, pressure gradients and store in supg dataclass
+            if density_nonlinear:
+                T_q = N_q @ Te  # quadrature point temperatures
+                P_q = N_q @ pe  # quadrature point pressures
+                rho_f_q, drho_f_dT_q, drho_f_dp_q = get_density(
+                    T_q, P_q, T0, alpha_f, rho_f0, fluid_type
+                )  # quadrature point densities
+                advec_conduct = cp_f * rho_f_q * kf / mu_q  # advection conductivity
+
             supg = _compute_supg_quantities(
                 B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_e, L_vec, nq, nsd
             )
@@ -1172,6 +1188,7 @@ def integrate_nonlinear_matrices(  # noqa
                 # Integrate the off-diagonal tangents wrt pressure
                 # KATp = dFA / dp
                 # K_stab_Tp = dF_stab / dp
+                gradT = B_q @ Te  # qudarature point temperature gradient
                 element_matrices.update(
                     _integrate_coupled_pressure_terms(
                         N_q, B_q, wJe_q, gradT, supg, advec_conduct, isotropic_perm, nsd

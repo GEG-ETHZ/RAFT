@@ -2,7 +2,6 @@
 
 from typing import Any, cast
 
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sp
@@ -634,24 +633,24 @@ def fully_coupled_time_integration(  # noqa
     if verbose:
         print()  # new line for that output doesn't get overwritten
         # Plot residuals
-        fig, ax1 = plt.subplots(figsize=(8, 8))
-        ax2 = ax1.twinx()
+        # fig, ax1 = plt.subplots(figsize=(8, 8))
+        # ax2 = ax1.twinx()
 
-        ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
-        plt.ylabel("residual")
-        plt.legend(["Temperature", "Pressure", "Combined"])
+        # ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
+        # ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
+        # ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
+        # plt.ylabel("residual")
+        # plt.legend(["Temperature", "Pressure", "Combined"])
 
-        ax2.plot(
-            np.arange(1, iteration + 1),
-            np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
-            "go-",
-        )
-        plt.ylabel("damping coefficient")
+        # ax2.plot(
+        #     np.arange(1, iteration + 1),
+        #     np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
+        #     "go-",
+        # )
+        # plt.ylabel("damping coefficient")
 
-        plt.xlim([0, iter_max])
-        # plt.ylim([1e-15, 1e2])
-        plt.xlabel("iteration")
+        # plt.xlim([0, iter_max])
+        # # plt.ylim([1e-15, 1e2])
+        # plt.xlabel("iteration")
 
     return primary_variables, dt, converged, NR["all"][iteration - 1]

@@ -34,13 +34,14 @@ material:
 
   # Fluid parameters - single phase flow is assumed
   fluid:
+      fluid_type: "Water"         # "Water" or "CO2"
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
       reference_temperature: 413 # Reference temperature for density (C/K)
       therm_cond:   0.6         # W/mK
-      therm_expansion: 200.0e-6 # 1/K
+      therm_expansion: 200.0e-4 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:
@@ -50,7 +51,7 @@ material:
 initial_conditions:
   assignment: "BC_compatible"
   T_ini: 286
-  p_ini: 1.0e+5
+  p_ini: 9.0e+6
   T_grad: 0.1
   p_grad: 1.0e+3
   grad_direction_T: [0,1,-1]
@@ -66,30 +67,30 @@ boundary_conditions:
           tag: "inlet"
           constraints:
               maximum_pressure: 3.0e+7
-              minimum_pressure: 1.0e+4
-        - lines: [[[-40.0, 35.9], [-33.7, 27.3]]]
+              minimum_pressure: 7.0e+6
+        - coords: [[27, 48]]
           values: [[0, -0.001], 100]
           function: "ramp"
           tag: "outlet"
           constraints:
               maximum_pressure: 3.0e+7
-              minimum_pressure: 1.0e+4
+              minimum_pressure: 7.0e+6
   pressure_fixed:
         - faces: [y_min]
-          values: [2.0e6]
+          values: [9.0e6]
           tag: "inflow"
         - faces: [y_max]
-          values: [1.0e6]
+          values: [9.0e6]
 
 
   temperature_fixed:
       - faces: [y_max]
-        values: [273]
+        values: [373]
       - faces: [y_min]
         values: [373]
       - lines: [[[43.4, 20.0], [53, 37.5]]]
         function: "ramp"
-        values: [[323, 403], 100]
+        values: [[343, 403], 100000]
 
 
   fluid_flux:
@@ -100,11 +101,11 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 50000.0
+  t_end: 500000.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 10000.0
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1
@@ -126,8 +127,6 @@ simulation:
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
-      iter_max: 30 # Maximum number of iterations
+      NR_tol: 1.0e-3 # Newton-Raphson residual tolerance
+      iter_max: 50 # Maximum number of iterations
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
-      ptc_sigma_max: 10.0
-      ptc_sigma_floor: 1.0e-3
