@@ -148,9 +148,10 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 
 * **`fluid`**: Fluid phase properties.
   * **`fluid_type`** *(string, default: `"WATER"`)*: Set the working fluid in the reservoir. Required when using nonlinear properties, as it controls the property lookup in CoolProp. E.g. `"WATER"` for water or `"CO2"` for supercritical CO2.
-  * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
   * **`density`** *(float, default: `1000.0`)*: Fluid density in $\text{kg/m}^3$.
     * **Nonlinear Option:** Set to `0` to instead use a temperature- and pressure-dependent density curve from CoolProp.
+  * **`bulk_mod`** *(float, default: `2.0e9`)*: Fluid bulk modulus in Pascals ($\text{Pa}$).
+    * **Nonlinear Option:** Not used when nonlinear density is specified. Instead, the instantaneous bulk modulus is calculated as $\rho_f \frac{d p}{d\rho_f}$
   * **`reference_temperature`** *(float, default: `293.0`)*: Reference temperature at which density is prescribed. Not used when nonlinear density is specified.
   * **`therm_cond`** *(float, default: `0.6`)*: Fluid thermal conductivity in $\text{W/m}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `200.0e-6`)*: Fluid volumetric thermal expansion coefficient in $1/\text{K}$.

@@ -41,7 +41,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-4 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:
@@ -101,7 +101,7 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 500000.0
+  t_end: 800000.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 10000.0

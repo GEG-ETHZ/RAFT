@@ -110,42 +110,41 @@ def compute_residuals(
     sim_control: dict[str, Any],
     *,
     fully_coupled: bool,
+    mu_nonlinear: bool,
 ) -> dict[str, npt.NDArray[np.float64]]:
-    """Assemble residual vectors from integrated matrices and the current primary-variable state.
-
-    Single point where new physics terms (e.g. density/heat-capacity nonlinearity) get folded
-    into the residual, so `nonlinear_matrices` can grow without touching the solvers themselves.
-
-    `T_dot` is the temperature rate used for the pressurization forcing term - for the fully
-    coupled solver this is the current-iterate rate; for the linearized solver it is the
-    extrapolated rate, computed by the caller. The temperature residual ("T") is only computed
-    when `fully_coupled` is set.
+    """Assemble residual vectors from `nonlinear_matrices` ("K_{block}_R"/"K_{block}_tan" buckets,
+    signs pre-baked) and the current primary-variable state. `T_dot` is the fully coupled
+    solver's current-iterate rate, or the linearized solver's extrapolated rate.
     """
     prez_on = sim_control["pressurization_on"]
-    adv_on = sim_control["advection_on"]
     steady_pres = sim_control["steady_pressure"]
 
     KM = matrices_linear["KM"] * (1 - steady_pres)
     KpT = matrices_linear["KpT"]
-    Kpp = nonlinear_matrices["Kpp"] if "Kpp" in nonlinear_matrices else matrices_linear["Kpp"]
-    KbT = nonlinear_matrices["KbT"] if "KbT" in nonlinear_matrices else matrices_linear["KbT"]
+    # linear viscosity: Kpp/KbT are static, from matrices_linear (unnegated, hence the flip)
+    if mu_nonlinear:
+        K_pp_R = nonlinear_matrices["K_pp_R"]
+        K_pT_R = nonlinear_matrices["K_pT_R"]
+    else:
+        K_pp_R = -matrices_linear["Kpp"]
+        K_pT_R = matrices_linear["KbT"]
 
     pdot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
     p_n = p[:, 0].reshape(-1, 1)
 
-    F_bT = (KbT @ (T[:, 0] - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+    F_bT = (K_pT_R @ (T[:, 0] - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
     F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
 
-    R = {"p": -KM @ pdot - Kpp @ p_n + F_extp + F_bT + F_pT}
+    R = {"p": -KM @ pdot + K_pp_R @ p_n + F_extp + F_bT + F_pT}
 
     if fully_coupled:
         steady_temp = sim_control["steady_temperature"]
         C = matrices_linear["C"] * (1 - steady_temp)
         KTT = matrices_linear["KTT"]
-        KTA = (nonlinear_matrices["KATT"] + nonlinear_matrices["K_stab_TT"]) * adv_on
+        K_TT_R = nonlinear_matrices["K_TT_R"]
 
         T_n = T[:, 0].reshape(-1, 1)
-        R["T"] = -C @ T_dot - (KTT + KTA) @ T_n + F_extT
+        R["T"] = -C @ T_dot - KTT @ T_n + K_TT_R @ T_n + F_extT
 
     return R
 
@@ -157,40 +156,38 @@ def assemble_full_tangent(
     sim_control: dict[str, Any],
     *,
     fully_coupled: bool,
+    mu_nonlinear: bool,
 ) -> dict[str, sp.csc_matrix[Any]]:
-    """Assemble Jacobian blocks from integrated matrices.
-
-    Companion to `compute_residuals` - the other single point where new tangent terms get
-    folded in. Always returns the "pp" block; "pT", "Tp", "TT" are only added when
-    `fully_coupled` is set.
+    """Assemble Jacobian blocks: each is `K_{block}_R + K_{block}_tan` plus linear/time-integration
+    terms. Always returns "pp"; "pT"/"Tp"/"TT" only when `fully_coupled` is set.
     """
     prez_on = sim_control["pressurization_on"]
-    adv_on = sim_control["advection_on"]
     steady_pres = sim_control["steady_pressure"]
 
     KM = matrices_linear["KM"] * (1 - steady_pres)
-    Kpp = nonlinear_matrices["Kpp"] if "Kpp" in nonlinear_matrices else matrices_linear["Kpp"]
-    KbT = nonlinear_matrices["KbT"] if "KbT" in nonlinear_matrices else matrices_linear["KbT"]
-    Kpp_dmudp = nonlinear_matrices.get("Kpp_dmudp", 0)
-    KbT_dmudp = nonlinear_matrices.get("KbT_dmudp", 0)
+    if mu_nonlinear:
+        K_pp_R = nonlinear_matrices["K_pp_R"]
+        K_pT_R = nonlinear_matrices["K_pT_R"]
+    else:
+        K_pp_R = -matrices_linear["Kpp"]
+        K_pT_R = matrices_linear["KbT"]
+    K_pp_tan = nonlinear_matrices.get("K_pp_tan", 0)
 
-    J = {"pp": -KM * cv[0] - Kpp - Kpp_dmudp - KbT_dmudp}
+    J = {"pp": -KM * cv[0] + K_pp_R + K_pp_tan}
 
     if fully_coupled:
         steady_temp = sim_control["steady_temperature"]
         C = matrices_linear["C"] * (1 - steady_temp)
         KTT = matrices_linear["KTT"]
         KpT = matrices_linear["KpT"]
-        KTA = (nonlinear_matrices["KATT"] + nonlinear_matrices["K_stab_TT"]) * adv_on
-        KpT_mu_b = nonlinear_matrices.get("KpT_mu_b", 0)
-        KpT_mu_p = nonlinear_matrices.get("KpT_mu_p", 0)
-        KTA_mu = nonlinear_matrices.get("KATT_mu", 0) + nonlinear_matrices.get("K_stab_TT_mu", 0)
-        KATp = nonlinear_matrices["KATp"]
-        K_stab_Tp = nonlinear_matrices["K_stab_Tp"]
+        K_TT_R = nonlinear_matrices["K_TT_R"]
+        K_pT_tan = nonlinear_matrices.get("K_pT_tan", 0)
+        K_TT_tan = nonlinear_matrices.get("K_TT_tan", 0)
+        K_Tp_tan = nonlinear_matrices.get("K_Tp_tan", 0)
 
-        J["pT"] = prez_on * (cv[0] * KpT) + (KbT + KpT_mu_b) + KpT_mu_p
-        J["Tp"] = -(KATp + K_stab_Tp) * adv_on
-        J["TT"] = -cv[0] * C - (KTT + KTA) + KTA_mu
+        J["pT"] = prez_on * (cv[0] * KpT) + K_pT_R + K_pT_tan
+        J["Tp"] = K_Tp_tan
+        J["TT"] = -cv[0] * C - KTT + K_TT_R + K_TT_tan
 
     return J
 
@@ -356,7 +353,6 @@ def lin_extrap_time_integration(  # noqa
     NR_tol = sim_control["iterative_controls"]["NR_tol"]
     aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
 
-    adv_on = sim_control["advection_on"]
     steady_temp = sim_control["steady_temperature"]
     mu_nonlinear = sim_control["viscosity_nonconstant"]
     # extract mesh characteristics
@@ -430,6 +426,7 @@ def lin_extrap_time_integration(  # noqa
             material,
             sim_control,
             fully_coupled=False,
+            mu_nonlinear=mu_nonlinear,
         )
 
         # Check convergence
@@ -444,7 +441,12 @@ def lin_extrap_time_integration(  # noqa
         else:  # Update iteration
             # Assemble Jacobian matrix
             tangent = assemble_full_tangent(
-                nonlinear_matrices, matrices_linear, cv, sim_control, fully_coupled=False
+                nonlinear_matrices,
+                matrices_linear,
+                cv,
+                sim_control,
+                fully_coupled=False,
+                mu_nonlinear=mu_nonlinear,
             )
             A = tangent["pp"]
             b = R["p"]
@@ -498,14 +500,14 @@ def lin_extrap_time_integration(  # noqa
         print("     Assembling non-linear temperature matrices...")
     matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
 
-    KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
+    K_TT_R = matrices_non_linear["K_TT_R"]  # advection matrix (adv_on and sign already baked in)
     KTT = matrices_linear["KTT"]  # thermal conduction matrix
     C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
 
     # ---- Solve temperature
     if verbose:
         print("     Solving temperature equations...")
-    A = (cv[0] * C) + KTA + KTT
+    A = (cv[0] * C) - K_TT_R + KTT
     Tdot = (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
     b = -C @ Tdot + F_extT
 
@@ -548,6 +550,7 @@ def fully_coupled_time_integration(  # noqa
     iter_max = sim_control["iterative_controls"]["iter_max"]
     NR_tol = sim_control["iterative_controls"]["NR_tol"]
     aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
+    mu_nonlinear = sim_control["viscosity_nonconstant"]
 
     # extract mesh characteristics
     nn = mesh["nn_total"]  # noqa
@@ -617,6 +620,7 @@ def fully_coupled_time_integration(  # noqa
             material,
             sim_control,
             fully_coupled=True,
+            mu_nonlinear=mu_nonlinear,
         )
 
         # Check convergence
@@ -631,7 +635,12 @@ def fully_coupled_time_integration(  # noqa
         else:  # Update iteration
             # Assemble Jacobian matrix
             tangent = assemble_full_tangent(
-                nonlinear_matrices, matrices_linear, cv, sim_control, fully_coupled=True
+                nonlinear_matrices,
+                matrices_linear,
+                cv,
+                sim_control,
+                fully_coupled=True,
+                mu_nonlinear=mu_nonlinear,
             )
 
             # Total combined matrix

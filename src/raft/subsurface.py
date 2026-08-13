@@ -193,9 +193,9 @@ def _assign_ic_bc_compatible(
                     verbose,
                 )
                 # For debugging
-                postprocessing(
-                    n + i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose
-                )  # noqa
+                # postprocessing(
+                #     n + i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose
+                # )  # noqa
             # Perform fully coupled solution
             if verbose:
                 print("   Solving for fully-coupled steady-state condition...")
