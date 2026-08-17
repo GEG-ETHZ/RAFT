@@ -7,10 +7,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import (
-    integrate_NLpressure_matrices,
-    integrate_nonlinear_matrices,
-)
+from .matrixassembly import integrate_nonlinear_matrices
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -408,7 +405,7 @@ def lin_extrap_time_integration(  # noqa
 
         # Compute residual vectors
         nonlinear_matrices = (
-            integrate_NLpressure_matrices(mesh, material, primary_variables, sim_control)
+            integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control, pressure_only=True)
             if mu_nonlinear
             else {}
         )
