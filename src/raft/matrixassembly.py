@@ -1216,8 +1216,7 @@ def integrate_nonlinear_matrices(  # noqa
                         # viscosity wrt T
                         # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
                         # KpT_mu_b = dFb / dmu * dmu / dT - for buoyancy
-                        T_0e = mat["T_0"][enodes_dof]
-                        del_T = Te - T_0e.reshape(-1, 1)
+                        del_T = Te - fluid["reference_temperature"]
                         _accumulate_element_matrices(
                             element_matrices,
                             _integrate_viscosity_pressure_correction(

@@ -129,7 +129,9 @@ def compute_residuals(
     pdot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
     p_n = p[:, 0].reshape(-1, 1)
 
-    F_bT = (K_pT_R @ (T[:, 0] - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
+    F_bT = (K_pT_R @ (T[:, 0] - material["fluid"]["reference_temperature"])).reshape(
+        -1, 1
+    )  # Buoyancy force vector
     F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
 
     R = {"p": -KM @ pdot + K_pp_R @ p_n + F_extp + F_bT + F_pT}

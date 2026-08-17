@@ -306,7 +306,6 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
         mat["solid"]["therm_expansion_eff"][r] = alpha_e
         mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
-        mat["T_0"] = mat["fluid"]["reference_temperature"] * np.ones(mesh["nn_total"])
 
     return mat
 

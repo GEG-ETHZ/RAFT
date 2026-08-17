@@ -167,7 +167,6 @@ def _assign_ic_bc_compatible(
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
     sim_control_SS = _build_steady_state_controls(sim_control)
-    material["T_0"] = np.zeros((mesh["nn_total"],))
 
     if sim_control_SS["viscosity_nonconstant"]:
         # viscosity is a function of temperature, fully coupled steady-state
