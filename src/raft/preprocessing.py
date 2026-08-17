@@ -10,6 +10,7 @@ import scipy.sparse
 import yaml
 from scipy.sparse.csgraph import dijkstra
 
+from .matprops import create_abstract_state
 from .meshprocessing import _get_element_face_lists, load_mesh
 
 # ----- Default values for config file
@@ -151,6 +152,13 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Fractures
     config["simulation"]["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
+
+    # CoolProp AbstractState, reused across all property lookups instead of
+    # re-initializing it on every matprops call.
+    if config["simulation"]["viscosity_nonconstant"] or config["simulation"]["density_nonconstant"]:
+        config["material"]["fluid"]["abstract_state"] = create_abstract_state(fluid_name)
+    else:
+        config["material"]["fluid"]["abstract_state"] = None
 
     return config
 

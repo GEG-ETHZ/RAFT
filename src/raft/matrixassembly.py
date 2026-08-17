@@ -1042,17 +1042,14 @@ def integrate_nonlinear_matrices(  # noqa
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
 
-    fluid_type = mat["fluid"]["fluid_type"]
-    mu = mat["fluid"]["viscosity"]
+    fluid = mat["fluid"]
+    mu = fluid["viscosity"]
     mu_q = mu
-    cp_f = mat["fluid"]["specific_heat"]
-    rho_f0 = mat["fluid"]["density"]
+    cp_f = fluid["specific_heat"]
+    rho_f0 = fluid["density"]
     rho_f_q = rho_f0
     if mu_nonlinear:
-        alpha_f = mat["fluid"]["therm_expansion"]
-    if density_nonlinear:
-        alpha_f = mat["fluid"]["therm_expansion"]
-        T0 = mat["fluid"]["reference_temperature"]
+        alpha_f = fluid["therm_expansion"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one, no new name needed
     list_of_matrices = ["K_pp_R", "K_pp_tan", "K_pT_R", "K_pT_tan"]
@@ -1148,9 +1145,7 @@ def integrate_nonlinear_matrices(  # noqa
                 P_q = N_q @ pe  # quadrature point pressures
                 gradT = B_q @ Te  # qudarature point temperature gradient
                 gradP = B_q @ pe  # quadrature point pressure gradient
-                mu_q, dmu_dT_q, dmu_dp_q = get_viscosity(
-                    T_q, P_q, mu, fluid_type
-                )  # quadrature point viscosities
+                mu_q, dmu_dT_q, dmu_dp_q = get_viscosity(T_q, P_q, fluid)  # quadrature point viscosities
 
                 advec_conduct = cp_f * rho_f_q * kf / mu_q  # advection conductivity
                 kf_b = (
@@ -1172,9 +1167,7 @@ def integrate_nonlinear_matrices(  # noqa
             if density_nonlinear:
                 T_q = N_q @ Te  # quadrature point temperatures
                 P_q = N_q @ pe  # quadrature point pressures
-                rho_f_q, drho_f_dT_q, drho_f_dp_q = get_density(
-                    T_q, P_q, T0, alpha_f, rho_f0, fluid_type
-                )  # quadrature point densities
+                rho_f_q, drho_f_dT_q, drho_f_dp_q = get_density(T_q, P_q, fluid)  # quadrature point densities
                 advec_conduct = cp_f * rho_f_q * kf / mu_q  # advection conductivity
 
             if not pressure_only:

@@ -1,32 +1,29 @@
 """All material property correlations are stored here."""
 
+from typing import Any
+
 import CoolProp.CoolProp as CP  # noqa: N817
 import numpy as np
 import numpy.typing as npt
 
-_abstract_state: CP.AbstractState | None = None
 
-
-def _get_abstract_state(fluid_type: str) -> CP.AbstractState:
-    """Create and cache the CoolProp AbstractState used for viscosity lookups."""
-    global _abstract_state
-    if _abstract_state is None:
-        _abstract_state = CP.AbstractState("HEOS", fluid_type)
-    return _abstract_state
+def create_abstract_state(fluid_type: str) -> CP.AbstractState:
+    """Create a CoolProp AbstractState for a fluid, to be reused across property lookups."""
+    return CP.AbstractState("HEOS", fluid_type)
 
 
 def get_viscosity(
     T: npt.NDArray[np.float64],
     P: npt.NDArray[np.float64],
-    viscosity_coefficients: float,
-    fluid_type: str,
+    fluid: dict[str, Any],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get viscosity and its temperature derivative, at temperature T [K] and pressure P [Pa].
 
-    `viscosity_coefficients` of 0 selects a non-constant, real-fluid viscosity looked up
-    from CoolProp (`COOLPROP_FLUID`) at each (T, P); any other value is treated as a
-    constant viscosity, and P is ignored.
+    `fluid["viscosity"]` of 0 selects a non-constant, real-fluid viscosity looked up from
+    CoolProp via `fluid["abstract_state"]` at each (T, P); any other value is treated as a
+    constant viscosity, and P and the abstract state are ignored.
     """
+    viscosity_coefficients = fluid["viscosity"]
     T_arr = np.atleast_1d(np.asarray(T, dtype=float))
 
     if viscosity_coefficients != 0:
@@ -40,7 +37,8 @@ def get_viscosity(
     T_arr = np.clip(T_arr, 274.0, 600.0)
     P_arr = np.broadcast_to(np.asarray(P, dtype=float), T_arr.shape)
     P_arr = np.clip(P_arr, 1.0e5, 1.0e8)
-    AS = _get_abstract_state(fluid_type)
+    AS = fluid["abstract_state"]
+    assert AS is not None
 
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a central difference.
     dT = 0.5  # K
@@ -71,12 +69,12 @@ def get_viscosity(
 def get_density(
     T: npt.NDArray[np.float64],
     P: npt.NDArray[np.float64],  # noqa
-    T0: npt.NDArray[np.float64],
-    alpha: float,
-    rho_0: float,
-    fluid_type: str,  # noqa
+    fluid: dict[str, Any],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get density and its temperature derivative, at temperature T [K] and pressure P [Pa]."""
+    T0 = fluid["reference_temperature"]
+    alpha = fluid["therm_expansion"]
+    rho_0 = fluid["density"]
     density = rho_0 * (1 - alpha * (T - T0))
 
     drho_dT = rho_0 * alpha * np.ones(np.shape(T))
