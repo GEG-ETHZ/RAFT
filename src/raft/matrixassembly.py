@@ -957,7 +957,7 @@ def _integrate_coupled_pressure_terms(
     isotropic_perm: bool,
     nsd: int,
 ) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate the temperature-wrt-pressure off-diagonal matrices -> "K_Tp_tan" (caller applies adv_on)."""
+    """Integrate the temperature-wrt-pressure off-diagonal matrices -> "K_Tp_tan"."""
     Rth_dp = -advec_conduct * gradT if isotropic_perm else -advec_conduct @ gradT
     integrand_KATp = Rth_dp.transpose(0, 2, 1)  # nq x 1 x nsd
 
@@ -1035,7 +1035,7 @@ def integrate_nonlinear_matrices(  # noqa
     fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
-    adv_on = bool(controls["advection_on"])
+    advection_on = bool(controls["advection_on"])
 
     fluid_type = mat["fluid"]["fluid_type"]
     mu = mat["fluid"]["viscosity"]
@@ -1174,10 +1174,11 @@ def integrate_nonlinear_matrices(  # noqa
                 B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_e, L_vec, nq, nsd
             )
 
-            # advection + SUPG stabilization -> "K_TT_R"
-            KATT = _vectorized_quad_point_integration(N_q, supg.flux_T, B_q, wJe_q, False)
-            K_stab_TT = _vectorized_quad_point_integration(B_q, supg.integrand_Kstab, B_q, wJe_q, False)
-            _accumulate_element_matrices(element_matrices, {"K_TT_R": -(KATT + K_stab_TT)})
+            # advection + SUPG stabilization -> "K_TT_R"; skip the integration outright when off
+            if advection_on:
+                KATT = _vectorized_quad_point_integration(N_q, supg.flux_T, B_q, wJe_q, False)
+                K_stab_TT = _vectorized_quad_point_integration(B_q, supg.integrand_Kstab, B_q, wJe_q, False)
+                _accumulate_element_matrices(element_matrices, {"K_TT_R": -(KATT + K_stab_TT)})
 
             # ---------------------------------- Viscosity correction
             if mu_nonlinear:
@@ -1191,19 +1192,21 @@ def integrate_nonlinear_matrices(  # noqa
 
             # ----------------------------------- Fully coupled off diagonal terms
             if fully_coupled:
-                # Integrate the off-diagonal tangents wrt pressure
-                # KATp = dFA / dp
-                # K_stab_Tp = dF_stab / dp
-                gradT = B_q @ Te  # qudarature point temperature gradient
-                _accumulate_element_matrices(
-                    element_matrices,
-                    _integrate_coupled_pressure_terms(
-                        N_q, B_q, wJe_q, gradT, supg, advec_conduct, isotropic_perm, nsd
-                    ),
-                )
+                if advection_on:
+                    # Integrate the off-diagonal tangents wrt pressure
+                    # KATp = dFA / dp
+                    # K_stab_Tp = dF_stab / dp
+                    gradT = B_q @ Te  # qudarature point temperature gradient
+                    _accumulate_element_matrices(
+                        element_matrices,
+                        _integrate_coupled_pressure_terms(
+                            N_q, B_q, wJe_q, gradT, supg, advec_conduct, isotropic_perm, nsd
+                        ),
+                    )
 
                 if mu_nonlinear:
-                    # If non-linear viscosity, integrate the viscosity tangents
+                    # If non-linear viscosity, integrate the viscosity tangents (unrelated to
+                    # advection - this stays unconditional on advection_on)
 
                     # viscosity wrt T
                     # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
@@ -1280,11 +1283,6 @@ def integrate_nonlinear_matrices(  # noqa
         integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
         )
-
-    # Advection is a physics on/off switch, applied once here so callers don't need to know
-    # which blocks it affects.
-    integrated_matrices["K_TT_R"] = integrated_matrices["K_TT_R"] * adv_on
-    integrated_matrices["K_Tp_tan"] = integrated_matrices["K_Tp_tan"] * adv_on
 
     return integrated_matrices
 

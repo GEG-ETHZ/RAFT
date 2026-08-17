@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Select fluid: 'Water' or 'CO2'
-fluid = "CO2"  # Change to 'CO2' for Carbon Dioxide
+fluid = "Water"  # Change to 'CO2' for Carbon Dioxide
 
 # Pressures in MPa
 pressures_MPa = [10, 20, 30]  # noqa
