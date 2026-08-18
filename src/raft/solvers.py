@@ -412,6 +412,7 @@ def lin_extrap_time_integration(  # noqa
             else {}
         )
         p_n = p[:, 0].reshape(-1, 1)
+        # R = integrate_residuals(mesh, material, primary_variables, sim_control, pressure_only=True)
 
         R = compute_residuals(
             nonlinear_matrices,

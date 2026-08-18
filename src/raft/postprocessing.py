@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matprops import get_density, get_viscosity
+from .matprops import get_density, get_porosity, get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
@@ -365,6 +365,36 @@ def _build_point_scalars(
     return scalardata_point
 
 
+def _build_cell_scalars(
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],  # noqa
+) -> list[dict[str, Any]]:
+    """Build the per-cell scalar fields (temperature, pressure, optional viscosity) for VTK export."""
+    scalardata_cell = []
+
+    if controls["output_porosity"]:
+        ne = mesh["ne"]
+        conn = mesh["conn"]
+        solid = mat["solid"]
+        porosity = np.empty(mesh["ne"])
+        p_0 = mat["p_0"]
+        for e in range(ne):
+            enodes = conn[e]
+            region = mesh["regions"][e]
+            phi_0 = solid["porosity"][region]
+            K_d = solid["bulk_mod"][region]
+            p_e = np.mean(p[enodes])
+            p0_e = np.mean(p_0[enodes])
+            porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d)
+
+        scalardata_cell.append({"name": "porosity", "data": _sanitize(porosity.copy())})
+
+    return scalardata_cell
+
+
 def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     """Build one indicator scalar field per named BC group, for the initial-condition VTK snapshot.
 
@@ -617,6 +647,8 @@ def _write_matrix_output(
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
 
+    scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T)
+
     write_mesh2vtk(
         filename,
         "TANGO",
@@ -624,6 +656,7 @@ def _write_matrix_output(
         mesh["conn"],
         scalardata_point,
         vectordata_point,
+        scalardata_cell,
     )
 
 

@@ -167,6 +167,10 @@ def _assign_ic_bc_compatible(
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
     sim_control_SS = _build_steady_state_controls(sim_control)
+    # Initialized reference values -> set as current values and neglect
+    # strains when establishing initial conditions
+    material["T_0"] = primary_variables["T"][:, 0]
+    material["p_0"] = primary_variables["p"][:, 0]
 
     if sim_control_SS["viscosity_nonconstant"]:
         # viscosity is a function of temperature, fully coupled steady-state
@@ -282,6 +286,8 @@ def _assign_initial_conditions(
             f"Supported types: {', '.join(supported_types)}\n"
         )
 
+    material["p_0"] = primary_variables["p"][:, 0].copy()
+    material["T_0"] = primary_variables["T"][:, 0].copy()
     return primary_variables, material
 
 
