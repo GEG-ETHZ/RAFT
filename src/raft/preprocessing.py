@@ -292,6 +292,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
                 phi * mat["fluid"]["therm_cond"] * np.eye(nsd)
                 + (1 - phi) * (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
             )
+            mat["solid"]["therm_cond"][r] = (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
         else:
             # isotropic case
             lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * lambda_s

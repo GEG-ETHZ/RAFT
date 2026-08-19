@@ -7,7 +7,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_nonlinear_matrices
+from .matrixassembly import integrate_nonlinear_matrices, integrate_residuals
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -341,8 +341,10 @@ def lin_extrap_time_integration(  # noqa
     is calculated between the predicted and calculated temperatures for convergence.
     """
     # extract vectors of nodal dofs
-    p = primary_variables["p"].copy()
-    T = primary_variables["T"].copy()
+    p = primary_variables["p"]
+    T = primary_variables["T"]
+    p_orig = primary_variables["p"].copy()
+    T_orig = primary_variables["T"].copy()
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
@@ -375,6 +377,7 @@ def lin_extrap_time_integration(  # noqa
     # One-pass update: solve pressure iteratively, then temperature
 
     T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
+    T[:, 0] = T_extrap
     # Rate of temperature change, used only for the pressurization forcing term
     T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
 
@@ -412,7 +415,7 @@ def lin_extrap_time_integration(  # noqa
             else {}
         )
         p_n = p[:, 0].reshape(-1, 1)
-        # R = integrate_residuals(mesh, material, primary_variables, sim_control, pressure_only=True)
+        R = integrate_residuals(mesh, material, primary_variables, sim_control, cv, pressure_only=True)
 
         R = compute_residuals(
             nonlinear_matrices,
@@ -486,6 +489,8 @@ def lin_extrap_time_integration(  # noqa
         if iteration >= iter_max:
             if verbose:
                 print(" - CONVERGENCE FAILED")
+            primary_variables["p"] = p_orig
+            primary_variables["T"] = T_orig
             break
     # ---- Calculate reaction flow rates at prescribed DoFs
     KEE = A[np.ix_(nE, nE)]

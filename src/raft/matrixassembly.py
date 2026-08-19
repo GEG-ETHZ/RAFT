@@ -581,8 +581,9 @@ def _get_region_solid_data(
     rho_s = mat["solid"]["density"][r]
     cp_s = mat["solid"]["specific_heat"][r]
     alpha_s = mat["solid"]["therm_expansion"][r]
+    lambda_s = mat["solid"]["therm_cond"][r]
 
-    return K_d, phi_0, biot, rho_s, cp_s, alpha_s
+    return K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s
 
 
 _YELLOW = "\033[93m"
@@ -844,225 +845,19 @@ def integrate_linear_matrices(  # noqa
     )
 
 
-@dataclass
-class _SUPGQuantities:
-    """Flux, Peclet number, and SUPG stabilization terms at an element's quadrature points.
-
-    Computed once per element by `_compute_supg_quantities` and shared by every
-    physics block that needs them (base advection, viscosity correction, and the
-    fully-coupled pressure/temperature off-diagonal terms), instead of recomputing
-    or re-threading them through each block individually.
-    """
-
-    gradp: npt.NDArray[np.float64]  # nq x nsd x 1
-    flux: npt.NDArray[np.float64]  # nq x nsd x 1
-    flux_T: npt.NDArray[np.float64]  # nq x 1 x nsd # noqa
-    flux_mag: npt.NDArray[np.float64]  # nq,
-    tau: npt.NDArray[np.float64]  # nq x 1 x 1
-    Pe: npt.NDArray[np.float64]  # Peclet number
-    integrand_Kstab: npt.NDArray[np.float64]  # tau * flux @ flux_T, used for K_stab_TT # noqa
-
-
-def _compute_supg_quantities(
-    B_q: npt.NDArray[np.float64],
-    pe: npt.NDArray[np.float64],
-    advec_conduct: npt.NDArray[np.float64],
-    isotropic_perm: bool,
-    isotropic_cond: bool,
-    lambda_e: npt.NDArray[np.float64] | float,
-    L_vec: npt.NDArray[np.float64],
-    nq: int,
-    nsd: int,
-) -> _SUPGQuantities:
-    """Compute the Darcy flux and SUPG (Shakib, Hughes, & Zohan (1991)) stabilization terms."""
-    gradp = B_q @ pe  # nq x nsd x 1
-
-    flux = -advec_conduct * gradp if isotropic_perm else -advec_conduct @ gradp
-    flux_T = flux.transpose(0, 2, 1)  # quadrature-point-wise transpose, calculate once
-    if nsd == 3:
-        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)  # flux magnitude
-    elif nsd == 2:
-        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)  # flux magnitude
-    else:
-        flux_mag = np.abs(flux)
-    indx_noflow = np.nonzero(flux_mag == 0)
-    # prevent divide by zero
-    flux_mag[indx_noflow] = 1.0e-15
-    flux[indx_noflow, :, :] = 1.0e-15
-
-    # Effective length weighted by fluxes
-    if nsd == 3:
-        h_eff = flux_mag / np.sqrt(
-            (flux[:, 0, 0] / L_vec[0, 0]) ** 2
-            + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
-            + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
-        )
-    elif nsd == 2:
-        h_eff = flux_mag / np.sqrt((flux[:, 0, 0] / L_vec[0, 0]) ** 2 + (flux[:, 1, 0] / L_vec[1, 0]) ** 2)
-    else:
-        h_eff = L_vec * np.ones((1, 1, nq))
-        flux_mag = flux_mag.reshape(1, 1, -1)  # reshape for 1D broadcasting
-
-    if isotropic_cond:
-        lambda_e_projected = lambda_e * np.ones((nq, 1, 1))
-    else:
-        # anisotropic case - project conductivity along flowlines
-        n_stream = flux / flux_mag.reshape(-1, 1, 1)
-        n_stream_T = n_stream.transpose(0, 2, 1)
-        lambda_e_projected = (n_stream_T @ lambda_e) @ n_stream  # nq x 1 x 1
-
-    # Peclet number
-    Pe = h_eff * flux_mag / lambda_e_projected.reshape(1, 1, -1)
-
-    # SUPG stabilization coefficient
-    tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
-    tau[:, :, indx_noflow] = 0
-    tau = tau.reshape(-1, 1, 1)
-
-    integrand_Kstab = tau * flux @ flux_T
-
-    return _SUPGQuantities(
-        gradp=gradp,
-        flux=flux,
-        flux_T=flux_T,
-        flux_mag=flux_mag,
-        tau=tau,
-        Pe=Pe,
-        integrand_Kstab=integrand_Kstab,
-    )
-
-
-def _integrate_pressure_flow_terms(
-    N_q: npt.NDArray[np.float64],
-    B_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
-    gradT: npt.NDArray[np.float64],
-    gradP: npt.NDArray[np.float64],
-    kf: npt.NDArray[np.float64] | float,
-    mu_q: npt.NDArray[np.float64],
-    dmu_dp_q: npt.NDArray[np.float64],
-    kf_b: npt.NDArray[np.float64],
-    isotropic_perm: bool,
-    kf_b_scalar: bool = False,
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate Darcy conductance/buoyancy (residual) and their viscosity-linearization
-    (tangent) corrections into "K_pp_R"/"K_pp_tan"/"K_pT_R". `kf_b_scalar` selects the
-    fracture-mesh (scalar) vs bulk-mesh (matmul) form of KbT.
-    """
-    Kpp = _vectorized_quad_point_integration(B_q, kf / mu_q, B_q, wJe_q, isotropic_perm)
-    KbT = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, kf_b_scalar)
-
-    # both are d(R_p)/dp corrections -> K_pp_tan (KbT depends on p only via mu(p))
-    integrand_Kpp_dmudp = -dmu_dp_q / mu_q**2 * (kf * gradP if isotropic_perm else kf @ gradP)
-    Kpp_dmudp = _vectorized_quad_point_integration(B_q, integrand_Kpp_dmudp, N_q, wJe_q, isotropic_perm)
-    integrand_KbT_dmudp = -dmu_dp_q / mu_q * kf_b @ gradT
-    KbT_dmudp = _vectorized_quad_point_integration(N_q, integrand_KbT_dmudp, N_q, wJe_q, kf_b_scalar)
-
-    return {
-        "K_pp_R": -Kpp,
-        "K_pp_tan": -(Kpp_dmudp + KbT_dmudp),
-        "K_pT_R": KbT,
-    }
-
-
-def _integrate_viscosity_temperature_correction(
-    N_q: npt.NDArray[np.float64],
-    B_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
-    gradT: npt.NDArray[np.float64],
-    supg: _SUPGQuantities,
-    mu_q: npt.NDArray[np.float64],
-    dmu_dT_q: npt.NDArray[np.float64],
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate the viscosity-derivative correction to advection/stabilization -> "K_TT_tan"."""
-    FA = supg.flux_T @ gradT
-    integrand_KATT_mu = -1 / mu_q @ FA * dmu_dT_q
-
-    Fstab = (supg.tau * supg.flux) @ (supg.flux_T @ gradT)
-
-    # tau derivative wrt mu(T) correction factor
-    correction_factor = 0.5 * (supg.Pe**2 + 18) / (supg.Pe**2 + 9)
-    integrand_Kstab_mu = -2 / mu_q * Fstab * dmu_dT_q * correction_factor.reshape(-1, 1, 1)
-
-    KATT_mu = _vectorized_quad_point_integration(N_q, integrand_KATT_mu, N_q, wJe_q, False)
-    K_stab_TT_mu = _vectorized_quad_point_integration(B_q, integrand_Kstab_mu, N_q, wJe_q, False)
-
-    return {"K_TT_tan": KATT_mu + K_stab_TT_mu}
-
-
-def _integrate_coupled_pressure_terms(
-    N_q: npt.NDArray[np.float64],
-    B_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
-    gradT: npt.NDArray[np.float64],
-    supg: _SUPGQuantities,
-    advec_conduct: npt.NDArray[np.float64],
-    isotropic_perm: bool,
-    nsd: int,
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate the temperature-wrt-pressure off-diagonal matrices -> "K_Tp_tan"."""
-    Rth_dp = -advec_conduct * gradT if isotropic_perm else -advec_conduct @ gradT
-    integrand_KATp = Rth_dp.transpose(0, 2, 1)  # nq x 1 x nsd
-
-    # Stabilization wrt p
-    Rth = supg.flux_T @ gradT
-    inner_term = Rth * np.eye(nsd) + supg.flux @ gradT.transpose(0, 2, 1)
-
-    flux_mag_sq = supg.flux_mag.reshape(-1, 1, 1) ** 2
-    pe_factor = supg.Pe**2 / (supg.Pe**2 + 9)
-    tau_correction_Tp = pe_factor.reshape(-1, 1, 1) * (Rth / flux_mag_sq) * (supg.flux @ supg.flux_T)
-    inner_term = inner_term - tau_correction_Tp
-
-    integrand_Kstab_Tp = (
-        -supg.tau * advec_conduct * inner_term if isotropic_perm else -supg.tau * (inner_term @ advec_conduct)
-    )
-
-    KATp = _vectorized_quad_point_integration(N_q, integrand_KATp, B_q, wJe_q, False)
-    K_stab_Tp = _vectorized_quad_point_integration(B_q, integrand_Kstab_Tp, B_q, wJe_q, False)
-
-    return {"K_Tp_tan": -(KATp + K_stab_Tp)}
-
-
-def _integrate_viscosity_pressure_correction(
-    N_q: npt.NDArray[np.float64],
-    B_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
-    supg: _SUPGQuantities,
-    kf: npt.NDArray[np.float64] | float,
-    mu_q: npt.NDArray[np.float64],
-    dmu_dT_q: npt.NDArray[np.float64],
-    kf_b: npt.NDArray[np.float64],
-    del_T: npt.NDArray[np.float64],
-    isotropic_perm: bool,
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Integrate the viscosity-wrt-temperature correction to the pressure/buoyancy matrices -> "K_pT_tan"."""
-    # contribution of viscosity to pressure terms
-    Fk = kf / mu_q * supg.gradp if isotropic_perm else kf / mu_q @ supg.gradp  # (nq, nsd, 1)
-    Fb = kf_b @ B_q @ del_T  # (nq, 1, 1)
-
-    #   Darcy's law component
-    integrand_KpT_mu_p = -(dmu_dT_q / mu_q) * Fk  # (nq, nsd, 1), elementwise
-    #   Buoyancy component
-    integrand_KpT_mu_b = -1.0 / mu_q * Fb @ dmu_dT_q
-
-    KpT_mu_p = _vectorized_quad_point_integration(B_q, integrand_KpT_mu_p, N_q, wJe_q, False)
-    KpT_mu_b = _vectorized_quad_point_integration(N_q, integrand_KpT_mu_b, N_q, wJe_q, False)
-
-    return {"K_pT_tan": KpT_mu_p + KpT_mu_b}
-
-
 def integrate_residuals(  # noqa
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
+    cv: npt.NDArray[np.float64],  # rate coefficients
     *,
     is_fracture: bool = False,
     pressure_only: bool = False,
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
-    p = primary_variables["p"][:, 0]
-    T = primary_variables["T"][:, 0]
+    p = primary_variables["p"]
+    T = primary_variables["T"]
 
     p_0 = mat["p_0"]
     T_0 = mat["T_0"]
@@ -1075,9 +870,10 @@ def integrate_residuals(  # noqa
     # fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
-    # advection_on = bool(controls["advection_on"])
+    advection_on = bool(controls["advection_on"])
 
     fluid = mat["fluid"]
+    lambda_f = fluid["therm_cond"]
     # mu = fluid["viscosity"]
     # mu_q = mu
     # cp_f = fluid["specific_heat"]
@@ -1137,7 +933,7 @@ def integrate_residuals(  # noqa
             mesh, mat, fmesh, nodes_f, is_fracture, r
         )
         lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
-        K_d, phi_0, biot, rho_s, cp_s, alpha_s = _get_region_solid_data(mat, r)
+        K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(mat, r)
 
         # advection velocity = advection_conductivity * pressure gradient
         if mu_linear and density_linear:
@@ -1170,43 +966,133 @@ def integrate_residuals(  # noqa
             # Element vectors initialize
             element_vectors: dict[str, npt.NDArray[np.float64]] = {}
 
-            Te = T[enodes_dof].reshape(-1, 1)  # element nodal temperatures
-            pe = p[enodes_dof].reshape(-1, 1)  # element nodal pressures
+            Te = T[enodes_dof]  # element nodal temperatures
+            pe = p[enodes_dof]  # element nodal pressures
             T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
             p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
             L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths # noqa
 
-            T_q = N_q @ Te  # quadrature point temperatures
-            P_q = N_q @ pe  # quadrature point pressures
-            gradT = B_q @ Te  # qudarature point temperature gradient # noqa
-            gradP = B_q @ pe  # quadrature point pressure gradient
-            mu_q, _, _ = get_viscosity(T_q, P_q, fluid)  # quadrature point viscosities
-            rho_f_q, _, _ = get_density(T_q, P_q, fluid)  # quadrature point densities
+            T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
+            P_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
+            gradT = B_q @ Te[:, 0].reshape(-1, 1)  # qudarature point temperature gradient, nq x nsd x 1
+            gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
+            mu_q, _, _ = get_viscosity(
+                T_q[:, :, 0], P_q[:, :, 0], fluid
+            )  # quadrature point viscosities, nq x 1 x 1
+            mu_q = mu_q.reshape(-1, 1, 1)
+            rho_f_q, _, _ = get_density(
+                T_q, P_q, fluid
+            )  # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
+            rho_f_qn = rho_f_q[:, :, 0].reshape(-1, 1, 1)
 
             darcy_flux = (
-                rho_f_q * kf / mu_q * (gradP + rho_f_q * g)
-                if isotropic_perm
-                else rho_f_q * kf / mu_q @ (gradP + rho_f_q * g)
+                -kf / mu_q * (gradP + rho_f_qn * g) if isotropic_perm else -kf / mu_q @ (gradP + rho_f_qn * g)
             )
 
             phi_L = get_porosity_lagrangian(P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s)
 
             # ------ Conservation of mass
             # Storage vector
+            f_mass = phi_L * rho_f_q
+            mass_dot_q = cv[0] * f_mass[:, :, 0:1] + cv[1] * f_mass[:, :, 1:2] + cv[2] * f_mass[:, :, 2:3]
             element_vectors["F_Pstorage"] = _vectorized_qp_vector_integration(
-                B_q, phi_L * rho_f_q, wJe_q, isotropic_perm
+                N_q, mass_dot_q, wJe_q, isotropic_perm
             )
 
             # Diffusion vector
             element_vectors["F_Pdiffusion"] = _vectorized_qp_vector_integration(
-                B_q, darcy_flux, wJe_q, isotropic_perm
+                B_q, rho_f_qn * darcy_flux, wJe_q, isotropic_perm
             )
 
             # ------ Conservation of energy
             if not pressure_only:
-                u_fq = get_internal_energy(T_q, P_q, fluid)  # noqa
-                h_fq = get_enthalpy(P_q, T_q, fluid)  # noqa
-                E_q = (1 - phi_L) * cp_s * T_q + phi_L * rho_f_q * u_fq  # noqa
+                # Thermo-dynamic internal variables
+                u_fq = get_internal_energy(T_q, P_q, fluid)  # fluid internal energy, nq x 1 x 1
+                h_fq = get_enthalpy(P_q[:, :, 0:1], T_q[:, :, 0:1], fluid)  # fluid enthalpy, nq x 1 x 1
+                E_q = (1 - phi_L) * cp_s * T_q + phi_L * rho_f_q * u_fq  # total energy, nq x 1 x 1
+                energy_dot_q = cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+
+                # Effective conductivity
+                phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
+                lambda_e = (
+                    phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
+                    if isotropic_cond
+                    else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
+                )
+
+                element_vectors["F_Tstorage"] = _vectorized_qp_vector_integration(
+                    N_q, energy_dot_q, wJe_q, True
+                )
+
+                # Diffusion vector
+                element_vectors["F_Tdiffusion"] = _vectorized_qp_vector_integration(
+                    B_q, lambda_e * gradT, wJe_q, isotropic_cond
+                )
+
+                # Advection and SUPG stabilization
+                if advection_on:
+                    flux = rho_f_qn * h_fq * darcy_flux
+                    if nsd == 3:
+                        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
+                    elif nsd == 2:
+                        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
+                    else:
+                        flux_mag = np.abs(flux)
+                    indx_noflow = np.nonzero(flux_mag == 0)
+                    # prevent divide by zero
+                    flux_mag[indx_noflow] = 1.0e-15
+                    flux[indx_noflow, :, :] = 1.0e-15
+
+                    # Effective length weighted by fluxes
+                    if nsd == 3:
+                        dl_eff = flux_mag / np.sqrt(
+                            (flux[:, 0, 0] / L_vec[0, 0]) ** 2
+                            + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
+                            + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
+                        )
+                    elif nsd == 2:
+                        dl_eff = flux_mag / np.sqrt(
+                            (flux[:, 0, 0] / L_vec[0, 0]) ** 2 + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
+                        )
+                    else:
+                        dl_eff = L_vec * np.ones((1, 1, nq))
+                        flux_mag = flux_mag.reshape(1, 1, -1)  # reshape for 1D broadcasting
+
+                    if isotropic_cond:
+                        lambda_e_projected = lambda_e * np.ones((nq, 1, 1))
+                    else:
+                        # anisotropic case - project conductivity along flowlines
+                        n_stream = flux / flux_mag.reshape(-1, 1, 1)
+                        n_stream_T = n_stream.transpose(0, 2, 1)
+                        lambda_e_projected = (n_stream_T @ lambda_e) @ n_stream  # nq x 1 x 1
+
+                    # Peclet number
+                    Pe = dl_eff * flux_mag / lambda_e_projected.reshape(1, 1, -1)
+
+                    # SUPG stabilization coefficient
+                    tau = dl_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+                    tau[:, :, indx_noflow] = 0
+                    tau = tau.reshape(-1, 1, 1)
+
+                    # Discretized strong form residual at quadrature points
+                    hf_e = get_enthalpy(
+                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), fluid
+                    )  # fluid enthalpy, nq x 1 x 1
+                    grad_hf = B_q @ hf_e
+                    rhof_e, _, _ = get_density(
+                        Te[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
+                    )  # fluid enthalpy, nq x 1 x 1
+                    grad_rhof = B_q @ rhof_e
+                    RTh = (
+                        energy_dot_q + (grad_hf * rho_f_qn + h_fq * grad_rhof).transpose(0, 2, 1) @ darcy_flux
+                    )  # discretized residual
+
+                    # advection
+                    integrand_advection = rho_f_qn * darcy_flux * h_fq
+                    integrand_SUPG = rho_f_qn * darcy_flux * h_fq * tau * RTh
+                    element_vectors["F_Tadvection"] = _vectorized_qp_vector_integration(
+                        B_q, integrand_advection + integrand_SUPG, wJe_q, isotropic_perm
+                    )
 
             # ----- Fracture-matrix pressure coupling
             if is_fracture and mu_nonlinear:
@@ -1234,7 +1120,7 @@ def integrate_residuals(  # noqa
                     vec_counter_mm = stop
 
             # ----- Assemble element contributions into global matrices
-            stop = vec_counter + nne * nne  # vectorized index count end
+            stop = vec_counter + nne  # vectorized index count end
             _store_vectorized_element_matrix(vec, element_vectors, vec_counter, stop)
             vec_counter = stop
 
@@ -1243,7 +1129,7 @@ def integrate_residuals(  # noqa
         vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
     )
 
-    if is_fracture:
+    if is_fracture:  # Fracture residuals to be updated
         if mu_nonlinear:
             # rename to match the "K_pp_R" bucket name for `_stack_fracture_matrices`
             nn_m = mesh["nn"]
@@ -1419,18 +1305,30 @@ def integrate_nonlinear_matrices(  # noqa
                     ng.T @ np.dot(kf, ng) / mu_q * alpha_f * rho_f_q @ (g.T @ u if is_fracture else g.T)
                 )  # kf component in gravity direction
 
-                # Integrate the tangent matrices
-                # Kpp = dFk / dp - Darcy's Law
-                # KbT = dFb / dT - Buoyancy
+                # Integrate the tangent matrices: Kpp = dFk/dp (Darcy's Law), KbT = dFb/dT (Buoyancy)
+                Kpp = _vectorized_quad_point_integration(B_q, kf / mu_q, B_q, wJe_q, isotropic_perm)
+                KbT = _vectorized_quad_point_integration(N_q, kf_b, B_q, wJe_q, is_fracture)
+
+                integrand_Kpp_dmudp = -dmu_dp_q / mu_q**2 * (kf * gradP if isotropic_perm else kf @ gradP)
+                Kpp_dmudp = _vectorized_quad_point_integration(
+                    B_q, integrand_Kpp_dmudp, N_q, wJe_q, isotropic_perm
+                )
+                integrand_KbT_dmudp = -dmu_dp_q / mu_q * kf_b @ gradT
+                KbT_dmudp = _vectorized_quad_point_integration(
+                    N_q, integrand_KbT_dmudp, N_q, wJe_q, is_fracture
+                )
+
                 _accumulate_element_matrices(
                     element_matrices,
-                    _integrate_pressure_flow_terms(
-                        N_q, B_q, wJe_q, gradT, gradP, kf, mu_q, dmu_dp_q, kf_b, isotropic_perm, is_fracture
-                    ),
+                    {
+                        "K_pp_R": -Kpp,
+                        "K_pp_tan": -(Kpp_dmudp + KbT_dmudp),
+                        "K_pT_R": KbT,
+                    },
                 )
 
             # ----------------------------------- Advection and stabilization
-            # Calculate fluxes, stabilization coefficicent, pressure gradients and store in supg dataclass
+            # Calculate fluxes, stabilization coefficicent, pressure gradients
             if density_nonlinear:
                 T_q = N_q @ Te  # quadrature point temperatures
                 P_q = N_q @ pe  # quadrature point pressures
@@ -1438,58 +1336,136 @@ def integrate_nonlinear_matrices(  # noqa
                 advec_conduct = cp_f * rho_f_q * kf / mu_q  # advection conductivity
 
             if not pressure_only:
-                supg = _compute_supg_quantities(
-                    B_q, pe, advec_conduct, isotropic_perm, isotropic_cond, lambda_e, L_vec, nq, nsd
-                )
+                # Darcy flux and SUPG (Shakib, Hughes, & Zohan (1991)) stabilization terms
+                gradp = B_q @ pe  # nq x nsd x 1
+
+                flux = -advec_conduct * gradp if isotropic_perm else -advec_conduct @ gradp
+                flux_T = flux.transpose(0, 2, 1)  # quadrature-point-wise transpose, calculate once
+                if nsd == 3:
+                    flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
+                elif nsd == 2:
+                    flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
+                else:
+                    flux_mag = np.abs(flux)
+                indx_noflow = np.nonzero(flux_mag == 0)
+                # prevent divide by zero
+                flux_mag[indx_noflow] = 1.0e-15
+                flux[indx_noflow, :, :] = 1.0e-15
+
+                # Effective length weighted by fluxes
+                if nsd == 3:
+                    h_eff = flux_mag / np.sqrt(
+                        (flux[:, 0, 0] / L_vec[0, 0]) ** 2
+                        + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
+                        + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
+                    )
+                elif nsd == 2:
+                    h_eff = flux_mag / np.sqrt(
+                        (flux[:, 0, 0] / L_vec[0, 0]) ** 2 + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
+                    )
+                else:
+                    h_eff = L_vec * np.ones((1, 1, nq))
+                    flux_mag = flux_mag.reshape(1, 1, -1)  # reshape for 1D broadcasting
+
+                if isotropic_cond:
+                    lambda_e_projected = lambda_e * np.ones((nq, 1, 1))
+                else:
+                    # anisotropic case - project conductivity along flowlines
+                    n_stream = flux / flux_mag.reshape(-1, 1, 1)
+                    n_stream_T = n_stream.transpose(0, 2, 1)
+                    lambda_e_projected = (n_stream_T @ lambda_e) @ n_stream  # nq x 1 x 1
+
+                # Peclet number
+                Pe = h_eff * flux_mag / lambda_e_projected.reshape(1, 1, -1)
+
+                # SUPG stabilization coefficient
+                tau = h_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+                tau[:, :, indx_noflow] = 0
+                tau = tau.reshape(-1, 1, 1)
+
+                integrand_Kstab = tau * flux @ flux_T
 
                 # advection + SUPG stabilization -> "K_TT_R"; skip the integration outright when off
                 if advection_on:
-                    KATT = _vectorized_quad_point_integration(N_q, supg.flux_T, B_q, wJe_q, False)
-                    K_stab_TT = _vectorized_quad_point_integration(
-                        B_q, supg.integrand_Kstab, B_q, wJe_q, False
-                    )
+                    KATT = _vectorized_quad_point_integration(N_q, flux_T, B_q, wJe_q, False)
+                    K_stab_TT = _vectorized_quad_point_integration(B_q, integrand_Kstab, B_q, wJe_q, False)
                     _accumulate_element_matrices(element_matrices, {"K_TT_R": -(KATT + K_stab_TT)})
 
                 # ---------------------------------- Viscosity correction
                 if mu_nonlinear:
-                    # Integrate tangent matrices:
-                    # KATT_mu = dFA / dmu * dmu / dT
-                    # K_stab_TT_mu = dF_stab / dmu * dmu / dT
-                    _accumulate_element_matrices(
-                        element_matrices,
-                        _integrate_viscosity_temperature_correction(
-                            N_q, B_q, wJe_q, gradT, supg, mu_q, dmu_dT_q
-                        ),
+                    # Integrate tangent matrices: KATT_mu = dFA/dmu * dmu/dT,
+                    # K_stab_TT_mu = dF_stab/dmu * dmu/dT
+                    FA = flux_T @ gradT
+                    integrand_KATT_mu = -1 / mu_q @ FA * dmu_dT_q
+
+                    Fstab = (tau * flux) @ (flux_T @ gradT)
+
+                    # tau derivative wrt mu(T) correction factor
+                    correction_factor = 0.5 * (Pe**2 + 18) / (Pe**2 + 9)
+                    integrand_Kstab_mu = -2 / mu_q * Fstab * dmu_dT_q * correction_factor.reshape(-1, 1, 1)
+
+                    KATT_mu = _vectorized_quad_point_integration(N_q, integrand_KATT_mu, N_q, wJe_q, False)
+                    K_stab_TT_mu = _vectorized_quad_point_integration(
+                        B_q, integrand_Kstab_mu, N_q, wJe_q, False
                     )
+
+                    _accumulate_element_matrices(element_matrices, {"K_TT_tan": KATT_mu + K_stab_TT_mu})
 
                 # ----------------------------------- Fully coupled off diagonal terms
                 if fully_coupled:
                     if advection_on:
-                        # Integrate the off-diagonal tangents wrt pressure
-                        # KATp = dFA / dp
-                        # K_stab_Tp = dF_stab / dp
+                        # Integrate off-diagonal tangents wrt pressure: KATp = dFA/dp, K_stab_Tp = dF_stab/dp
                         gradT = B_q @ Te  # qudarature point temperature gradient
-                        _accumulate_element_matrices(
-                            element_matrices,
-                            _integrate_coupled_pressure_terms(
-                                N_q, B_q, wJe_q, gradT, supg, advec_conduct, isotropic_perm, nsd
-                            ),
+                        Rth_dp = -advec_conduct * gradT if isotropic_perm else -advec_conduct @ gradT
+                        integrand_KATp = Rth_dp.transpose(0, 2, 1)  # nq x 1 x nsd
+
+                        # Stabilization wrt p
+                        Rth = flux_T @ gradT
+                        inner_term = Rth * np.eye(nsd) + flux @ gradT.transpose(0, 2, 1)
+
+                        flux_mag_sq = flux_mag.reshape(-1, 1, 1) ** 2
+                        pe_factor = Pe**2 / (Pe**2 + 9)
+                        tau_correction_Tp = (
+                            pe_factor.reshape(-1, 1, 1) * (Rth / flux_mag_sq) * (flux @ flux_T)
                         )
+                        inner_term = inner_term - tau_correction_Tp
+
+                        integrand_Kstab_Tp = (
+                            -tau * advec_conduct * inner_term
+                            if isotropic_perm
+                            else -tau * (inner_term @ advec_conduct)
+                        )
+
+                        KATp = _vectorized_quad_point_integration(N_q, integrand_KATp, B_q, wJe_q, False)
+                        K_stab_Tp = _vectorized_quad_point_integration(
+                            B_q, integrand_Kstab_Tp, B_q, wJe_q, False
+                        )
+
+                        _accumulate_element_matrices(element_matrices, {"K_Tp_tan": -(KATp + K_stab_Tp)})
 
                     if mu_nonlinear:
                         # If non-linear viscosity, integrate the viscosity tangents (unrelated to
                         # advection - this stays unconditional on advection_on)
 
-                        # viscosity wrt T
-                        # KpT_mu_p = dFk / dmu * dmu / dT - for Darcy's law
-                        # KpT_mu_b = dFb / dmu * dmu / dT - for buoyancy
+                        # viscosity wrt T: KpT_mu_p = dFk/dmu * dmu/dT (Darcy's law),
+                        # KpT_mu_b = dFb/dmu * dmu/dT (buoyancy)
                         del_T = Te - fluid["reference_temperature"]
-                        _accumulate_element_matrices(
-                            element_matrices,
-                            _integrate_viscosity_pressure_correction(
-                                N_q, B_q, wJe_q, supg, kf, mu_q, dmu_dT_q, kf_b, del_T, isotropic_perm
-                            ),
+                        Fk = kf / mu_q * gradp if isotropic_perm else kf / mu_q @ gradp  # (nq, nsd, 1)
+                        Fb = kf_b @ B_q @ del_T  # (nq, 1, 1)
+
+                        #   Darcy's law component
+                        integrand_KpT_mu_p = -(dmu_dT_q / mu_q) * Fk  # (nq, nsd, 1), elementwise
+                        #   Buoyancy component
+                        integrand_KpT_mu_b = -1.0 / mu_q * Fb @ dmu_dT_q
+
+                        KpT_mu_p = _vectorized_quad_point_integration(
+                            B_q, integrand_KpT_mu_p, N_q, wJe_q, False
                         )
+                        KpT_mu_b = _vectorized_quad_point_integration(
+                            N_q, integrand_KpT_mu_b, N_q, wJe_q, False
+                        )
+
+                        _accumulate_element_matrices(element_matrices, {"K_pT_tan": KpT_mu_p + KpT_mu_b})
 
             # ----- Fracture-matrix pressure coupling
             if is_fracture and mu_nonlinear:
