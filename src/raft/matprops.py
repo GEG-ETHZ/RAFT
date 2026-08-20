@@ -88,14 +88,16 @@ def get_porosity(
     P_0: npt.NDArray[np.float64],
     phi_0: float,
     K_d: float,
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the current porosity based on the undeformed reference state.
 
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
     """
     phi = 1 - (1 - phi_0) * np.exp(-(P - P_0) / K_d)
+    dphi_dT = 0
+    dphi_dp = -(phi - 1) / K_d
 
-    return phi
+    return phi, dphi_dT, dphi_dp
 
 
 def get_volumetricstrain(
@@ -106,13 +108,15 @@ def get_volumetricstrain(
     K_d: float,
     biot: float,
     therm_expansion,
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the volumetric strain of the solid skeleton relative to the undeformed reference state.
     Non-volumetric sources are neglected.
     """
     strain = biot / K_d * (P - P_0) + therm_expansion * (T - T_0)
+    dstrain_dT = therm_expansion
+    dstrain_dp = biot / K_d
 
-    return strain
+    return strain, dstrain_dT, dstrain_dp
 
 
 def get_porosity_lagrangian(
@@ -124,20 +128,23 @@ def get_porosity_lagrangian(
     K_d: float,
     biot: float,
     therm_expansion,
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the Lagrangian porosity which includes the volumetric strain in the deformed state."""
-    phi = get_porosity(P, P_0, phi_0, K_d)
-    strain = get_volumetricstrain(P, P_0, T, T_0, K_d, biot, therm_expansion)
-    phi_L = phi * (1 + strain)
+    phi, dphi_dT, dphi_dp = get_porosity(P, P_0, phi_0, K_d)
+    strain, dstrain_dT, dstrain_dp = get_volumetricstrain(P, P_0, T, T_0, K_d, biot, therm_expansion)
 
-    return phi_L
+    phi_L = phi * (1 + strain)
+    dphiL_dT = dphi_dT * (1 + strain) + phi * dstrain_dT
+    dphiL_dp = dphi_dp * (1 + strain) + phi * dstrain_dp
+
+    return phi_L, dphiL_dT, dphiL_dp
 
 
 def get_enthalpy(
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     fluid: dict[str, Any],
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the fluid enthalpy at a specified pressure and temperature."""
     if fluid["density"] != 0:
         # Linearized internal energy
@@ -148,28 +155,53 @@ def get_enthalpy(
         cp_f = fluid["specific_heat"]
 
         h_f = cp_f * (T - T0) + (1 - T0 * alpha_f) / rho_f * (p - p0)
+        dhf_dT = cp_f
+        dhf_dp = (1 - T0 * alpha_f) / rho_f
     else:
         # Nonlinear internal energy
         h_f = 0
-    return h_f
+        dhf_dT = 0
+        dhf_dp = 0
+    return h_f, dhf_dT, dhf_dp
 
 
 def get_internal_energy(
     T: npt.NDArray[np.float64],
-    p: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
-) -> npt.NDArray[np.float64]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the fluid internal energy at a specified pressure and temperature."""
     if fluid["density"] != 0:
         # Linearized internal energy
-        rho_f = fluid["density"]
+        rho_f = fluid["density"]  # noqa
         T0 = fluid["reference_temperature"]
-        p0 = fluid["reference_pressure"]
-        alpha_f = fluid["therm_expansion"]
+        p0 = fluid["reference_pressure"]  # noqa
+        alpha_f = fluid["therm_expansion"]  # noqa
         cp_f = fluid["specific_heat"]
 
-        u_f = (cp_f + p0 * alpha_f / rho_f) * (T - T0) + (p0 * cp_f - T0 * alpha_f) / rho_f * (p - p0)
+        # u_f = (cp_f + p0 * alpha_f / rho_f) * (T - T0) + (p0 * cp_f - T0 * alpha_f) / rho_f * (p - p0)
+        # duf_dT = (cp_f + p0 * alpha_f / rho_f)
+        # duf_dp = (p0 * cp_f - T0 * alpha_f) / rho_f
+        u_f = cp_f * (T - T0)
+        duf_dT = cp_f
+        duf_dp = 0
     else:
         # Nonlinear internal energy
         u_f = 0
-    return u_f
+        duf_dT = 0
+        duf_dp = 0
+    return u_f, duf_dT, duf_dp
+
+
+def get_effective_permeability(
+    kf: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],  # noqa
+    p: npt.NDArray[np.float64],  # noqa
+    fluid: dict[str, Any],  # noqa
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
+    kf_eff = kf
+    dkf_dT = 0
+    dkf_dp = 0
+
+    return kf_eff, dkf_dT, dkf_dp

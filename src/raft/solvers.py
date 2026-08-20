@@ -7,7 +7,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_nonlinear_matrices, integrate_residuals
+from .matrixassembly import integrate_nonlinear_matrices, integrate_residuals, integrate_tangent_matrices
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -144,6 +144,28 @@ def compute_residuals(
 
         T_n = T[:, 0].reshape(-1, 1)
         R["T"] = -C @ T_dot - KTT @ T_n + K_TT_R @ T_n + F_extT
+
+    return R
+
+
+def compute_residuals_comp(
+    F_vec: dict[str, Any],
+    F_extp: npt.NDArray[np.float64],
+    F_extT: npt.NDArray[np.float64],
+    *,
+    fully_coupled: bool,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Assemble integrated residuals alongside external force vectors."""
+    F_Pstorage = F_vec["F_Pstorage"]
+    F_Pdiffusion = F_vec["F_Pdiffusion"]
+
+    R = {"p": F_Pstorage - F_Pdiffusion + F_extp}
+
+    if fully_coupled:
+        F_Tstorage = F_vec["F_Pstorage"]
+        F_Tdiffusion = F_vec["F_Pdiffusion"]
+        F_Tadvection = F_vec["F_Pdiffusion"]
+        R["T"] = F_Tstorage + F_Tdiffusion + F_Tadvection + F_extT
 
     return R
 
@@ -355,7 +377,7 @@ def lin_extrap_time_integration(  # noqa
     aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
 
     steady_temp = sim_control["steady_temperature"]
-    mu_nonlinear = sim_control["viscosity_nonconstant"]
+    # mu_nonlinear = sim_control["viscosity_nonconstant"]
     # extract mesh characteristics
     nn = mesh["nn_total"]
 
@@ -379,7 +401,7 @@ def lin_extrap_time_integration(  # noqa
     T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
     T[:, 0] = T_extrap
     # Rate of temperature change, used only for the pressurization forcing term
-    T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
+    # T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
 
     nE = p_fix.astype(int)  # essential DoFs
     nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
@@ -409,28 +431,29 @@ def lin_extrap_time_integration(  # noqa
             )
 
         # Compute residual vectors
-        nonlinear_matrices = (
-            integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control, pressure_only=True)
-            if mu_nonlinear
-            else {}
-        )
+        # nonlinear_matrices = (
+        #     integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control, pressure_only=True)
+        #     if mu_nonlinear
+        #     else {}
+        # )
         p_n = p[:, 0].reshape(-1, 1)
-        R = integrate_residuals(mesh, material, primary_variables, sim_control, cv, pressure_only=True)
+        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, pressure_only=True)
+        R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=False)
 
-        R = compute_residuals(
-            nonlinear_matrices,
-            matrices_linear,
-            p,
-            T,
-            T_dot,
-            cv,
-            F_extp,
-            F_extT,
-            material,
-            sim_control,
-            fully_coupled=False,
-            mu_nonlinear=mu_nonlinear,
-        )
+        # R = compute_residuals(
+        #     nonlinear_matrices,
+        #     matrices_linear,
+        #     p,
+        #     T,
+        #     T_dot,
+        #     cv,
+        #     F_extp,
+        #     F_extT,
+        #     material,
+        #     sim_control,
+        #     fully_coupled=False,
+        #     mu_nonlinear=mu_nonlinear,
+        # )
 
         # Check convergence
         converged, iteration_error = _check_convergence_fullycoupled(
@@ -443,15 +466,17 @@ def lin_extrap_time_integration(  # noqa
             break
         else:  # Update iteration
             # Assemble Jacobian matrix
-            tangent = assemble_full_tangent(
-                nonlinear_matrices,
-                matrices_linear,
-                cv,
-                sim_control,
-                fully_coupled=False,
-                mu_nonlinear=mu_nonlinear,
-            )
-            A = tangent["pp"]
+            # tangent = assemble_full_tangent(
+            #     nonlinear_matrices,
+            #     matrices_linear,
+            #     cv,
+            #     sim_control,
+            #     fully_coupled=False,
+            #     mu_nonlinear=mu_nonlinear,
+            # )
+            jacobian = integrate_tangent_matrices(mesh, material, primary_variables, sim_control, cv)
+
+            A = jacobian["Kpp"]
             b = R["p"]
 
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE, np.zeros(np.size(nE, 0)))
