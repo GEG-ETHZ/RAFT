@@ -871,6 +871,7 @@ def integrate_residuals(  # noqa
     *,
     is_fracture: bool = False,
     pressure_only: bool = False,
+    temperature_only: bool = False,
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
     p = primary_variables["p"]
@@ -885,6 +886,8 @@ def integrate_residuals(  # noqa
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
+    steady_pres = controls["steady_pressure"]
+    steady_temp = controls["steady_temperature"]
 
     fluid = mat["fluid"]
     lambda_f = fluid["therm_cond"]
@@ -1003,25 +1006,30 @@ def integrate_residuals(  # noqa
             phi_L, _, _ = get_porosity_lagrangian(P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s)
 
             # ------ Conservation of mass
-            # Storage vector
-            f_mass = phi_L * rho_f_q
-            mass_dot_q = cv[0] * f_mass[:, :, 0:1] + cv[1] * f_mass[:, :, 1:2] + cv[2] * f_mass[:, :, 2:3]
-            element_vectors["F_Pstorage"] = _vctrzd_qp_vector_integration(
-                N_q, mass_dot_q, wJe_q, isotropic_perm
-            )
+            if not temperature_only:
+                # Storage vector
+                f_mass = phi_L * rho_f_q
+                mass_dot_q = (1 - steady_pres) * (
+                    cv[0] * f_mass[:, :, 0:1] + cv[1] * f_mass[:, :, 1:2] + cv[2] * f_mass[:, :, 2:3]
+                )
+                element_vectors["F_Pstorage"] = _vctrzd_qp_vector_integration(
+                    N_q, mass_dot_q, wJe_q, isotropic_perm
+                )
 
-            # Diffusion vector
-            element_vectors["F_Pdiffusion"] = _vctrzd_qp_vector_integration(
-                B_q, rho_f_qn * darcy_flux, wJe_q, isotropic_perm
-            )
+                # Diffusion vector
+                element_vectors["F_Pdiffusion"] = _vctrzd_qp_vector_integration(
+                    B_q, rho_f_qn * darcy_flux, wJe_q, isotropic_perm
+                )
 
             # ------ Conservation of energy
             if not pressure_only:
                 # Thermo-dynamic internal variables
-                u_fq = get_internal_energy(T_q, P_q, fluid)  # fluid internal energy, nq x 1 x 1
-                h_fq = get_enthalpy(P_q[:, :, 0:1], T_q[:, :, 0:1], fluid)  # fluid enthalpy, nq x 1 x 1
+                u_fq, _, _ = get_internal_energy(T_q, P_q, fluid)  # fluid internal energy, nq x 1 x 1
+                h_fq, _, _ = get_enthalpy(P_q[:, :, 0:1], T_q[:, :, 0:1], fluid)  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f_q * u_fq  # total energy, nq x 1 x 1
-                energy_dot_q = cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+                energy_dot_q = (1 - steady_temp) * (
+                    cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+                )
 
                 # Effective conductivity
                 phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
@@ -1084,7 +1092,7 @@ def integrate_residuals(  # noqa
                     tau = tau.reshape(-1, 1, 1)
 
                     # Discretized strong form residual at quadrature points
-                    hf_e = get_enthalpy(
+                    hf_e, _, _ = get_enthalpy(
                         pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
@@ -1195,6 +1203,8 @@ def integrate_tangent_matrices(  # noqa
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
+    steady_pres = controls["steady_pressure"]
+    steady_temp = controls["steady_temperature"]
 
     if fully_coupled:
         # Overwrite bad combination if it occurs
@@ -1342,7 +1352,7 @@ def integrate_tangent_matrices(  # noqa
             if not temperature_only:
                 # Storage vector - Fs
                 # dFs/dp
-                integrand_dFsdp = cv[0] * (dphi_L_dp * rho_f_n + phi_L_n * drho_dp)
+                integrand_dFsdp = (1 - steady_pres) * cv[0] * (dphi_L_dp * rho_f_n + phi_L_n * drho_dp)
                 element_matrices["Kpp"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdp, N_q, wJe_q, False
                 )
@@ -1361,7 +1371,9 @@ def integrate_tangent_matrices(  # noqa
                     P_q[:, :, 0:1], T_q[:, :, 0:1], fluid
                 )  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f * u_f  # total energy, nq x 1 x 1
-                energy_dot = cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+                energy_dot = (1 - steady_temp) * (
+                    cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+                )
 
                 # Effective conductivity
                 lambda_e = (
@@ -1372,13 +1384,16 @@ def integrate_tangent_matrices(  # noqa
 
                 # Energy storage vector - FC
                 # dFC/dT
-                integrand_dFCdT = cv[0] * (
-                    (1 - phi_L_n) * rho_s * cp_s
-                    + phi_L_n * (drho_dT * u_f + rho_f_n * duf_dT)
-                    + dphi_L_dT * (rho_f_n * u_f - rho_s * cp_s * T)
+                integrand_dFCdT = (1 - steady_temp) * (
+                    cv[0]
+                    * (
+                        (1 - phi_L_n) * rho_s * cp_s
+                        + phi_L_n * (drho_dT * u_f + rho_f_n * duf_dT)
+                        + dphi_L_dT * (rho_f_n * u_f - rho_s * cp_s * T_q)
+                    )
                 )
                 element_matrices["KTT"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFCdT, N_q, wJe_q, False
+                    N_q, integrand_dFCdT, N_q, wJe_q, True
                 )
 
                 # Themal diffusion vector
@@ -1458,7 +1473,7 @@ def integrate_tangent_matrices(  # noqa
                     tau = tau.reshape(-1, 1, 1)
 
                     # Discretized strong form residual at quadrature points
-                    hf_e = get_enthalpy(
+                    hf_e, _, _ = get_enthalpy(
                         pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e

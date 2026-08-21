@@ -153,19 +153,26 @@ def compute_residuals_comp(
     F_extp: npt.NDArray[np.float64],
     F_extT: npt.NDArray[np.float64],
     *,
-    fully_coupled: bool,
+    fully_coupled: bool = False,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
 ) -> dict[str, npt.NDArray[np.float64]]:
     """Assemble integrated residuals alongside external force vectors."""
-    F_Pstorage = F_vec["F_Pstorage"]
-    F_Pdiffusion = F_vec["F_Pdiffusion"]
+    if pressure_only or fully_coupled:
+        F_Pstorage = F_vec["F_Pstorage"]
+        F_Pdiffusion = F_vec["F_Pdiffusion"]
 
-    R = {"p": F_Pstorage - F_Pdiffusion + F_extp}
+        R = {"p": F_Pstorage - F_Pdiffusion - F_extp}
 
-    if fully_coupled:
-        F_Tstorage = F_vec["F_Pstorage"]
-        F_Tdiffusion = F_vec["F_Pdiffusion"]
-        F_Tadvection = F_vec["F_Pdiffusion"]
-        R["T"] = F_Tstorage + F_Tdiffusion + F_Tadvection + F_extT
+    if temperature_only or fully_coupled:
+        F_Tstorage = F_vec["F_Tstorage"]
+        F_Tdiffusion = F_vec["F_Tdiffusion"]
+        F_Tadvection = F_vec["F_Tadvection"]
+        RT = F_Tstorage + F_Tdiffusion + F_Tadvection - F_extT
+        if pressure_only:
+            R["T"] = RT
+        else:
+            R = {"T": RT}
 
     return R
 
@@ -350,7 +357,7 @@ def lin_extrap_time_integration(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
+    matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     dt: list[float],
@@ -376,7 +383,7 @@ def lin_extrap_time_integration(  # noqa
     NR_tol = sim_control["iterative_controls"]["NR_tol"]
     aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
 
-    steady_temp = sim_control["steady_temperature"]
+    # steady_temp = sim_control["steady_temperature"]
     # mu_nonlinear = sim_control["viscosity_nonconstant"]
     # extract mesh characteristics
     nn = mesh["nn_total"]
@@ -390,21 +397,24 @@ def lin_extrap_time_integration(  # noqa
     )
     fixed_dofs = {}
     fixed_dofs["p"] = p_fix
+    fixed_dofs["T"] = T_fix
 
     # Apply fixed boundary conditions
     p[p_fix, :] = p_bar.reshape(-1, 1)
+    T[T_fix, :] = T_bar.reshape(-1, 1)
+    nE_p = p_fix.astype(int)  # essential DoFs
+    nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free DoFs
+    nE_T = T_fix.astype(int)  # essential temperature DoFs
+    nF_T = np.setdiff1d(T_dofs, nE_T).astype(int)  # free temperature DoFs
 
     # Begin the one-pass extrapolated linearization by solving pressure
     # first using an extrapolated pressure
     # One-pass update: solve pressure iteratively, then temperature
 
     T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
-    T[:, 0] = T_extrap
+    T[nF_T, 0] = T_extrap[nF_T]
     # Rate of temperature change, used only for the pressurization forcing term
     # T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-
-    nE = p_fix.astype(int)  # essential DoFs
-    nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
 
     # Begin Newton-Raphson iterative solver
     converged = False
@@ -423,7 +433,6 @@ def lin_extrap_time_integration(  # noqa
 
     if verbose:
         print("      ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION   ", end="")
-
     while True:
         if verbose:
             print(
@@ -438,22 +447,7 @@ def lin_extrap_time_integration(  # noqa
         # )
         p_n = p[:, 0].reshape(-1, 1)
         F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, pressure_only=True)
-        R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=False)
-
-        # R = compute_residuals(
-        #     nonlinear_matrices,
-        #     matrices_linear,
-        #     p,
-        #     T,
-        #     T_dot,
-        #     cv,
-        #     F_extp,
-        #     F_extT,
-        #     material,
-        #     sim_control,
-        #     fully_coupled=False,
-        #     mu_nonlinear=mu_nonlinear,
-        # )
+        R = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)
 
         # Check convergence
         converged, iteration_error = _check_convergence_fullycoupled(
@@ -465,15 +459,6 @@ def lin_extrap_time_integration(  # noqa
                 print(" - CONVERGED")
             break
         else:  # Update iteration
-            # Assemble Jacobian matrix
-            # tangent = assemble_full_tangent(
-            #     nonlinear_matrices,
-            #     matrices_linear,
-            #     cv,
-            #     sim_control,
-            #     fully_coupled=False,
-            #     mu_nonlinear=mu_nonlinear,
-            # )
             jacobian = integrate_tangent_matrices(
                 mesh, material, primary_variables, sim_control, cv, pressure_only=True
             )
@@ -481,7 +466,7 @@ def lin_extrap_time_integration(  # noqa
             A = jacobian["Kpp"]
             b = R["p"]
 
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE, np.zeros(np.size(nE, 0)))
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_p, np.zeros(np.size(nE_p, 0)))
 
             NR_step = 1.0
             p_n += NR_step * delta_var.reshape(-1, 1)
@@ -510,7 +495,7 @@ def lin_extrap_time_integration(  # noqa
             else:
                 d_new = p_n
 
-            p[:, 0] = d_new[p_dofs, 0]
+            p[:, 0:1] = d_new
             iteration += 1
 
         if iteration >= iter_max:
@@ -520,30 +505,100 @@ def lin_extrap_time_integration(  # noqa
             primary_variables["T"] = T_orig
             break
     # ---- Calculate reaction flow rates at prescribed DoFs
-    KEE = A[np.ix_(nE, nE)]
-    KEF = A[np.ix_(nE, nF)]
-    pF = p[nF, 0]
+    KEE = A[np.ix_(nE_p, nE_p)]
+    KEF = A[np.ix_(nE_p, nF_p)]
+    pF = p[nF_p, 0]
     q = np.zeros((nn, 1))
-    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
+    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE_p]
     q = q + F_extp
 
     # ---- Update temperature matrices with new pressure
+    primary_variables["p"] = p_n.copy()
+
+    # Begin Newton-Raphson iterative solver
+    converged = False
+    iteration = 0  # noqa
+    # Store iteration residuals for debugging
+    NR = {}
+    R = {}
+    NR["all"] = np.zeros(iter_max + 1)
+    NR["T"] = np.zeros(iter_max + 1)
+    # Initialize relaxation
+    aitken_state = {}
+    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
+    aitken_state["variables_km1"] = p[:, 0].reshape(-1, 1)
+    aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
+    aitken_state["relax_dofs"] = p_dofs
+
     if verbose:
-        print("     Assembling non-linear temperature matrices...")
-    matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
+        print("      ITERATIVE TEMPERATURE NEWTON RAPHSON: ITERATION   ", end="")
+    while True:
+        if verbose:
+            print(
+                f"\r     ITERATIVE TEMPERATURE NEWTON RAPHSON: ITERATION {iteration + 1}   ",
+                end="",
+                flush=True,
+            )
 
-    K_TT_R = matrices_non_linear["K_TT_R"]  # advection matrix (adv_on and sign already baked in)
-    KTT = matrices_linear["KTT"]  # thermal conduction matrix
-    C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
+        T_n = T[:, 0].reshape(-1, 1)
+        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, temperature_only=True)
+        R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
 
-    # ---- Solve temperature
-    if verbose:
-        print("     Solving temperature equations...")
-    A = (cv[0] * C) - K_TT_R + KTT
-    Tdot = (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-    b = -C @ Tdot + F_extT
+        # Check convergence
+        converged, iteration_error = _check_convergence_fullycoupled(
+            R, fixed_dofs, NR, mesh, iteration, NR_tol
+        )
 
-    T[:, 0] = _partition_and_solve_matrix(A, b, T_dofs, T_fix, T_bar)
+        if converged and iteration > 0:
+            if verbose:
+                print(" - CONVERGED")
+            break
+        else:  # Update iteration
+            jacobian = integrate_tangent_matrices(
+                mesh, material, primary_variables, sim_control, cv, temperature_only=True
+            )
+
+            A = jacobian["KTT"]
+            b = R["T"]
+
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_T, np.zeros(np.size(nE_T, 0)))
+
+            NR_step = 1.0
+            T_n += NR_step * delta_var.reshape(-1, 1)
+
+            # Check for nan or inf data and break
+            if np.any(np.isnan(p_n)) or np.any(np.isinf(p_n)):
+                if verbose:
+                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                break
+
+            # Apply relaxation
+            if aitken_on:
+                (
+                    d_new,
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration + 1],
+                    aitken_state["variables_km1"],
+                ) = _aitken_relax(
+                    iteration,
+                    T_n,
+                    aitken_state["variables_km1"],
+                    aitken_state["relax_dofs"],
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration],
+                )
+            else:
+                d_new = T_n
+
+            T[:, 0:1] = d_new
+            iteration += 1
+
+        if iteration >= iter_max:
+            if verbose:
+                print(" - CONVERGENCE FAILED")
+            primary_variables["p"] = p_orig
+            primary_variables["T"] = T_orig
+            break
 
     # ---- Check for extrapolation error
     converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)

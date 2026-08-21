@@ -3,13 +3,13 @@ mesh:
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
-        region_number: 1
+        region_number: 0
       - shape: "sphere"
         values: [[34, 38.5, 0], 5]
-        region_number: 1
+        region_number: 0
       - shape: "polyhedron"
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
-        region_number: 2
+        region_number: 0
   dimensions: 2
   # fractures:
   #        - values: [[12.5, 49, 0.0], [52.5], [9]]
@@ -27,10 +27,10 @@ material:
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [[1.0e-15, 3.0e-14],   1.0e-19, 1.0e-17]       # m^2
-      rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
+      permeability: [[1.0e-13, 1.0e-14],   1.0e-19, 1.0e-17]       # m^2
+      rotation_x: [0.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
-      rotation_z: [40.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
+      rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
   # Fluid parameters - single phase flow is assumed
   fluid:
@@ -42,7 +42,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   # fracture:
@@ -70,7 +70,7 @@ boundary_conditions:
               maximum_pressure: 3.0e+7
               minimum_pressure: 1.0e+5
         - coords: [[27, 48]]
-          values: [[0, -0.001], 100]
+          values: [[0, -0.01], 100]
           function: "ramp"
           tag: "outlet"
           constraints:
@@ -88,10 +88,10 @@ boundary_conditions:
       - faces: [y_max]
         values: [373]
       - faces: [y_min]
-        values: [373]
-      - lines: [[[43.4, 20.0], [53, 37.5]]]
-        function: "ramp"
-        values: [[343, 403], 100000]
+        values: [353]
+      # - lines: [[[43.4, 20.0], [53, 37.5]]]
+      #   function: "ramp"
+      #   values: [[343, 403], 100000]
 
 
   fluid_flux:
@@ -129,6 +129,6 @@ simulation:
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 1.0e-3 # Newton-Raphson residual tolerance
+      NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
