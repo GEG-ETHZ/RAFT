@@ -47,6 +47,12 @@ def _lump_diagonal(matrix: csc_matrix) -> csc_matrix:
     return csc_matrix((diag_vals, (idx, idx)), shape=(n, n))
 
 
+def _lump_diagonal_local(matrix: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Row-sum lump a matrix, returning a diagonal matrix of the same shape."""
+    diag_vals = matrix.sum(axis=1)
+    return np.diag(diag_vals)
+
+
 def _assemble_global_matrices(
     vec: dict[str, npt.NDArray[np.float64]],
     conn: list[list[int]],
@@ -1356,6 +1362,8 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["Kpp"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdp, N_q, wJe_q, False
                 )
+                # Perform matrix lumping
+                _lump_diagonal_local(element_matrices["Kpp"])
 
                 # Diffusion vector - Fk
                 # dFk/dp
@@ -1395,6 +1403,8 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTT"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFCdT, N_q, wJe_q, True
                 )
+                # Perform matrix lumping
+                _lump_diagonal_local(element_matrices["KTT"])
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = lambda_e * B_q + dphi_L_dT * (lambda_f - lambda_s) * gradT * N_q

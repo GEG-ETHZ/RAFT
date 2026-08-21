@@ -22,7 +22,7 @@ material:
   solid:
       bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
       density: [20, 20, 20]             # kg/m^3
-      therm_cond: [3.0, 3.0, 3.0]          # W/mK
+      therm_cond: [300.0, 3.0, 3.0]          # W/mK
       specific_heat: [8, 80, 10]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
@@ -50,7 +50,7 @@ material:
   #   nusselt: [5, 1, 5]
 
 initial_conditions:
-  assignment: "BC_compatible"
+  assignment: "constant"
   T_ini: 286
   p_ini: 9.0e+6
   T_grad: 0.1
@@ -89,9 +89,9 @@ boundary_conditions:
         values: [373]
       - faces: [y_min]
         values: [353]
-      # - lines: [[[43.4, 20.0], [53, 37.5]]]
-      #   function: "ramp"
-      #   values: [[343, 403], 100000]
+      - lines: [[[43.4, 20.0], [53, 37.5]]]
+        function: "ramp"
+        values: [[343, 403], 100000]
 
 
   fluid_flux:
@@ -119,11 +119,11 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 1
+  advection_on: 0
   pressurization_on: 0
   gravity: -9.81
   steady_pressure: 0
-  steady_temperature: 0
+  steady_temperature: 1
   axisymmetric_on: 0
 
   # Numerical controls

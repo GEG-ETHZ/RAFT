@@ -168,7 +168,7 @@ def compute_residuals_comp(
         F_Tstorage = F_vec["F_Tstorage"]
         F_Tdiffusion = F_vec["F_Tdiffusion"]
         F_Tadvection = F_vec["F_Tadvection"]
-        RT = F_Tstorage + F_Tdiffusion + F_Tadvection - F_extT
+        RT = F_Tstorage - F_Tdiffusion - F_Tadvection - F_extT
         if pressure_only:
             R["T"] = RT
         else:
