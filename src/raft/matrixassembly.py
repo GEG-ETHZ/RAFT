@@ -54,6 +54,7 @@ def _assemble_global_matrices(
     nne_list: list[int],
     elem_indx: list[int],
     elem_order: npt.NDArray[np.int32],  # sequence the values were written
+    isvector: bool = False,
 ) -> dict[str, csc_matrix]:
     """Assemble vector of rows and columns all at once and assemble sparse matrix."""
     # For vectorized sparse matrix assembly, we feed in 3 vectors:
@@ -81,14 +82,23 @@ def _assemble_global_matrices(
             nne = nne_seq[start]
             run = elem_order[start:i]
             conn_run = np.asarray([conn[e] for e in run], dtype=np.int32)
-            row_chunks.append(np.repeat(conn_run, nne, axis=1).ravel())
-            col_chunks.append(np.tile(conn_run, (1, nne)).ravel())
+
+            if isvector:
+                # Vector assembly: 1 entry per node per element
+                row_chunks.append(conn_run.ravel())
+                col_chunks.append(np.zeros(conn_run.size, dtype=np.int32))
+            else:
+                # Matrix assembly: nne^2 entries per element
+                row_chunks.append(np.repeat(conn_run, nne, axis=1).ravel())
+                col_chunks.append(np.tile(conn_run, (1, nne)).ravel())
+
             start = i
 
     row_vec = np.concatenate(row_chunks)
     col_vec = np.concatenate(col_chunks)
+    nn2 = 1 if isvector else nn
 
-    return {name: _make_sparse(vec[name], row_vec, col_vec, nn, nn) for name in vec}
+    return {name: _make_sparse(vec[name], row_vec, col_vec, nn, nn2) for name in vec}
 
 
 def _get_quad_points_and_shape_functions(
@@ -116,15 +126,17 @@ def _get_quad_points_and_shape_functions(
 
 
 def _initiate_vectors(
-    list_of_matrices: list[str], nne: list[int], elem_indx: list[int]
+    list_of_matrices: list[str], nne: list[int], elem_indx: list[int], ismatrix: bool = True
 ) -> dict[str, npt.NDArray[np.float64]]:
     """Create the dictionary of vectorized matrix entries."""
     # calculate the number of entries
     prev = -1
     total_entries = 0
+    exponent = 2 if ismatrix else 1
+
     for n, idx in zip(nne, elem_indx):
         ne_i = idx - prev
-        total_entries += n**2 * ne_i
+        total_entries += n**exponent * ne_i
         prev = idx
     return {name: np.zeros(total_entries) for name in list_of_matrices}
 
@@ -926,7 +938,7 @@ def integrate_residuals(  # noqa
     # ----- gravity vector
     g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
 
-    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx, ismatrix=False)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
@@ -1123,7 +1135,7 @@ def integrate_residuals(  # noqa
 
     # ----- Return and convert to sparse matrix
     integrated_vectors = _assemble_global_matrices(
-        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
+        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists), isvector=True
     )
 
     if is_fracture:  # Fracture residuals to be updated
@@ -1193,9 +1205,9 @@ def integrate_tangent_matrices(  # noqa
     lambda_f = fluid["therm_cond"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
-    list_of_matrices = ["K_pp"]
+    list_of_matrices = ["Kpp"]
     if not pressure_only:
-        list_of_matrices = ["K_TT", "K_pT", "K_Tp"] + list_of_matrices
+        list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
     (
         nn,
@@ -1306,6 +1318,9 @@ def integrate_tangent_matrices(  # noqa
             phi_L, dphi_L_dT, dphi_L_dp = get_porosity_lagrangian(
                 P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s
             )
+            dphi_L_dT = dphi_L_dT[:, :, 0].reshape(-1, 1, 1)
+            dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
+            phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
 
             # dqD/dp
             if isotropic_perm:
@@ -1327,7 +1342,7 @@ def integrate_tangent_matrices(  # noqa
             if not temperature_only:
                 # Storage vector - Fs
                 # dFs/dp
-                integrand_dFsdp = cv[0] * (dphi_L_dp * rho_f_n + phi_L * drho_dp)
+                integrand_dFsdp = cv[0] * (dphi_L_dp * rho_f_n + phi_L_n * drho_dp)
                 element_matrices["Kpp"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdp, N_q, wJe_q, False
                 )
@@ -1349,7 +1364,6 @@ def integrate_tangent_matrices(  # noqa
                 energy_dot = cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
 
                 # Effective conductivity
-                phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
                 lambda_e = (
                     phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
                     if isotropic_cond

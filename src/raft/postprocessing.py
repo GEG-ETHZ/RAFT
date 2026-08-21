@@ -388,7 +388,7 @@ def _build_cell_scalars(
             K_d = solid["bulk_mod"][region]
             p_e = np.mean(p[enodes])
             p0_e = np.mean(p_0[enodes])
-            porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d)
+            porosity[e], _, _ = get_porosity(p_e, p0_e, phi_0, K_d)
 
         scalardata_cell.append({"name": "porosity", "data": _sanitize(porosity.copy())})
 

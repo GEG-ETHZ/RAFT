@@ -226,7 +226,7 @@ def _partition_and_solve_matrix(
     KFF = A[np.ix_(nF, nF)]  # type: ignore[index]
     KFE = A[np.ix_(nF, nE)]  # type: ignore[index]
 
-    dF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
+    dF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)))
 
     d = np.empty((len(dofs_all), 1))
     d[nE, 0] = dE
@@ -474,7 +474,9 @@ def lin_extrap_time_integration(  # noqa
             #     fully_coupled=False,
             #     mu_nonlinear=mu_nonlinear,
             # )
-            jacobian = integrate_tangent_matrices(mesh, material, primary_variables, sim_control, cv)
+            jacobian = integrate_tangent_matrices(
+                mesh, material, primary_variables, sim_control, cv, pressure_only=True
+            )
 
             A = jacobian["Kpp"]
             b = R["p"]
