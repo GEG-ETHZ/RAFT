@@ -47,12 +47,6 @@ def _lump_diagonal(matrix: csc_matrix) -> csc_matrix:
     return csc_matrix((diag_vals, (idx, idx)), shape=(n, n))
 
 
-def _lump_diagonal_local(matrix: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Row-sum lump a matrix, returning a diagonal matrix of the same shape."""
-    diag_vals = matrix.sum(axis=1)
-    return np.diag(diag_vals)
-
-
 def _assemble_global_matrices(
     vec: dict[str, npt.NDArray[np.float64]],
     conn: list[list[int]],
@@ -1011,16 +1005,20 @@ def integrate_residuals(  # noqa
 
             phi_L, _, _ = get_porosity_lagrangian(P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s)
 
+            # Nodal evaluation for self-consistent lumping of the storage terms (see
+            # integrate_tangent_matrices for the matching tangent-side computation).
+            phi_L_nodal, _, _ = get_porosity_lagrangian(pe, p_0e, Te, T_0e, phi_0, K_d, biot, alpha_s)
+            rho_f_nodal, _, _ = get_density(Te, pe, fluid)
+            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
+
             # ------ Conservation of mass
             if not temperature_only:
-                # Storage vector
-                f_mass = phi_L * rho_f_q
-                mass_dot_q = (1 - steady_pres) * (
-                    cv[0] * f_mass[:, :, 0:1] + cv[1] * f_mass[:, :, 1:2] + cv[2] * f_mass[:, :, 2:3]
+                # Storage vector (lumped)
+                f_mass_nodal = phi_L_nodal * rho_f_nodal
+                mass_dot_nodal = (1 - steady_pres) * (
+                    cv[0] * f_mass_nodal[:, 0:1] + cv[1] * f_mass_nodal[:, 1:2] + cv[2] * f_mass_nodal[:, 2:3]
                 )
-                element_vectors["F_Pstorage"] = _vctrzd_qp_vector_integration(
-                    N_q, mass_dot_q, wJe_q, isotropic_perm
-                )
+                element_vectors["F_Pstorage"] = m_lump * mass_dot_nodal
 
                 # Diffusion vector
                 element_vectors["F_Pdiffusion"] = _vctrzd_qp_vector_integration(
@@ -1045,7 +1043,12 @@ def integrate_residuals(  # noqa
                     else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
                 )
 
-                element_vectors["F_Tstorage"] = _vctrzd_qp_vector_integration(N_q, energy_dot_q, wJe_q, True)
+                u_f_nodal, _, _ = get_internal_energy(Te, pe, fluid)
+                E_nodal = (1 - phi_L_nodal) * rho_s * cp_s * Te + phi_L_nodal * rho_f_nodal * u_f_nodal
+                energy_dot_nodal = (1 - steady_temp) * (
+                    cv[0] * E_nodal[:, 0:1] + cv[1] * E_nodal[:, 1:2] + cv[2] * E_nodal[:, 2:3]
+                )
+                element_vectors["F_Tstorage"] = m_lump * energy_dot_nodal
 
                 # Diffusion vector
                 element_vectors["F_Tdiffusion"] = _vctrzd_qp_vector_integration(
@@ -1338,6 +1341,16 @@ def integrate_tangent_matrices(  # noqa
             dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
             phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
 
+            # Nodal evaluation for self-consistent lumping of the storage terms: density,
+            # porosity, and internal energy are evaluated at each node's own (T, p) rather
+            # than at quadrature points, so the lumped storage residual/tangent are exact
+            # derivatives of one another by construction.
+            phi_L_nodal, dphi_L_dT_nodal, dphi_L_dp_nodal = get_porosity_lagrangian(
+                pe[:, 0:1], p_0e, Te[:, 0:1], T_0e, phi_0, K_d, biot, alpha_s
+            )
+            rho_f_nodal, drho_dT_nodal, drho_dp_nodal = get_density(Te[:, 0:1], pe[:, 0:1], fluid)
+            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
+
             # dqD/dp
             if isotropic_perm:
                 dqD_dp = (
@@ -1356,14 +1369,11 @@ def integrate_tangent_matrices(  # noqa
 
             # ------------------------------------ Conservation of mass wrt pressure
             if not temperature_only:
-                # Storage vector - Fs
-                # dFs/dp
-                integrand_dFsdp = (1 - steady_pres) * cv[0] * (dphi_L_dp * rho_f_n + phi_L_n * drho_dp)
-                element_matrices["Kpp"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFsdp, N_q, wJe_q, False
+                # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
+                integrand_dFsdp_nodal = (
+                    (1 - steady_pres) * cv[0] * (dphi_L_dp_nodal * rho_f_nodal + phi_L_nodal * drho_dp_nodal)
                 )
-                # Perform matrix lumping
-                _lump_diagonal_local(element_matrices["Kpp"])
+                element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_nodal.ravel())
 
                 # Diffusion vector - Fk
                 # dFk/dp
@@ -1392,21 +1402,18 @@ def integrate_tangent_matrices(  # noqa
                     else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
                 )
 
-                # Energy storage vector - FC
-                # dFC/dT
-                integrand_dFCdT = (1 - steady_temp) * (
-                    cv[0]
+                # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight)
+                u_f_nodal, duf_dT_nodal, _ = get_internal_energy(Te[:, 0:1], pe[:, 0:1], fluid)
+                integrand_dFCdT_nodal = (
+                    (1 - steady_temp)
+                    * cv[0]
                     * (
-                        (1 - phi_L_n) * rho_s * cp_s
-                        + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
-                        + dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                        (1 - phi_L_nodal) * rho_s * cp_s
+                        + phi_L_nodal * (drho_dT_nodal * u_f_nodal + rho_f_nodal * duf_dT_nodal)
+                        + dphi_L_dT_nodal * (rho_f_nodal * u_f_nodal - rho_s * cp_s * Te[:, 0:1])
                     )
                 )
-                element_matrices["KTT"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFCdT, N_q, wJe_q, True
-                )
-                # Perform matrix lumping
-                _lump_diagonal_local(element_matrices["KTT"])
+                element_matrices["KTT"] = np.diag(m_lump * integrand_dFCdT_nodal.ravel())
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = lambda_e * B_q + dphi_L_dT * (lambda_f - lambda_s) * gradT * N_q
@@ -1539,7 +1546,7 @@ def integrate_tangent_matrices(  # noqa
                     + dphi_L_dp * (rho_f_n * u_f - rho_s * cp_s * T)
                 )
                 element_matrices["KTp"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFsdT, N_q, wJe_q, False
+                    N_q, integrand_dFCdT, N_q, wJe_q, False
                 )
 
                 # Themal diffusion vector
