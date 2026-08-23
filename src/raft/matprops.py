@@ -174,7 +174,6 @@ def get_internal_energy(
     if fluid["density"] != 0:
         # Linearized internal energy
         rho_f = fluid["density"]  # noqa
-        T0 = fluid["reference_temperature"]
         p0 = fluid["reference_pressure"]  # noqa
         alpha_f = fluid["therm_expansion"]  # noqa
         cp_f = fluid["specific_heat"]
@@ -182,14 +181,14 @@ def get_internal_energy(
         # u_f = (cp_f + p0 * alpha_f / rho_f) * (T - T0) + (p0 * cp_f - T0 * alpha_f) / rho_f * (p - p0)
         # duf_dT = (cp_f + p0 * alpha_f / rho_f)
         # duf_dp = (p0 * cp_f - T0 * alpha_f) / rho_f
-        u_f = cp_f * (T - T0)
-        duf_dT = cp_f
-        duf_dp = 0
+        u_f = cp_f * T
+        duf_dT = cp_f * np.ones(np.shape(T))
+        duf_dp = 0 * np.ones(np.shape(T))
     else:
         # Nonlinear internal energy
-        u_f = 0
-        duf_dT = 0
-        duf_dp = 0
+        u_f = 0 * np.ones(np.shape(T))
+        duf_dT = 0 * np.ones(np.shape(T))
+        duf_dp = 0 * np.ones(np.shape(T))
     return u_f, duf_dT, duf_dp
 
 

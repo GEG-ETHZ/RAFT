@@ -123,7 +123,7 @@ simulation:
   pressurization_on: 0
   gravity: -9.81
   steady_pressure: 0
-  steady_temperature: 1
+  steady_temperature: 0
   axisymmetric_on: 0
 
   # Numerical controls

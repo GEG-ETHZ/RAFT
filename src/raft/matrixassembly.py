@@ -1375,6 +1375,8 @@ def integrate_tangent_matrices(  # noqa
                 u_f, duf_dT, duf_dp = get_internal_energy(
                     T_q, P_q, fluid
                 )  # fluid internal energy, nq x 1 x 1
+                u_f_n = u_f[:, :, 0:1]
+                duf_dT_n = duf_dT[:, :, 0:1]
                 h_f, dhf_dT, dhf_dp = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], fluid
                 )  # fluid enthalpy, nq x 1 x 1
@@ -1396,8 +1398,8 @@ def integrate_tangent_matrices(  # noqa
                     cv[0]
                     * (
                         (1 - phi_L_n) * rho_s * cp_s
-                        + phi_L_n * (drho_dT * u_f + rho_f_n * duf_dT)
-                        + dphi_L_dT * (rho_f_n * u_f - rho_s * cp_s * T_q)
+                        + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
+                        + dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
                     )
                 )
                 element_matrices["KTT"] = _vctrzd_quad_point_integration(
@@ -1498,8 +1500,8 @@ def integrate_tangent_matrices(  # noqa
                     dR_dT = (
                         cv[0]
                         * (
-                            dphi_L_dT * (rho_f_n * u_f - rho_s * cp_s * T_q)
-                            + phi_L_n * (drho_dT * u_f + rho_f_n * duf_dT)
+                            dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                            + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
                         )
                         * N_q
                         + (dhf_dT + h_f / rho_f_n * drho_dT) * q_D * B_q
