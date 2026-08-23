@@ -1419,7 +1419,7 @@ def integrate_tangent_matrices(  # noqa
                     # dqD/dT
                     if isotropic_perm:
                         dqD_dT = (
-                            rho_f_n * kf / mu_q * (B_q + drho_dT * N_q)
+                            rho_f_n * kf / mu_q * (drho_dT * g * N_q)
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
@@ -1430,7 +1430,7 @@ def integrate_tangent_matrices(  # noqa
                         )
                     else:
                         dqD_dT = (
-                            rho_f_n * kf / mu_q @ (B_q + drho_dT * N_q)
+                            rho_f_n * kf / mu_q @ (drho_dT * g * N_q)
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
@@ -1497,16 +1497,18 @@ def integrate_tangent_matrices(  # noqa
                         energy_dot + (grad_hf * rho_f_n + h_f * grad_rhof).transpose(0, 2, 1) @ darcy_flux
                     )  # discretized residual
 
+                    D2 = grad_rhof.transpose(0, 2, 1) @ q_D  # d/dTe of (grad_rhof . q_D), nq x 1 x 1
                     dR_dT = (
-                        cv[0]
+                        (1 - steady_temp)
+                        * cv[0]
                         * (
                             dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
                             + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
                         )
                         * N_q
-                        + (dhf_dT + h_f / rho_f_n * drho_dT) * q_D * B_q
-                        + (grad_hf + h_f * grad_rhof / rho_f_n) * dqD_dT
-                        + (dhf_dT * grad_rhof / rho_f_n - h_f * grad_rhof / rho_f_n**2 * drho_dT)
+                        + (dhf_dT + h_f / rho_f_n * drho_dT) * (q_D.transpose(0, 2, 1) @ B_q)
+                        + (grad_hf + h_f * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT
+                        + (dhf_dT / rho_f_n - h_f * drho_dT / rho_f_n**2) * D2 * N_q
                     )
                     # Advection tangent matrices
                     integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT

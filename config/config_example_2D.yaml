@@ -52,7 +52,7 @@ material:
 initial_conditions:
   assignment: "constant"
   T_ini: 286
-  p_ini: 9.0e+6
+  p_ini: 1.0e+6
   T_grad: 0.1
   p_grad: 1.0e+3
   grad_direction_T: [0,1,-1]
@@ -63,7 +63,7 @@ initial_conditions:
 boundary_conditions:
   wellbore:
         - lines: [[[43.4, 20.0], [53, 37.5]]]
-          values: [[0, 0.001], 100]
+          values: [[0, 0.01], 100]
           function: "ramp"
           tag: "inlet"
           constraints:
@@ -119,11 +119,11 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 0
+  advection_on: 1
   pressurization_on: 0
   gravity: -9.81
-  steady_pressure: 0
-  steady_temperature: 0
+  steady_pressure: 1
+  steady_temperature: 1
   axisymmetric_on: 0
 
   # Numerical controls
