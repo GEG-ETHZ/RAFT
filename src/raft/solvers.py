@@ -168,7 +168,7 @@ def compute_residuals_comp(
         F_Tstorage = F_vec["F_Tstorage"]
         F_Tdiffusion = F_vec["F_Tdiffusion"]
         F_Tadvection = F_vec["F_Tadvection"]
-        RT = F_Tstorage - F_Tdiffusion - F_Tadvection - F_extT
+        RT = F_Tstorage + F_Tdiffusion + F_Tadvection - F_extT
         if pressure_only:
             R["T"] = RT
         else:
@@ -526,9 +526,9 @@ def lin_extrap_time_integration(  # noqa
     # Initialize relaxation
     aitken_state = {}
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = p[:, 0].reshape(-1, 1)
+    aitken_state["variables_km1"] = T[:, 0].reshape(-1, 1)
     aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
-    aitken_state["relax_dofs"] = p_dofs
+    aitken_state["relax_dofs"] = T_dofs
 
     if verbose:
         print("      ITERATIVE TEMPERATURE NEWTON RAPHSON: ITERATION   ", end="")

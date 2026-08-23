@@ -77,7 +77,7 @@ def get_density(
     rho_0 = fluid["density"]
     density = rho_0 * (1 - alpha * (T - T0))
 
-    drho_dT = rho_0 * alpha * np.ones(np.shape(T))
+    drho_dT = -rho_0 * alpha * np.ones(np.shape(T))
     drho_dp = 0 * np.ones(np.shape(T))
 
     return density, drho_dT, drho_dp
