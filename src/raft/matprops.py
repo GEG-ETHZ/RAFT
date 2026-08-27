@@ -147,18 +147,32 @@ def get_enthalpy(
     T: npt.NDArray[np.float64],
     fluid: dict[str, Any],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Get the fluid enthalpy at a specified pressure and temperature."""
+    """Get the fluid enthalpy at a specified pressure and temperature.
+
+    Built as h_f = u_f + p / rho_f, using the same closed-form u_f as
+    get_internal_energy and the same density formula as get_density (with its constant,
+    reference-density derivatives, rather than get_density's exact ones), so the two stay
+    exactly consistent without either function calling the other at runtime.
+    """
     if fluid["density"] != 0:
-        # Linearized internal energy
-        rho_f = fluid["density"]
+        rho_0 = fluid["density"]
         T0 = fluid["reference_temperature"]
         p0 = fluid["reference_pressure"]
         alpha_f = fluid["therm_expansion"]
         cp_f = fluid["specific_heat"]
+        Kf = fluid["bulk_mod"]
 
-        h_f = cp_f * (T - T0) + (1 - T0 * alpha_f) / rho_f * (p - p0)
-        dhf_dT = cp_f
-        dhf_dp = (1 - T0 * alpha_f) / rho_f
+        rho_f = rho_0 * (1 - alpha_f * (T - T0)) * (1 + (p - p0) / Kf)
+        drho_dT = -rho_0 * alpha_f * np.ones(np.shape(T))
+        drho_dp = rho_0 / Kf * np.ones(np.shape(p))
+
+        u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
+        duf_dT = cp_f - alpha_f * p / rho_0
+        duf_dp = p / (Kf * rho_0) - alpha_f * T / rho_0
+
+        h_f = u_f + p / rho_f
+        dhf_dT = duf_dT - p / rho_f**2 * drho_dT
+        dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
     else:
         # Nonlinear internal energy
         h_f = 0
@@ -172,20 +186,22 @@ def get_internal_energy(
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Get the fluid internal energy at a specified pressure and temperature."""
-    if fluid["density"] != 0:
-        # Linearized internal energy
-        rho_f = fluid["density"]  # noqa
-        p0 = fluid["reference_pressure"]  # noqa
-        alpha_f = fluid["therm_expansion"]  # noqa
-        cp_f = fluid["specific_heat"]
+    """Get the fluid internal energy at a specified pressure and temperature.
 
-        # u_f = (cp_f + p0 * alpha_f / rho_f) * (T - T0) + (p0 * cp_f - T0 * alpha_f) / rho_f * (p - p0)
-        # duf_dT = (cp_f + p0 * alpha_f / rho_f)
-        # duf_dp = (p0 * cp_f - T0 * alpha_f) / rho_f
-        u_f = cp_f * T
-        duf_dT = cp_f * np.ones(np.shape(T))
-        duf_dp = 0 * np.ones(np.shape(T))
+    Integrated from du_f = (cp_f - alpha_f/rho_0 * p) dT + (p/(K_f*rho_0) - alpha_f/rho_0 * T) dp
+    (the standard du = cp*dT + [T*(dv/dT)_p - p]*(-dv) identity, linearized at the reference
+    density rho_0, matching get_density's own level of linearization). This is an exact
+    potential given that linearization, so both partials below are its literal derivatives.
+    """
+    if fluid["density"] != 0:
+        rho_0 = fluid["density"]
+        alpha_f = fluid["therm_expansion"]
+        cp_f = fluid["specific_heat"]
+        Kf = fluid["bulk_mod"]
+
+        u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
+        duf_dT = cp_f - alpha_f * p / rho_0
+        duf_dp = p / (Kf * rho_0) - alpha_f * T / rho_0
     else:
         # Nonlinear internal energy
         u_f = 0 * np.ones(np.shape(T))

@@ -514,7 +514,7 @@ def lin_extrap_time_integration(  # noqa
     q = q + F_extp
 
     # ---- Update temperature matrices with new pressure
-    primary_variables["p"] = p_n.copy()
+    p[:, 0:1] = p_n
 
     # Begin Newton-Raphson iterative solver
     converged = False
@@ -627,6 +627,7 @@ def fully_coupled_time_integration(  # noqa
     This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
+    debug_plot_on = False
     # extract vectors of nodal dofs
     primary_variables_iteration = primary_variables.copy()
     p = primary_variables_iteration["p"]
@@ -767,24 +768,25 @@ def fully_coupled_time_integration(  # noqa
     if verbose:
         print()  # new line for that output doesn't get overwritten
         # Plot residuals
-        fig, ax1 = plt.subplots(figsize=(8, 8))
-        ax2 = ax1.twinx()
+        if debug_plot_on:
+            fig, ax1 = plt.subplots(figsize=(8, 8))
+            ax2 = ax1.twinx()
 
-        ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
-        plt.ylabel("residual")
-        plt.legend(["Temperature", "Pressure", "Combined"])
+            ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
+            ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
+            ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
+            plt.ylabel("residual")
+            plt.legend(["Temperature", "Pressure", "Combined"])
 
-        ax2.plot(
-            np.arange(1, iteration + 1),
-            np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
-            "go-",
-        )
-        plt.ylabel("damping coefficient")
+            ax2.plot(
+                np.arange(1, iteration + 1),
+                np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
+                "go-",
+            )
+            plt.ylabel("damping coefficient")
 
-        plt.xlim([0, iter_max])
-        # plt.ylim([1e-15, 1e2])
-        plt.xlabel("iteration")
+            plt.xlim([0, iter_max])
+            # plt.ylim([1e-15, 1e2])
+            plt.xlabel("iteration")
 
     return primary_variables, dt, converged, NR["all"][iteration - 1]

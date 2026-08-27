@@ -35,12 +35,12 @@ material:
   # Fluid parameters - single phase flow is assumed
   fluid:
       fluid_type: "Water"         # "Water" or "CO2"
-      bulk_mod: 2.10e+9         # Pa
+      bulk_mod: 2.10e+19         # Pa
       density:      925         # kg/m^3
       reference_temperature: 413 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
-      therm_expansion: 200.0e-6 # 1/K
+      therm_expansion: 00.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
       viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
@@ -87,9 +87,9 @@ boundary_conditions:
 
   temperature_fixed:
       - faces: [y_max]
-        values: [373]
-      - faces: [y_min]
-        values: [353]
+        values: [286]
+      # - faces: [y_min]
+      #   values: [286]
       # - lines: [[[43.4, 20.0], [53, 37.5]]]
       #   function: "ramp"
       #   values: [[343, 403], 100000]
@@ -122,7 +122,7 @@ simulation:
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
   pressurization_on: 0
-  gravity: -9.81
+  gravity: 0
   steady_pressure: 0
   steady_temperature: 0
   axisymmetric_on: 0
