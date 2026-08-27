@@ -1428,7 +1428,7 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 # Advection and SUPG stabilization
-                if advection_on:
+                if advection_on or fully_coupled:
                     # dqD/dT
                     if isotropic_perm:
                         dqD_dT = (
@@ -1452,7 +1452,7 @@ def integrate_tangent_matrices(  # noqa
                             @ gradP_mod
                             * N_q
                         )
-
+                if advection_on:
                     # SUPG
                     flux = rho_f_n * h_f * darcy_flux
                     if nsd == 3:

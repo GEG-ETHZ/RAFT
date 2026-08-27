@@ -20,7 +20,7 @@ mesh:
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
+      bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
       density: [20, 20, 20]             # kg/m^3
       therm_cond: [300.0, 3.0, 3.0]          # W/mK
       specific_heat: [8, 80, 10]        # J/kgK
@@ -88,8 +88,8 @@ boundary_conditions:
   temperature_fixed:
       - faces: [y_max]
         values: [286]
-      # - faces: [y_min]
-      #   values: [286]
+      - faces: [y_min]
+        values: [296]
       # - lines: [[[43.4, 20.0], [53, 37.5]]]
       #   function: "ramp"
       #   values: [[343, 403], 100000]
@@ -120,7 +120,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 1
+  advection_on: 0
   pressurization_on: 0
   gravity: 0
   steady_pressure: 0
