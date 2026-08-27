@@ -910,7 +910,7 @@ def integrate_residuals(  # noqa
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["F_Pstorage", "F_Pdiffusion"]
     if not pressure_only:
-        list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection"] + list_of_matrices
+        list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection", "F_Tstab"] + list_of_matrices
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
     (
@@ -1121,11 +1121,17 @@ def integrate_residuals(  # noqa
                         energy_dot_q + (grad_hf * rho_f_qn + h_fq * grad_rhof).transpose(0, 2, 1) @ darcy_flux
                     )  # discretized residual
 
-                    # advection
+                    # advection (subtracted at the residual level, like the mass flux term) and
+                    # its SUPG stabilization (a Petrov-Galerkin test-function correction, added
+                    # with its own independent sign - not part of the divergence term being
+                    # integrated by parts, so it does not flip sign along with plain advection)
                     integrand_advection = rho_f_qn * darcy_flux * h_fq
                     integrand_SUPG = rho_f_qn * darcy_flux * h_fq * tau * RTh
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection + integrand_SUPG, wJe_q, isotropic_perm
+                        B_q, integrand_advection, wJe_q, isotropic_perm
+                    )
+                    element_vectors["F_Tstab"] = _vctrzd_qp_vctr_integrate(
+                        B_q, integrand_SUPG, wJe_q, isotropic_perm
                     )
 
             # ----- Fracture-matrix pressure coupling
@@ -1523,14 +1529,18 @@ def integrate_tangent_matrices(  # noqa
                         + (grad_hf + h_f * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT
                         + (dhf_dT / rho_f_n - h_f * drho_dT / rho_f_n**2) * D2 * N_q
                     )
-                    # Advection tangent matrices
+                    # Advection tangent matrices - plain advection subtracted (matches the
+                    # residual's flipped divergence term); SUPG stabilization added with its
+                    # own independent sign (a Petrov-Galerkin correction, not part of that
+                    # divergence term).
                     integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT
                     integrand_SUPG = (
                         dhf_dT * tau * RTh * q_D * N_q + h_f * tau * dR_dT * q_D + h_f * tau * RTh * dqD_dT
                     )
-                    element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection + integrand_SUPG, wJe_q, False
+                    element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
+                        B_q, integrand_advection, wJe_q, False
                     )
+                    element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG, wJe_q, False)
 
             # Fully coupled - off diagonal matrices
             if fully_coupled:
@@ -1577,9 +1587,10 @@ def integrate_tangent_matrices(  # noqa
                     integrand_SUPG = (
                         dhf_dp * tau * RTh * q_D * N_q + h_f * tau * dR_dp * q_D + h_f * tau * RTh * dqD_dp
                     )
-                    element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection + integrand_SUPG, wJe_q, False
+                    element_matrices["KTp"] -= _vctrzd_qp_vctr_integrate(
+                        B_q, integrand_advection, wJe_q, False
                     )
+                    element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG, wJe_q, False)
 
             # ----- Fracture-matrix pressure coupling
             if is_fracture and mu_nonlinear:
