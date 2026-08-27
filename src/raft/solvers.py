@@ -2,12 +2,13 @@
 
 from typing import Any, cast
 
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_nonlinear_matrices, integrate_residuals, integrate_tangent_matrices
+from .matrixassembly import integrate_residuals, integrate_tangent_matrices
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -169,7 +170,7 @@ def compute_residuals_comp(
         F_Tdiffusion = F_vec["F_Tdiffusion"]
         F_Tadvection = F_vec["F_Tadvection"]
         RT = F_Tstorage + F_Tdiffusion + F_Tadvection - F_extT
-        if pressure_only:
+        if fully_coupled:
             R["T"] = RT
         else:
             R = {"T": RT}
@@ -614,7 +615,7 @@ def fully_coupled_time_integration(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
+    matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     dt: list[float],
@@ -637,7 +638,6 @@ def fully_coupled_time_integration(  # noqa
     iter_max = sim_control["iterative_controls"]["iter_max"]
     NR_tol = sim_control["iterative_controls"]["NR_tol"]
     aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
-    mu_nonlinear = sim_control["viscosity_nonconstant"]
 
     # extract mesh characteristics
     nn = mesh["nn_total"]  # noqa
@@ -689,26 +689,8 @@ def fully_coupled_time_integration(  # noqa
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Compute residual vectors
-        nonlinear_matrices = integrate_nonlinear_matrices(
-            mesh, material, primary_variables_iteration, sim_control
-        )
-
-        T_dot = (cv[0] * T[:, 0] + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-
-        R = compute_residuals(
-            nonlinear_matrices,
-            matrices_linear,
-            p,
-            T,
-            T_dot,
-            cv,
-            F_extp,
-            F_extT,
-            material,
-            sim_control,
-            fully_coupled=True,
-            mu_nonlinear=mu_nonlinear,
-        )
+        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv)
+        R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=True)
 
         # Check convergence
         converged, iteration_error = _check_convergence_fullycoupled(
@@ -720,21 +702,17 @@ def fully_coupled_time_integration(  # noqa
                 print(" - CONVERGED")
             break
         else:  # Update iteration
-            # Assemble Jacobian matrix
-            tangent = assemble_full_tangent(
-                nonlinear_matrices,
-                matrices_linear,
-                cv,
-                sim_control,
-                fully_coupled=True,
-                mu_nonlinear=mu_nonlinear,
+            jacobian = integrate_tangent_matrices(
+                mesh, material, primary_variables, sim_control, cv, fully_coupled=True
             )
 
             # Total combined matrix
             d = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
             A = cast(
                 sp.csc_matrix[Any],
-                sp.bmat([[tangent["pp"], tangent["pT"]], [tangent["Tp"], tangent["TT"]]], format="csc"),
+                sp.bmat(
+                    [[jacobian["Kpp"], jacobian["KpT"]], [jacobian["KTp"], jacobian["KTT"]]], format="csc"
+                ),
             )
 
             b = np.vstack((R["p"], R["T"]))
@@ -789,24 +767,24 @@ def fully_coupled_time_integration(  # noqa
     if verbose:
         print()  # new line for that output doesn't get overwritten
         # Plot residuals
-        # fig, ax1 = plt.subplots(figsize=(8, 8))
-        # ax2 = ax1.twinx()
+        fig, ax1 = plt.subplots(figsize=(8, 8))
+        ax2 = ax1.twinx()
 
-        # ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
-        # ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
-        # ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
-        # plt.ylabel("residual")
-        # plt.legend(["Temperature", "Pressure", "Combined"])
+        ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
+        ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
+        ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
+        plt.ylabel("residual")
+        plt.legend(["Temperature", "Pressure", "Combined"])
 
-        # ax2.plot(
-        #     np.arange(1, iteration + 1),
-        #     np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
-        #     "go-",
-        # )
-        # plt.ylabel("damping coefficient")
+        ax2.plot(
+            np.arange(1, iteration + 1),
+            np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
+            "go-",
+        )
+        plt.ylabel("damping coefficient")
 
-        # plt.xlim([0, iter_max])
-        # # plt.ylim([1e-15, 1e2])
-        # plt.xlabel("iteration")
+        plt.xlim([0, iter_max])
+        # plt.ylim([1e-15, 1e2])
+        plt.xlabel("iteration")
 
     return primary_variables, dt, converged, NR["all"][iteration - 1]

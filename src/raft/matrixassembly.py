@@ -47,6 +47,14 @@ def _lump_diagonal(matrix: csc_matrix) -> csc_matrix:
     return csc_matrix((diag_vals, (idx, idx)), shape=(n, n))
 
 
+def _get_region_value(val: Any, region_idx: int) -> Any:
+    """Return value for region, handling both scalar and list cases.
+
+    Fallback for homogeneous cases defined as scalars instead of lists.
+    """
+    return val[region_idx] if isinstance(val, list) else val
+
+
 def _assemble_global_matrices(
     vec: dict[str, npt.NDArray[np.float64]],
     conn: list[list[int]],
@@ -198,7 +206,7 @@ def _vctrzd_quad_point_integration(
     return result
 
 
-def _vctrzd_qp_vector_integration(
+def _vctrzd_qp_vctr_integrate(
     left_matrix: npt.NDArray[np.float64],
     integrand: npt.NDArray[np.float64] | float,
     weights: npt.NDArray[np.float64],
@@ -594,13 +602,13 @@ def _get_region_solid_data(
     float,
 ]:
     """Resolve per-region solid properties."""
-    K_d = mat["solid"]["bulk_mod"][r]
-    phi_0 = mat["solid"]["porosity"][r]
-    biot = mat["solid"]["biot_coeff"][r]
-    rho_s = mat["solid"]["density"][r]
-    cp_s = mat["solid"]["specific_heat"][r]
-    alpha_s = mat["solid"]["therm_expansion"][r]
-    lambda_s = mat["solid"]["therm_cond"][r]
+    K_d = _get_region_value(mat["solid"]["drained_bulk_mod"], r)
+    phi_0 = _get_region_value(mat["solid"]["porosity"], r)
+    biot = _get_region_value(mat["solid"]["biot_coeff"], r)
+    rho_s = _get_region_value(mat["solid"]["density"], r)
+    cp_s = _get_region_value(mat["solid"]["specific_heat"], r)
+    alpha_s = _get_region_value(mat["solid"]["therm_expansion"], r)
+    lambda_s = _get_region_value(mat["solid"]["therm_cond"], r)
 
     return K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s
 
@@ -1021,7 +1029,7 @@ def integrate_residuals(  # noqa
                 element_vectors["F_Pstorage"] = m_lump * mass_dot_nodal
 
                 # Diffusion vector
-                element_vectors["F_Pdiffusion"] = _vctrzd_qp_vector_integration(
+                element_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(
                     B_q, rho_f_qn * darcy_flux, wJe_q, isotropic_perm
                 )
 
@@ -1051,7 +1059,7 @@ def integrate_residuals(  # noqa
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_nodal
 
                 # Diffusion vector
-                element_vectors["F_Tdiffusion"] = _vctrzd_qp_vector_integration(
+                element_vectors["F_Tdiffusion"] = _vctrzd_qp_vctr_integrate(
                     B_q, lambda_e * gradT, wJe_q, isotropic_cond
                 )
 
@@ -1116,7 +1124,7 @@ def integrate_residuals(  # noqa
                     # advection
                     integrand_advection = rho_f_qn * darcy_flux * h_fq
                     integrand_SUPG = rho_f_qn * darcy_flux * h_fq * tau * RTh
-                    element_vectors["F_Tadvection"] = _vctrzd_qp_vector_integration(
+                    element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection + integrand_SUPG, wJe_q, isotropic_perm
                     )
 
@@ -1377,7 +1385,7 @@ def integrate_tangent_matrices(  # noqa
 
                 # Diffusion vector - Fk
                 # dFk/dp
-                element_matrices["Kpp"] += _vctrzd_qp_vector_integration(B_q, dqD_dp, wJe_q, False)
+                element_matrices["Kpp"] += _vctrzd_qp_vctr_integrate(B_q, dqD_dp, wJe_q, False)
 
             if not pressure_only:
                 # -------------------------------- Conservation of energy wrt temperature
@@ -1417,9 +1425,7 @@ def integrate_tangent_matrices(  # noqa
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = lambda_e * B_q + dphi_L_dT * (lambda_f - lambda_s) * gradT * N_q
-                element_matrices["KTT"] += _vctrzd_qp_vector_integration(
-                    B_q, integrand_dFlambdadT, wJe_q, False
-                )
+                element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 # Advection and SUPG stabilization
                 if advection_on:
@@ -1522,7 +1528,7 @@ def integrate_tangent_matrices(  # noqa
                     integrand_SUPG = (
                         dhf_dT * tau * RTh * q_D * N_q + h_f * tau * dR_dT * q_D + h_f * tau * RTh * dqD_dT
                     )
-                    element_matrices["KTT"] += _vctrzd_qp_vector_integration(
+                    element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection + integrand_SUPG, wJe_q, False
                     )
 
@@ -1531,29 +1537,27 @@ def integrate_tangent_matrices(  # noqa
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
                 integrand_dFsdT = cv[0] * (dphi_L_dT * rho_f_n + phi_L * drho_dT)
-                element_matrices["KpT"] = _vctrzd_qp_vector_integration(
-                    N_q, integrand_dFsdT, N_q, wJe_q, False
+                element_matrices["KpT"] = _vctrzd_quad_point_integration(
+                    N_q, integrand_dFsdT, N_q, wJe_q, scalar=True
                 )
 
                 # Diffusion vector - Fk
                 integrand_dFkdT = dqD_dT
-                element_matrices["KpT"] += _vctrzd_qp_vector_integration(B_q, integrand_dFkdT, wJe_q, False)
+                element_matrices["KpT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFkdT, wJe_q, False)
 
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
                 integrand_dFCdT = cv[0] * (
                     phi_L_n * (drho_dp * u_f + rho_f_n * duf_dp)
-                    + dphi_L_dp * (rho_f_n * u_f - rho_s * cp_s * T)
+                    + dphi_L_dp * (rho_f_n * u_f - rho_s * cp_s * T_q[:, 0:1])
                 )
                 element_matrices["KTp"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFCdT, N_q, wJe_q, False
+                    N_q, integrand_dFCdT, N_q, wJe_q, scalar=True
                 )
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = dphi_L_dp * (lambda_f - lambda_s) * gradT * N_q
-                element_matrices["KTp"] += _vctrzd_qp_vector_integration(
-                    B_q, integrand_dFlambdadT, wJe_q, False
-                )
+                element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 if advection_on:
                     dR_dp = (
@@ -1573,7 +1577,7 @@ def integrate_tangent_matrices(  # noqa
                     integrand_SUPG = (
                         dhf_dp * tau * RTh * q_D * N_q + h_f * tau * dR_dp * q_D + h_f * tau * RTh * dqD_dp
                     )
-                    element_matrices["KTp"] += _vctrzd_qp_vector_integration(
+                    element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection + integrand_SUPG, wJe_q, False
                     )
 

@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
             "bulk_mod": 2.0e9,  # Pa
             "density": 1000,  # kg/m^3
             "reference_temperature": 293,  # K
+            "reference_pressure": 1.0e5,  # K
             "therm_cond": 0.6,  # W/mK
             "therm_expansion": 200.0e-6,  # 1/K
             "specific_heat": 4180.0,  # J/kgK
@@ -252,6 +253,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
     mat["solid"]["therm_expansion_eff"] = [None] * num_regions
     mat["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
     mat["solid"]["permeability_eff"] = [None] * num_regions
+    mat["solid"]["drained_bulk_mod"] = [None] * num_regions
 
     for r in range(num_regions):
         # ----- material properties
@@ -308,6 +310,7 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
         mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
         mat["solid"]["therm_expansion_eff"][r] = alpha_e
         mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
+        mat["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
 
     return mat
 

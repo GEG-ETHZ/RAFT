@@ -1,5 +1,5 @@
 mesh:
-  file: square2D.msh
+  file: square2D_plain.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -107,7 +107,7 @@ simulation:
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 10000.0
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1

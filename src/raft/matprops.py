@@ -73,12 +73,14 @@ def get_density(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get density and its temperature derivative, at temperature T [K] and pressure P [Pa]."""
     T0 = fluid["reference_temperature"]
+    P0 = fluid["reference_pressure"]
     alpha = fluid["therm_expansion"]
     rho_0 = fluid["density"]
-    density = rho_0 * (1 - alpha * (T - T0))
+    Kf = fluid["bulk_mod"]
+    density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (P - P0))
 
     drho_dT = -rho_0 * alpha * np.ones(np.shape(T))
-    drho_dp = 0 * np.ones(np.shape(T))
+    drho_dp = rho_0 * 1 / Kf * np.ones(np.shape(P))
 
     return density, drho_dT, drho_dp
 
