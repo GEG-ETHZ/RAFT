@@ -1,5 +1,5 @@
 mesh:
-  file: square2D_plain.msh
+  file: square2D_mixed.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -42,7 +42,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 00.0e-6 # 1/K
       specific_heat: 4250       # J/kgK
-      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   # fracture:
@@ -120,7 +120,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 0
+  advection_on: 1
   pressurization_on: 0
   gravity: 0
   steady_pressure: 0

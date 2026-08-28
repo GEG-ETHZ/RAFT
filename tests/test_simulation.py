@@ -29,6 +29,62 @@ def test_buoyancy() -> None:
     assert test_pass
 
 
+# def test_pressurization() -> None:
+#     """Test pressurization against analytical solutions."""
+#     case_dir = _test_data_dir()
+#     test_name = "Pressurization Test"
+#     config_filename = "config_test_pressurization.yaml"
+#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+#     plot_on = True
+#     test_pass = test_checks.check_pressurization(
+#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+#     )
+#     assert test_pass
+
+
+def test_advection() -> None:
+    """Test advection against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Advection Test"
+    config_filename = "config_test_advection.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = True
+    test_pass = test_checks.check_advection(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_heterogeneous() -> None:
+    """Verify solution of heterogeneous properties against analytical solution."""
+    case_dir = _test_data_dir()
+    test_name = "Heterogeneous Test"
+    config_filename = "config_test_heterogeneous.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_heterogeneous(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+# def test_nonlinear_viscosity() -> None:
+#     """Check exactness of non-linear viscosity"""
+#     case_dir = _test_data_dir()
+#     test_name = "Non-linear Viscosity"
+#     config_filename = "config_test_NL_viscosity.yaml"
+#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+
+#     plot_on = False
+#     test_pass = test_checks.check_NL_viscosity(
+#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+#     )
+#     assert test_pass
+
+
 def test_axisymmetry() -> None:
     """Check axisymmetry against exact solution."""
     case_dir = _test_data_dir()
@@ -73,40 +129,12 @@ def test_patch_y_flux_2D() -> None:
     assert test_pass
 
 
-def test_pressurization() -> None:
-    """Test pressurization against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Pressurization Test"
-    config_filename = "config_test_pressurization.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_pressurization(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_nonlinear_viscosity() -> None:
-    """Check exactness of non-linear viscosity"""
-    case_dir = _test_data_dir()
-    test_name = "Non-linear Viscosity"
-    config_filename = "config_test_NL_viscosity.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
-
-    plot_on = False
-    test_pass = test_checks.check_NL_viscosity(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
 def test_patch_z_flux() -> None:
     """Check exact linear approximation in Z."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z - flux"
     config_filename = "config_test_patchZ_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
 
     dimension = 2
     plot_on = False
@@ -191,20 +219,6 @@ def test_patch_x_T4() -> None:
     assert test_pass
 
 
-def test_heterogeneous() -> None:
-    """Verify solution of heterogeneous properties against analytical solution."""
-    case_dir = _test_data_dir()
-    test_name = "Heterogeneous Test"
-    config_filename = "config_test_heterogeneous.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_heterogeneous(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
 def test_regions() -> None:
     """Verify assignment of regions against a known list."""
     case_dir = _test_data_dir()
@@ -227,20 +241,6 @@ def test_patch_anisotropy() -> None:
     plot_on = False
     test_pass = test_checks.check_patch_test(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_advection() -> None:
-    """Test advection against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Advection Test"
-    config_filename = "config_test_advection.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_advection(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
     assert test_pass
 

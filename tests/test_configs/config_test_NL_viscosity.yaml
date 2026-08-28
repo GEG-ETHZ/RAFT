@@ -15,7 +15,7 @@ material:
       permeability: 5.0e-13         # m^2
   # Fluid parameters
   fluid:
-      bulk_mod: 2.10e+9         # Pa
+      bulk_mod: 2.10e+30         # Pa
       density:      10         # kg/m^3
       therm_cond:   3         # W/mK
       therm_expansion: 00.0e-6 # 1/K

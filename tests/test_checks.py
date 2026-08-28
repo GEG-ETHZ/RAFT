@@ -516,7 +516,7 @@ def check_heterogeneous(
         plt.title(test_name)
 
     # calculate error
-    err_ex = sum((T_ex - T[line_1]) ** 2)
+    err_ex = sum((T_ex - T[line_1]) ** 2 / T_ex**2)
 
     # check pressure
     p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
@@ -540,7 +540,7 @@ def check_heterogeneous(
         plt.ylabel("p")
         plt.title(test_name)
 
-    err_ex += sum((p_ex - p[line_1]) ** 2)
+    err_ex += sum((p_ex - p[line_1]) ** 2 / p_ex**2)
 
     test_pass = bool(err_ex < tol)
 

@@ -1401,6 +1401,7 @@ def integrate_tangent_matrices(  # noqa
                 )  # fluid internal energy, nq x 1 x 1
                 u_f_n = u_f[:, :, 0:1]
                 duf_dT_n = duf_dT[:, :, 0:1]
+                duf_dp_n = duf_dp[:, :, 0:1]
                 h_f, dhf_dT, dhf_dp = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], fluid
                 )  # fluid enthalpy, nq x 1 x 1
@@ -1546,7 +1547,7 @@ def integrate_tangent_matrices(  # noqa
             if fully_coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                integrand_dFsdT = cv[0] * (dphi_L_dT * rho_f_n + phi_L * drho_dT)
+                integrand_dFsdT = cv[0] * (dphi_L_dT * rho_f_n + phi_L_n * drho_dT)
                 element_matrices["KpT"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdT, N_q, wJe_q, scalar=True
                 )
@@ -1558,8 +1559,8 @@ def integrate_tangent_matrices(  # noqa
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
                 integrand_dFCdT = cv[0] * (
-                    phi_L_n * (drho_dp * u_f + rho_f_n * duf_dp)
-                    + dphi_L_dp * (rho_f_n * u_f - rho_s * cp_s * T_q[:, 0:1])
+                    phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
+                    + dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
                 )
                 element_matrices["KTp"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFCdT, N_q, wJe_q, scalar=True
@@ -1573,8 +1574,8 @@ def integrate_tangent_matrices(  # noqa
                     dR_dp = (
                         cv[0]
                         * (
-                            dphi_L_dp * (rho_f_n * u_f - rho_s * cp_s * T_q)
-                            + phi_L_n * (drho_dp * u_f + rho_f_n * duf_dp)
+                            dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                            + phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
                         )
                         * N_q
                         + (dhf_dp + h_f / rho_f_n * drho_dp) * q_D * B_q
