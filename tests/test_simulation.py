@@ -29,20 +29,6 @@ def test_buoyancy() -> None:
     assert test_pass
 
 
-# def test_pressurization() -> None:
-#     """Test pressurization against analytical solutions."""
-#     case_dir = _test_data_dir()
-#     test_name = "Pressurization Test"
-#     config_filename = "config_test_pressurization.yaml"
-#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-#     plot_on = True
-#     test_pass = test_checks.check_pressurization(
-#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-#     )
-#     assert test_pass
-
-
 def test_advection() -> None:
     """Test advection against analytical solutions."""
     case_dir = _test_data_dir()
@@ -50,7 +36,7 @@ def test_advection() -> None:
     config_filename = "config_test_advection.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_advection(
         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
@@ -71,18 +57,18 @@ def test_heterogeneous() -> None:
     assert test_pass
 
 
-# def test_nonlinear_viscosity() -> None:
-#     """Check exactness of non-linear viscosity"""
-#     case_dir = _test_data_dir()
-#     test_name = "Non-linear Viscosity"
-#     config_filename = "config_test_NL_viscosity.yaml"
-#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+def test_nonlinear_viscosity() -> None:
+    """Check exactness of non-linear viscosity"""
+    case_dir = _test_data_dir()
+    test_name = "Non-linear Viscosity"
+    config_filename = "config_test_NL_viscosity.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
 
-#     plot_on = False
-#     test_pass = test_checks.check_NL_viscosity(
-#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-#     )
-#     assert test_pass
+    plot_on = False
+    test_pass = test_checks.check_NL_viscosity(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
 
 
 def test_axisymmetry() -> None:

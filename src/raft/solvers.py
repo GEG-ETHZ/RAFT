@@ -274,6 +274,37 @@ def _check_convergence_fullycoupled(
     return converged, NR["all"][iteration]
 
 
+def _plot_nr_residuals(
+    NR: dict[str, Any],
+    aitken_state: dict[str, Any],
+    iteration: int,
+    iter_max: int,
+    residual_keys: list[str],
+) -> None:
+    """Plot Newton-Raphson residual history and Aitken damping coefficients."""
+    labels = {"T": "Temperature", "p": "Pressure"}
+    styles = {"T": "r-", "p": "b-"}
+
+    fig, ax1 = plt.subplots(figsize=(8, 8))
+    ax2 = ax1.twinx()
+
+    for key in residual_keys:
+        ax1.semilogy(np.arange(1, iteration + 1), NR[key][range(0, iteration)], styles[key])
+    ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
+    plt.ylabel("residual")
+    plt.legend([labels[key] for key in residual_keys] + ["Combined"])
+
+    ax2.plot(
+        np.arange(1, iteration + 1),
+        np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
+        "go-",
+    )
+    plt.ylabel("damping coefficient")
+
+    plt.xlim([0, iter_max])
+    plt.xlabel("iteration")
+
+
 def _aitken_relax(
     iteration: int,
     sol_mp1: npt.NDArray[np.float64],
@@ -371,6 +402,8 @@ def lin_extrap_time_integration(  # noqa
     Solution uses a linearized extrapoloation which lags temperature. Error
     is calculated between the predicted and calculated temperatures for convergence.
     """
+    debug_pressure_plot_on = False
+    debug_temperature_plot_on = False
     # extract vectors of nodal dofs
     p = primary_variables["p"]
     T = primary_variables["T"]
@@ -506,6 +539,11 @@ def lin_extrap_time_integration(  # noqa
             primary_variables["p"] = p_orig
             primary_variables["T"] = T_orig
             break
+
+    if verbose:
+        print()  # new line for that output doesn't get overwritten
+        if debug_pressure_plot_on:
+            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["p"])
     # ---- Calculate reaction flow rates at prescribed DoFs
     KEE = A[np.ix_(nE_p, nE_p)]
     KEF = A[np.ix_(nE_p, nF_p)]
@@ -602,6 +640,11 @@ def lin_extrap_time_integration(  # noqa
             primary_variables["T"] = T_orig
             break
 
+    if verbose:
+        print()  # new line for that output doesn't get overwritten
+        if debug_temperature_plot_on:
+            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["T"])
+
     # ---- Check for extrapolation error
     converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)
 
@@ -628,7 +671,7 @@ def fully_coupled_time_integration(  # noqa
     This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = False
+    debug_plot_on = True
     # extract vectors of nodal dofs
     primary_variables_iteration = primary_variables.copy()
     p = primary_variables_iteration["p"]
@@ -770,24 +813,6 @@ def fully_coupled_time_integration(  # noqa
         print()  # new line for that output doesn't get overwritten
         # Plot residuals
         if debug_plot_on:
-            fig, ax1 = plt.subplots(figsize=(8, 8))
-            ax2 = ax1.twinx()
-
-            ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
-            ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
-            ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
-            plt.ylabel("residual")
-            plt.legend(["Temperature", "Pressure", "Combined"])
-
-            ax2.plot(
-                np.arange(1, iteration + 1),
-                np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
-                "go-",
-            )
-            plt.ylabel("damping coefficient")
-
-            plt.xlim([0, iter_max])
-            # plt.ylim([1e-15, 1e2])
-            plt.xlabel("iteration")
+            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["T", "p"])
 
     return primary_variables, dt, converged, NR["all"][iteration - 1]

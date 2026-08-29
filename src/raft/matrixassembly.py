@@ -1369,14 +1369,14 @@ def integrate_tangent_matrices(  # noqa
             if isotropic_perm:
                 dqD_dp = (
                     rho_f_n * kf / mu_q * (B_q + drho_dp * N_q)
-                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp - rho_f_n * kf / mu_q**2 * dmu_dp)
+                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
                     * gradP_mod
                     * N_q
                 )
             else:
                 dqD_dp = (
                     rho_f_n * kf / mu_q @ (B_q + drho_dp * N_q)
-                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp - rho_f_n * kf / mu_q**2 * dmu_dp)
+                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
                     @ gradP_mod
                     * N_q
                 )
@@ -1443,7 +1443,7 @@ def integrate_tangent_matrices(  # noqa
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
-                                - rho_f_n * kf / mu_q**2 * dmu_dT
+                                + rho_f_n * kf / mu_q**2 * dmu_dT
                             )
                             * gradP_mod
                             * N_q
@@ -1454,7 +1454,7 @@ def integrate_tangent_matrices(  # noqa
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
-                                - rho_f_n * kf / mu_q**2 * dmu_dT
+                                + rho_f_n * kf / mu_q**2 * dmu_dT
                             )
                             @ gradP_mod
                             * N_q
@@ -1582,9 +1582,7 @@ def integrate_tangent_matrices(  # noqa
 
                     # Advection tangent matrices
                     integrand_advection = dhf_dp * q_D * N_q + h_f * dqD_dp
-                    integrand_SUPG = (
-                        dhf_dp * tau * RTh * q_D * N_q + h_f * tau * dR_dp * q_D + h_f * tau * RTh * dqD_dp
-                    )
+                    integrand_SUPG = tau * dR_dp * q_D + tau * RTh * dqD_dp
                     element_matrices["KTp"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )
