@@ -33,7 +33,7 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - nodes: [0, 1, 2, 3]
-        values: [8300]
+        values: [4300]
       - nodes: [4, 5, 6, 7]
         values: [7]
 

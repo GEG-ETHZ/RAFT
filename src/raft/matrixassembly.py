@@ -1065,7 +1065,7 @@ def integrate_residuals(  # noqa
 
                 # Advection and SUPG stabilization
                 if advection_on:
-                    flux = rho_f_qn * h_fq * darcy_flux
+                    flux = rho_f_qn * darcy_flux
                     if nsd == 3:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
                     elif nsd == 2:
@@ -1126,7 +1126,7 @@ def integrate_residuals(  # noqa
                     # with its own independent sign - not part of the divergence term being
                     # integrated by parts, so it does not flip sign along with plain advection)
                     integrand_advection = rho_f_qn * darcy_flux * h_fq
-                    integrand_SUPG = rho_f_qn * darcy_flux * h_fq * tau * RTh
+                    integrand_SUPG = rho_f_qn * darcy_flux * tau * RTh
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, isotropic_perm
                     )
@@ -1459,9 +1459,10 @@ def integrate_tangent_matrices(  # noqa
                             @ gradP_mod
                             * N_q
                         )
+
                 if advection_on:
                     # SUPG
-                    flux = rho_f_n * h_f * darcy_flux
+                    flux = rho_f_n * darcy_flux
                     if nsd == 3:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
                     elif nsd == 2:
@@ -1530,14 +1531,10 @@ def integrate_tangent_matrices(  # noqa
                         + (grad_hf + h_f * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT
                         + (dhf_dT / rho_f_n - h_f * drho_dT / rho_f_n**2) * D2 * N_q
                     )
-                    # Advection tangent matrices - plain advection subtracted (matches the
-                    # residual's flipped divergence term); SUPG stabilization added with its
-                    # own independent sign (a Petrov-Galerkin correction, not part of that
-                    # divergence term).
+
+                    # Combined integrands
                     integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT
-                    integrand_SUPG = (
-                        dhf_dT * tau * RTh * q_D * N_q + h_f * tau * dR_dT * q_D + h_f * tau * RTh * dqD_dT
-                    )
+                    integrand_SUPG = tau * dR_dT * q_D + tau * RTh * dqD_dT
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )
