@@ -111,6 +111,22 @@ def _assign_initial_gradient(
     return np.asarray(y, dtype=np.float64)
 
 
+def _fit_affine_from_dirichlet(
+    nodes: npt.NDArray[np.float64], dirichlet: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Least-squares affine field through a set of Dirichlet (node, value) pairs.
+
+    Used to seed BC_compatible initial conditions with a field that already varies
+    smoothly toward the boundary values, rather than an arbitrary uniform guess.
+    """
+    node_idx = dirichlet[:, 0].astype(int)
+    values = dirichlet[:, 1]
+    pos = nodes[node_idx]
+    A = np.hstack([np.ones((len(node_idx), 1)), pos])
+    coeffs, *_ = np.linalg.lstsq(A, values, rcond=None)
+    return np.hstack([np.ones((nodes.shape[0], 1)), nodes]) @ coeffs
+
+
 def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     """Broadcast a per-node scalar field into the 4-column time-history layout."""
     return np.tile(values.reshape(-1, 1), (1, 4))
@@ -119,13 +135,15 @@ def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
 def _build_steady_state_controls(sim_control: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
-    Pressurization is neglected since it is time-dependent.
+    Pressurization is neglected since it is time-dependent. Volumetric strain is also
+    neglected, since initial conditions are by definition unstrained relative to themselves.
     """
     sim_control_SS = sim_control.copy()
     sim_control_SS["pressurization_on"] = 0
     sim_control_SS["steady_pressure"] = 1
     sim_control_SS["steady_temperature"] = 1
     sim_control_SS["fully_coupled"] = False
+    sim_control_SS["volumetric_strain_on"] = 0
     return sim_control_SS
 
 
@@ -152,7 +170,7 @@ def _assign_ic_gradient(
     return primary_variables
 
 
-def _assign_ic_bc_compatible(
+def _assign_ic_bc_compatible(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -165,6 +183,21 @@ def _assign_ic_bc_compatible(
     """Solve for a steady-state initial condition compatible with the boundary conditions."""
     if verbose:
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
+
+    # Seed with an affine field through the Dirichlet BCs rather than an arbitrary uniform
+    # guess, so the first Newton pass starts close to the boundary-driven gradient instead
+    # of having to build it up from scratch (which is what was producing spurious oscillation
+    # in the nonlinear-viscosity temperature solve).
+    T_dirichlet = boundary_conditions["T_dirichlet"]
+    p_dirichlet = boundary_conditions["p_dirichlet"]
+    if len(T_dirichlet) > mesh["nsd"]:
+        primary_variables["T"][:, :] = _broadcast_to_history(
+            _fit_affine_from_dirichlet(mesh["nodes_total"], T_dirichlet)
+        )
+    if len(p_dirichlet) > mesh["nsd"]:
+        primary_variables["p"][:, :] = _broadcast_to_history(
+            _fit_affine_from_dirichlet(mesh["nodes_total"], p_dirichlet)
+        )
 
     sim_control_SS = _build_steady_state_controls(sim_control)
     # Initialized reference values -> set as current values and neglect

@@ -876,6 +876,7 @@ def integrate_residuals(  # noqa
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
     cv: npt.NDArray[np.float64],  # rate coefficients
+    T_flow: npt.NDArray[np.float64],  # temperature field used for property evaluations
     *,
     is_fracture: bool = False,
     pressure_only: bool = False,
@@ -894,6 +895,7 @@ def integrate_residuals(  # noqa
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
+    volumetric_strain_on = bool(controls["volumetric_strain_on"])
     steady_pres = controls["steady_pressure"]
     steady_temp = controls["steady_temperature"]
 
@@ -988,35 +990,49 @@ def integrate_residuals(  # noqa
             element_vectors: dict[str, npt.NDArray[np.float64]] = {}
 
             Te = T[enodes_dof]  # element nodal temperatures
+            Te_flow = T_flow[enodes_dof]
             pe = p[enodes_dof]  # element nodal pressures
             T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
             p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
             L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths # noqa
 
             T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
+            T_flow_q = N_q @ Te_flow  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             P_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
             gradT = B_q @ Te[:, 0].reshape(-1, 1)  # qudarature point temperature gradient, nq x nsd x 1
             gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
-            kf, _, _ = get_effective_permeability(kf_0, T_q, P_q, fluid)
+            kf, _, _ = get_effective_permeability(kf_0, T_flow_q, P_q, fluid)
             # quadrature point viscosities, nq x 1 x 1
-            mu_q, _, _ = get_viscosity(T_q[:, :, 0], P_q[:, :, 0], fluid)
+            mu_q, _, _ = get_viscosity(T_flow_q[:, :, 0], P_q[:, :, 0], fluid)
             mu_q = mu_q.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
-            rho_f_q, _, _ = get_density(T_q, P_q, fluid)
+            rho_f_q, _, _ = get_density(T_flow_q, P_q, fluid)
             rho_f_qn = rho_f_q[:, :, 0].reshape(-1, 1, 1)
 
             darcy_flux = (
                 -kf / mu_q * (gradP + rho_f_qn * g) if isotropic_perm else -kf / mu_q @ (gradP + rho_f_qn * g)
             )
 
-            phi_L, _, _ = get_porosity_lagrangian(P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s)
+            phi_L, _, _ = get_porosity_lagrangian(
+                P_q,
+                N_q @ p_0e,
+                T_flow_q,
+                N_q @ T_0e,
+                phi_0,
+                K_d,
+                biot,
+                alpha_s,
+                volumetric_strain_on=volumetric_strain_on,
+            )
 
             # Nodal evaluation for self-consistent lumping of the storage terms (see
             # integrate_tangent_matrices for the matching tangent-side computation).
-            phi_L_nodal, _, _ = get_porosity_lagrangian(pe, p_0e, Te, T_0e, phi_0, K_d, biot, alpha_s)
-            rho_f_nodal, _, _ = get_density(Te, pe, fluid)
+            phi_L_nodal, _, _ = get_porosity_lagrangian(
+                pe, p_0e, Te_flow, T_0e, phi_0, K_d, biot, alpha_s, volumetric_strain_on=volumetric_strain_on
+            )
+            rho_f_nodal, _, _ = get_density(Te_flow, pe, fluid)
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
 
             # ------ Conservation of mass
@@ -1037,7 +1053,9 @@ def integrate_residuals(  # noqa
             if not pressure_only:
                 # Thermo-dynamic internal variables
                 u_fq, _, _ = get_internal_energy(T_q, P_q, fluid)  # fluid internal energy, nq x 1 x 1
-                h_fq, _, _ = get_enthalpy(P_q[:, :, 0:1], T_q[:, :, 0:1], fluid)  # fluid enthalpy, nq x 1 x 1
+                h_fq, _, _ = get_enthalpy(
+                    P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid
+                )  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f_q * u_fq  # total energy, nq x 1 x 1
                 energy_dot_q = (1 - steady_temp) * (
                     cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
@@ -1110,12 +1128,12 @@ def integrate_residuals(  # noqa
 
                     # Discretized strong form residual at quadrature points
                     hf_e, _, _ = get_enthalpy(
-                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), fluid
+                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
                     rhof_e, _, _ = get_density(
-                        Te[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
-                    )  # fluid enthalpy, nq x 1 x 1
+                        Te_flow[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
+                    )  # fluid density, nq x 1 x 1
                     grad_rhof = B_q @ rhof_e
                     RTh = (
                         energy_dot_q + (grad_hf * rho_f_qn + h_fq * grad_rhof).transpose(0, 2, 1) @ darcy_flux
@@ -1207,13 +1225,22 @@ def integrate_tangent_matrices(  # noqa
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
     cv: npt.NDArray[np.float64],  # rate coefficients
+    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     *,
     is_fracture: bool = False,
     pressure_only: bool = False,
     temperature_only: bool = False,
     fully_coupled: bool = False,
+    T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
-    """Integrate tangent matrices."""
+    """Integrate tangent matrices.
+
+    `T_flow_lagged` selects whether flow properties' dependence on `T_flow` is treated as
+    coupled to the unknown T (False - T_flow tracks T, e.g. the fully-coupled solver) or
+    independent of it (True - T_flow is a frozen/extrapolated field, e.g. the linearized
+    solver's temperature-only solve), which controls whether dqD/dT picks up the resulting
+    dmu/dT, drho/dT, dkf/dT contributions.
+    """
     p = primary_variables["p"]
     T = primary_variables["T"]
 
@@ -1226,6 +1253,7 @@ def integrate_tangent_matrices(  # noqa
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
+    volumetric_strain_on = bool(controls["volumetric_strain_on"])
     steady_pres = controls["steady_pressure"]
     steady_temp = controls["steady_temperature"]
 
@@ -1317,26 +1345,28 @@ def integrate_tangent_matrices(  # noqa
             element_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
             Te = T[enodes_dof]  # element nodal temperatures
+            Te_flow = T_flow[enodes_dof]  # element nodal temperatures, for flow properties
             pe = p[enodes_dof]  # element nodal pressures
             T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
             p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
             L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths # noqa
 
             T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
+            T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
             P_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
             gradT = B_q @ Te[:, 0].reshape(-1, 1)  # qudarature point temperature gradient, nq x nsd x 1
             gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
-            kf, dkf_dT, dkf_dp = get_effective_permeability(kf_0, T_q, P_q, fluid)
+            kf, dkf_dT, dkf_dp = get_effective_permeability(kf_0, T_flow_q, P_q, fluid, T_flow_lagged)
 
             # quadrature point viscosities, nq x 1 x 1
-            mu_q, dmu_dT, dmu_dp = get_viscosity(T_q[:, :, 0], P_q[:, :, 0], fluid)
+            mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q[:, :, 0], P_q[:, :, 0], fluid, T_flow_lagged)
             mu_q = mu_q.reshape(-1, 1, 1)
             dmu_dT = dmu_dT.reshape(-1, 1, 1)
             dmu_dp = dmu_dp.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
-            rho_f, drho_dT, drho_dp = get_density(T_q, P_q, fluid)
+            rho_f, drho_dT, drho_dp = get_density(T_flow_q, P_q, fluid, T_flow_lagged)
             rho_f_n = rho_f[:, :, 0].reshape(-1, 1, 1)
             drho_dT = drho_dT[:, :, 0].reshape(-1, 1, 1)
             drho_dp = drho_dp[:, :, 0].reshape(-1, 1, 1)
@@ -1349,7 +1379,16 @@ def integrate_tangent_matrices(  # noqa
             q_D = rho_f_n * darcy_flux
             # porosity
             phi_L, dphi_L_dT, dphi_L_dp = get_porosity_lagrangian(
-                P_q, N_q @ p_0e, T_q, N_q @ T_0e, phi_0, K_d, biot, alpha_s
+                P_q,
+                N_q @ p_0e,
+                T_flow_q,
+                N_q @ T_0e,
+                phi_0,
+                K_d,
+                biot,
+                alpha_s,
+                T_flow_lagged,
+                volumetric_strain_on,
             )
             dphi_L_dT = dphi_L_dT[:, :, 0].reshape(-1, 1, 1)
             dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
@@ -1360,9 +1399,20 @@ def integrate_tangent_matrices(  # noqa
             # than at quadrature points, so the lumped storage residual/tangent are exact
             # derivatives of one another by construction.
             phi_L_nodal, dphi_L_dT_nodal, dphi_L_dp_nodal = get_porosity_lagrangian(
-                pe[:, 0:1], p_0e, Te[:, 0:1], T_0e, phi_0, K_d, biot, alpha_s
+                pe[:, 0:1],
+                p_0e,
+                Te_flow[:, 0:1],
+                T_0e,
+                phi_0,
+                K_d,
+                biot,
+                alpha_s,
+                T_flow_lagged,
+                volumetric_strain_on,
             )
-            rho_f_nodal, drho_dT_nodal, drho_dp_nodal = get_density(Te[:, 0:1], pe[:, 0:1], fluid)
+            rho_f_nodal, drho_dT_nodal, drho_dp_nodal = get_density(
+                Te_flow[:, 0:1], pe[:, 0:1], fluid, T_flow_lagged
+            )
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
 
             # dqD/dp
@@ -1403,7 +1453,7 @@ def integrate_tangent_matrices(  # noqa
                 duf_dT_n = duf_dT[:, :, 0:1]
                 duf_dp_n = duf_dp[:, :, 0:1]
                 h_f, dhf_dT, dhf_dp = get_enthalpy(
-                    P_q[:, :, 0:1], T_q[:, :, 0:1], fluid
+                    P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid, T_flow_lagged
                 )  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f * u_f  # total energy, nq x 1 x 1
                 energy_dot = (1 - steady_temp) * (
@@ -1507,12 +1557,12 @@ def integrate_tangent_matrices(  # noqa
 
                     # Discretized strong form residual at quadrature points
                     hf_e, _, _ = get_enthalpy(
-                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), fluid
+                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
                     rhof_e, _, _ = get_density(
-                        Te[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
-                    )  # fluid enthalpy, nq x 1 x 1
+                        Te_flow[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
+                    )  # fluid density, nq x 1 x 1
                     grad_rhof = B_q @ rhof_e
                     RTh = (
                         energy_dot + (grad_hf * rho_f_n + h_f * grad_rhof).transpose(0, 2, 1) @ darcy_flux

@@ -403,7 +403,7 @@ def lin_extrap_time_integration(  # noqa
     is calculated between the predicted and calculated temperatures for convergence.
     """
     debug_pressure_plot_on = False
-    debug_temperature_plot_on = False
+    debug_temperature_plot_on = True
     # extract vectors of nodal dofs
     p = primary_variables["p"]
     T = primary_variables["T"]
@@ -451,6 +451,11 @@ def lin_extrap_time_integration(  # noqa
     # Rate of temperature change, used only for the pressurization forcing term
     # T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
 
+    # Frozen snapshot for flow-property evaluations: column 0 is the extrapolated/fixed
+    # guess (kept constant through the temperature Newton loop, unlike T itself), columns
+    # 1-3 are the real time history, needed as-is by the mass-storage rate terms.
+    T_flow = T.copy()
+
     # Begin Newton-Raphson iterative solver
     converged = False
     iteration = 0  # noqa
@@ -481,7 +486,9 @@ def lin_extrap_time_integration(  # noqa
         #     else {}
         # )
         p_n = p[:, 0].reshape(-1, 1)
-        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, pressure_only=True)
+        F_vec = integrate_residuals(
+            mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
+        )
         R = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)
 
         # Check convergence
@@ -495,7 +502,7 @@ def lin_extrap_time_integration(  # noqa
             break
         else:  # Update iteration
             jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, sim_control, cv, pressure_only=True
+                mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
             )
 
             A = jacobian["Kpp"]
@@ -581,7 +588,9 @@ def lin_extrap_time_integration(  # noqa
             )
 
         T_n = T[:, 0].reshape(-1, 1)
-        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, temperature_only=True)
+        F_vec = integrate_residuals(
+            mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
+        )
         R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
 
         # Check convergence
@@ -595,7 +604,14 @@ def lin_extrap_time_integration(  # noqa
             break
         else:  # Update iteration
             jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, sim_control, cv, temperature_only=True
+                mesh,
+                material,
+                primary_variables,
+                sim_control,
+                cv,
+                T_flow,
+                temperature_only=True,
+                T_flow_lagged=True,
             )
 
             A = jacobian["KTT"]
@@ -671,7 +687,7 @@ def fully_coupled_time_integration(  # noqa
     This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = True
+    debug_plot_on = False
     # extract vectors of nodal dofs
     primary_variables_iteration = primary_variables.copy()
     p = primary_variables_iteration["p"]
@@ -734,7 +750,7 @@ def fully_coupled_time_integration(  # noqa
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Compute residual vectors
-        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv)
+        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, T)
         R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=True)
 
         # Check convergence
@@ -748,7 +764,7 @@ def fully_coupled_time_integration(  # noqa
             break
         else:  # Update iteration
             jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, sim_control, cv, fully_coupled=True
+                mesh, material, primary_variables, sim_control, cv, T, fully_coupled=True
             )
 
             # Total combined matrix
