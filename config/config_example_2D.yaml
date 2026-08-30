@@ -50,7 +50,7 @@ material:
   #   nusselt: [5, 1, 5]
 
 initial_conditions:
-  assignment: "constant"
+  assignment: "BC_compatible"
   T_ini: 286
   p_ini: 1.0e+6
   T_grad: 0.1
@@ -132,4 +132,4 @@ simulation:
   iterative_controls:
       NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
-      aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
+      aitken_relaxation: 0 # Turn on/off Aitken's delta^2 relaxation

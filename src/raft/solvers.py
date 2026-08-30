@@ -403,7 +403,7 @@ def lin_extrap_time_integration(  # noqa
     is calculated between the predicted and calculated temperatures for convergence.
     """
     debug_pressure_plot_on = False
-    debug_temperature_plot_on = True
+    debug_temperature_plot_on = False
     # extract vectors of nodal dofs
     p = primary_variables["p"]
     T = primary_variables["T"]
@@ -687,7 +687,7 @@ def fully_coupled_time_integration(  # noqa
     This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = False
+    debug_plot_on = True
     # extract vectors of nodal dofs
     primary_variables_iteration = primary_variables.copy()
     p = primary_variables_iteration["p"]
@@ -780,7 +780,7 @@ def fully_coupled_time_integration(  # noqa
 
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, 2 * nn), nE, np.zeros(np.size(nE, 0)))
 
-            NR_step = 0.5
+            NR_step = 1.0
             d += NR_step * delta_var.reshape(-1, 1)
 
             # Check for nan or inf data and break

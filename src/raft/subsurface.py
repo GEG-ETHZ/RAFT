@@ -1,6 +1,7 @@
 """Subsurface simulator - main time integration loop."""
 
 import argparse
+import copy
 import datetime
 import sys
 from pathlib import Path
@@ -184,10 +185,7 @@ def _assign_ic_bc_compatible(  # noqa
     if verbose:
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
-    # Seed with an affine field through the Dirichlet BCs rather than an arbitrary uniform
-    # guess, so the first Newton pass starts close to the boundary-driven gradient instead
-    # of having to build it up from scratch (which is what was producing spurious oscillation
-    # in the nonlinear-viscosity temperature solve).
+    # Seed with an affine field through the Dirichlet BCs for initial guess
     T_dirichlet = boundary_conditions["T_dirichlet"]
     p_dirichlet = boundary_conditions["p_dirichlet"]
     if len(T_dirichlet) > mesh["nsd"]:
@@ -211,11 +209,11 @@ def _assign_ic_bc_compatible(  # noqa
         if verbose:
             print("   Non-linear properties present, using iterative sequential scheme to estimate fields...")
 
-        # Use one-pass linear to generate approximate solution
-        primary_variables_ini = primary_variables.copy()
+        # Use one-pass linear to generate approximate solution.
+        primary_variables_ini = copy.deepcopy(primary_variables)
         tries = [2, 6, 10]
         for num_passes in tries:
-            primary_variables = primary_variables_ini.copy()
+            primary_variables = copy.deepcopy(primary_variables_ini)
             for i in range(num_passes):
                 primary_variables, _, _, _ = lin_extrap_time_integration(
                     sim_control_SS,
