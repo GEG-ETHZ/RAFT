@@ -600,6 +600,7 @@ def _get_region_solid_data(
     float,
     float,
     float,
+    float,
 ]:
     """Resolve per-region solid properties."""
     K_d = _get_region_value(mat["solid"]["drained_bulk_mod"], r)
@@ -935,10 +936,10 @@ def integrate_residuals(  # noqa
         if mu_nonlinear:
             # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
             # fracture pass rather than re-derived here every timestep/Newton iteration.
-            cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cv.row_vec_ff, cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cv.row_vec_fm, cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cv.row_vec_mm, cv.col_vec_mm
+            cached_cv = fmesh["vec_mat_asmbl"]
+            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
+            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
+            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
@@ -1003,7 +1004,7 @@ def integrate_residuals(  # noqa
             gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
-            kf, _, _ = get_effective_permeability(kf_0, T_flow_q, P_q, fluid)
+            kf, _, _ = get_effective_permeability(kf_0, T_flow_q[:, :, 0], P_q[:, :, 0], fluid)
             # quadrature point viscosities, nq x 1 x 1
             mu_q, _, _ = get_viscosity(T_flow_q[:, :, 0], P_q[:, :, 0], fluid)
             mu_q = mu_q.reshape(-1, 1, 1)
@@ -1290,10 +1291,10 @@ def integrate_tangent_matrices(  # noqa
         if mu_nonlinear:
             # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
             # fracture pass rather than re-derived here every timestep/Newton iteration.
-            cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cv.row_vec_ff, cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cv.row_vec_fm, cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cv.row_vec_mm, cv.col_vec_mm
+            cached_cv = fmesh["vec_mat_asmbl"]
+            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
+            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
+            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
@@ -1358,7 +1359,11 @@ def integrate_tangent_matrices(  # noqa
             gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
-            kf, dkf_dT, dkf_dp = get_effective_permeability(kf_0, T_flow_q, P_q, fluid, T_flow_lagged)
+            kf, dkf_dT, dkf_dp = get_effective_permeability(
+                kf_0, T_flow_q[:, :, 0], P_q[:, :, 0], fluid, T_flow_lagged
+            )
+            dkf_dT = dkf_dT.reshape(-1, 1, 1)
+            dkf_dp = dkf_dp.reshape(-1, 1, 1)
 
             # quadrature point viscosities, nq x 1 x 1
             mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q[:, :, 0], P_q[:, :, 0], fluid, T_flow_lagged)
@@ -1778,10 +1783,10 @@ def integrate_nonlinear_matrices(  # noqa
         if mu_nonlinear:
             # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
             # fracture pass rather than re-derived here every timestep/Newton iteration.
-            cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cv.row_vec_ff, cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cv.row_vec_fm, cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cv.row_vec_mm, cv.col_vec_mm
+            cached_cv = fmesh["vec_mat_asmbl"]
+            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
+            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
+            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}

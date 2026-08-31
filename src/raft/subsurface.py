@@ -125,7 +125,7 @@ def _fit_affine_from_dirichlet(
     pos = nodes[node_idx]
     A = np.hstack([np.ones((len(node_idx), 1)), pos])
     coeffs, *_ = np.linalg.lstsq(A, values, rcond=None)
-    return np.hstack([np.ones((nodes.shape[0], 1)), nodes]) @ coeffs
+    return np.asarray(np.hstack([np.ones((nodes.shape[0], 1)), nodes]) @ coeffs, dtype=np.float64)
 
 
 def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:

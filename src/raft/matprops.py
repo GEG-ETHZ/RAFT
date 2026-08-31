@@ -104,13 +104,13 @@ def get_porosity(
     P_0: npt.NDArray[np.float64],
     phi_0: float,
     K_d: float,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], float, npt.NDArray[np.float64]]:
     """Get the current porosity based on the undeformed reference state.
 
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
     """
     phi = 1 - (1 - phi_0) * np.exp(-(P - P_0) / K_d)
-    dphi_dT = 0
+    dphi_dT = 0.0
     dphi_dp = -(phi - 1) / K_d
 
     return phi, dphi_dT, dphi_dp
@@ -123,10 +123,10 @@ def get_volumetricstrain(
     T_0: npt.NDArray[np.float64],
     K_d: float,
     biot: float,
-    therm_expansion,
+    therm_expansion: float,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64], float, float]:
     """Get the volumetric strain of the solid skeleton relative to the undeformed reference state.
 
     Non-volumetric sources are neglected.
@@ -158,7 +158,7 @@ def get_porosity_lagrangian(
     phi_0: float,
     K_d: float,
     biot: float,
-    therm_expansion,
+    therm_expansion: float,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -261,15 +261,15 @@ def get_internal_energy(
 
 
 def get_effective_permeability(
-    kf: npt.NDArray[np.float64],
+    kf: npt.NDArray[np.float64] | float,
     T: npt.NDArray[np.float64],  # noqa
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],  # noqa
     T_flow_lagged: bool = False,  # noqa
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[npt.NDArray[np.float64] | float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
     kf_eff = kf
-    dkf_dT = 0
-    dkf_dp = 0
+    dkf_dT = np.zeros(np.shape(T))
+    dkf_dp = np.zeros(np.shape(T))
 
     return kf_eff, dkf_dT, dkf_dp
