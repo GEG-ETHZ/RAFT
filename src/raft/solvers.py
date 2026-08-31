@@ -772,7 +772,7 @@ def fully_coupled_time_integration(  # noqa
             A = cast(
                 sp.csc_matrix[Any],
                 sp.bmat(
-                    [[jacobian["Kpp"], jacobian["KpT"]], [jacobian["KTp"], jacobian["KTT"]]], format="csc"
+                    [[jacobian["Kpp"], -jacobian["KpT"]], [-jacobian["KTp"], jacobian["KTT"]]], format="csc"
                 ),
             )
 

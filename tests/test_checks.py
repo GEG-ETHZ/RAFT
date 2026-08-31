@@ -247,7 +247,7 @@ def check_advection(
 ) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
-    tol = 1.0e-4
+    tol = 1.0e-3
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)

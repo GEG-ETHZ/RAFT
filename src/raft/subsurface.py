@@ -211,7 +211,7 @@ def _assign_ic_bc_compatible(  # noqa
 
         # Use one-pass linear to generate approximate solution.
         primary_variables_ini = copy.deepcopy(primary_variables)
-        tries = [2, 6, 10]
+        tries = [1, 3, 5, 10]
         for num_passes in tries:
             primary_variables = copy.deepcopy(primary_variables_ini)
             for i in range(num_passes):

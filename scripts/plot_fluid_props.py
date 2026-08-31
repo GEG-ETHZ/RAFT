@@ -8,7 +8,7 @@ import numpy as np
 fluid = "Water"  # Change to 'CO2' for Carbon Dioxide
 
 # Pressures in MPa
-pressures_MPa = [10, 20, 30]  # noqa
+pressures_MPa = [10, 80, 90]  # noqa
 
 # Initialize AbstractState object
 AS = CP.AbstractState("HEOS", fluid)

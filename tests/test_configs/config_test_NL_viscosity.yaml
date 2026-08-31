@@ -6,20 +6,20 @@ material:
   # Rock mass parameters
   solid:
       bulk_mod:  20.0e+9        # Pa
-      density: 2.0             # kg/m^3
+      density: 2000.0             # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 1000        # J/kgK
-      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
-      porosity: 0.0                # -
+      therm_expansion: 0.0e-6  # 1/K  (3 * 4e-6)
+      porosity: 0.01                # -
       biot_coeff: 0.5               # -
       permeability: 5.0e-13         # m^2
   # Fluid parameters
   fluid:
       bulk_mod: 2.10e+30         # Pa
-      density:      10         # kg/m^3
+      density:      1000         # kg/m^3
       therm_cond:   3         # W/mK
       therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 30       # J/kgK
+      specific_heat: 4000       # J/kgK
       viscosity: 0        # 0 -> non-constant, real-fluid viscosity from CoolProp
 
 

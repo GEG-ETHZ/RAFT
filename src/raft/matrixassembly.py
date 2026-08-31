@@ -1053,7 +1053,7 @@ def integrate_residuals(  # noqa
             if not pressure_only:
                 # Thermo-dynamic internal variables
                 u_fq, _, _ = get_internal_energy(T_q, P_q, fluid)  # fluid internal energy, nq x 1 x 1
-                h_fq, _, _ = get_enthalpy(
+                h_fq, _, _, cp_fq = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid
                 )  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f_q * u_fq  # total energy, nq x 1 x 1
@@ -1083,7 +1083,7 @@ def integrate_residuals(  # noqa
 
                 # Advection and SUPG stabilization
                 if advection_on:
-                    flux = rho_f_qn * darcy_flux
+                    flux = rho_f_qn * cp_fq * darcy_flux
                     if nsd == 3:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
                     elif nsd == 2:
@@ -1127,7 +1127,7 @@ def integrate_residuals(  # noqa
                     tau = tau.reshape(-1, 1, 1)
 
                     # Discretized strong form residual at quadrature points
-                    hf_e, _, _ = get_enthalpy(
+                    hf_e, _, _, _ = get_enthalpy(
                         pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
@@ -1144,7 +1144,7 @@ def integrate_residuals(  # noqa
                     # with its own independent sign - not part of the divergence term being
                     # integrated by parts, so it does not flip sign along with plain advection)
                     integrand_advection = rho_f_qn * darcy_flux * h_fq
-                    integrand_SUPG = rho_f_qn * darcy_flux * tau * RTh
+                    integrand_SUPG = cp_fq * rho_f_qn * darcy_flux * tau * RTh
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, isotropic_perm
                     )
@@ -1452,7 +1452,7 @@ def integrate_tangent_matrices(  # noqa
                 u_f_n = u_f[:, :, 0:1]
                 duf_dT_n = duf_dT[:, :, 0:1]
                 duf_dp_n = duf_dp[:, :, 0:1]
-                h_f, dhf_dT, dhf_dp = get_enthalpy(
+                h_f, dhf_dT, dhf_dp, cp_f = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid, T_flow_lagged
                 )  # fluid enthalpy, nq x 1 x 1
                 E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f * u_f  # total energy, nq x 1 x 1
@@ -1512,7 +1512,7 @@ def integrate_tangent_matrices(  # noqa
 
                 if advection_on:
                     # SUPG
-                    flux = rho_f_n * darcy_flux
+                    flux = rho_f_n * cp_f * darcy_flux
                     if nsd == 3:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
                     elif nsd == 2:
@@ -1556,7 +1556,7 @@ def integrate_tangent_matrices(  # noqa
                     tau = tau.reshape(-1, 1, 1)
 
                     # Discretized strong form residual at quadrature points
-                    hf_e, _, _ = get_enthalpy(
+                    hf_e, _, _, _ = get_enthalpy(
                         pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
@@ -1584,7 +1584,7 @@ def integrate_tangent_matrices(  # noqa
 
                     # Combined integrands
                     integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT
-                    integrand_SUPG = tau * dR_dT * q_D + tau * RTh * dqD_dT
+                    integrand_SUPG = tau * cp_f * dR_dT * q_D + tau * cp_f * RTh * dqD_dT
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )
@@ -1632,7 +1632,7 @@ def integrate_tangent_matrices(  # noqa
 
                     # Advection tangent matrices
                     integrand_advection = dhf_dp * q_D * N_q + h_f * dqD_dp
-                    integrand_SUPG = tau * dR_dp * q_D + tau * RTh * dqD_dp
+                    integrand_SUPG = tau * cp_f * dR_dp * q_D + tau * cp_f * RTh * dqD_dp
                     element_matrices["KTp"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )

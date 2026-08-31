@@ -3,8 +3,8 @@
 
 from raft.subsurface import main
 
-# dofs, mesh = main("config_test_NL_viscosity.yaml")
-dofs, mesh = main("config_example_2D.yaml")
+dofs, mesh = main("config_test_NL_viscosity.yaml")
+# dofs, mesh = main("config_example_2D.yaml")
 
 # import sys
 # from pathlib import Path

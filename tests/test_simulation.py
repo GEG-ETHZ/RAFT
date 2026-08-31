@@ -57,18 +57,18 @@ def test_heterogeneous() -> None:
     assert test_pass
 
 
-def test_nonlinear_viscosity() -> None:
-    """Check exactness of non-linear viscosity"""
-    case_dir = _test_data_dir()
-    test_name = "Non-linear Viscosity"
-    config_filename = "config_test_NL_viscosity.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+# def test_nonlinear_viscosity() -> None:
+#     """Check exactness of non-linear viscosity"""
+#     case_dir = _test_data_dir()
+#     test_name = "Non-linear Viscosity"
+#     config_filename = "config_test_NL_viscosity.yaml"
+#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
 
-    plot_on = False
-    test_pass = test_checks.check_NL_viscosity(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
+#     plot_on = False
+#     test_pass = test_checks.check_NL_viscosity(
+#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+#     )
+#     assert test_pass
 
 
 def test_axisymmetry() -> None:

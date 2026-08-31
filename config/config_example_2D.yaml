@@ -1,5 +1,5 @@
 mesh:
-  file: square2D_mixed.msh
+  file: square2D_radial.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -41,7 +41,7 @@ material:
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
       therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 4250       # J/kgK
+      specific_heat: 420       # J/kgK
       viscosity: 0       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
@@ -79,7 +79,8 @@ boundary_conditions:
 
   pressure_fixed:
         - faces: [y_min]
-          values: [9.0e6]
+          values: [[9.0e+6, 2.0e+6], 1000]
+          function: "ramp"
           tag: "inflow"
         - faces: [y_max]
           values: [1.0e6]
@@ -96,6 +97,8 @@ boundary_conditions:
 
 
   fluid_flux:
+      - faces: [x_min]
+        values: [-1.0e-3]
 
   temperature_flux:
 

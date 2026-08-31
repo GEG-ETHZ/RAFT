@@ -181,7 +181,9 @@ def get_enthalpy(
     T_flow: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> tuple[
+    npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+]:
     """Get the fluid enthalpy at a specified pressure and temperature.
 
     Built as h_f = u_f + p / rho_f, using the same closed-form u_f as
@@ -193,6 +195,12 @@ def get_enthalpy(
     independent of the unknown T (True, e.g. the linearized solver's frozen/extrapolated
     T_flow) or literally tracks it (False, e.g. the fully-coupled solver's T_flow=T), which
     determines whether rho_f's T-dependence propagates into dhf_dT.
+
+    Also returns `cp`, the constant-pressure specific heat (∂h/∂T)_p with the pressure-work
+    contribution stripped out, so callers needing a pure thermal-capacity scale (e.g. SUPG's
+    Peclet number) don't have to re-derive it from `dhf_dT`. For the nonlinear (CoolProp)
+    branch, this is where that will come from once implemented, rather than each caller
+    fetching `fluid["specific_heat"]` independently.
     """
     if fluid["density"] != 0:
         rho_0 = fluid["density"]
@@ -213,12 +221,14 @@ def get_enthalpy(
         h_f = u_f + p / rho_f
         dhf_dT = duf_dT - p / rho_f**2 * drho_dT
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
+        cp = cp_f * np.ones(np.shape(T))
     else:
         # Nonlinear internal energy
         h_f = 0 * np.ones(np.shape(T))
         dhf_dT = 0 * np.ones(np.shape(T))
         dhf_dp = 0 * np.ones(np.shape(T))
-    return h_f, dhf_dT, dhf_dp
+        cp = 0 * np.ones(np.shape(T))
+    return h_f, dhf_dT, dhf_dp, cp
 
 
 def get_internal_energy(
