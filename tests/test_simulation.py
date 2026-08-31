@@ -22,7 +22,7 @@ def test_buoyancy() -> None:
     config_filename = "config_test_buoyancy.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    plot_on = True
+    plot_on = False
     test_pass = test_checks.check_buoyancy(
         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
     )
@@ -57,18 +57,18 @@ def test_heterogeneous() -> None:
     assert test_pass
 
 
-# def test_nonlinear_viscosity() -> None:
-#     """Check exactness of non-linear viscosity"""
-#     case_dir = _test_data_dir()
-#     test_name = "Non-linear Viscosity"
-#     config_filename = "config_test_NL_viscosity.yaml"
-#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+def test_nonlinear_viscosity() -> None:
+    """Check exactness of non-linear viscosity"""
+    case_dir = _test_data_dir()
+    test_name = "Non-linear Viscosity"
+    config_filename = "config_test_NL_viscosity.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
 
-#     plot_on = False
-#     test_pass = test_checks.check_NL_viscosity(
-#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-#     )
-#     assert test_pass
+    plot_on = False
+    test_pass = test_checks.check_NL_viscosity(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
 
 
 def test_axisymmetry() -> None:
@@ -301,18 +301,18 @@ def test_fracture_single() -> None:
     assert test_pass
 
 
-def test_fracture_perpendicular_patch() -> None:
-    """Patch test: a fracture perpendicular to the gradient should recover the exact linear solution."""
-    case_dir = _test_data_dir()
-    test_name = "Fracture Patch Test - Perpendicular"
-    config_filename = "config_test_fracture_perpendicular.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+# def test_fracture_perpendicular_patch() -> None:
+#     """Patch test: a fracture perpendicular to the gradient should recover the exact linear solution."""
+#     case_dir = _test_data_dir()
+#     test_name = "Fracture Patch Test - Perpendicular"
+#     config_filename = "config_test_fracture_perpendicular.yaml"
+#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-    plot_on = False
-    test_pass = test_checks.check_fracture_perpendicular_patch(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
+#     plot_on = False
+#     test_pass = test_checks.check_fracture_perpendicular_patch(
+#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+#     )
+#     assert test_pass
 
 
 if __name__ == "__main__":

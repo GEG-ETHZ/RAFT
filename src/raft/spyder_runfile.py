@@ -1,19 +1,19 @@
 # %%
 """Script to run the simulation or test suite within the Spyder IDE."""
 
-from raft.subsurface import main
+# from raft.subsurface import main
 
-dofs, mesh = main("config_test_NL_viscosity.yaml")
+# dofs, mesh = main("config_test_NL_viscosity.yaml")
 # dofs, mesh = main("config_example_2D.yaml")
 
-# import sys
-# from pathlib import Path
+import sys
+from pathlib import Path
 
-# import pytest
+import pytest
 
-# # Add project root and src directory to sys.path so raft can be imported
-# root_dir = Path(__file__).resolve().parent.parent.parent
-# sys.path.append(str(root_dir / "src"))
-# sys.path.append(str(root_dir))
-# # Run the test suite
-# pytest.main(["-v", str(root_dir / "tests")])
+# Add project root and src directory to sys.path so raft can be imported
+root_dir = Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(root_dir / "src"))
+sys.path.append(str(root_dir))
+# Run the test suite
+pytest.main(["-v", str(root_dir / "tests")])

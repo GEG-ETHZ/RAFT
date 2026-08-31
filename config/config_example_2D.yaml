@@ -20,7 +20,7 @@ mesh:
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
+      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
       density: [20, 20, 20]             # kg/m^3
       therm_cond: [300.0, 3.0, 3.0]          # W/mK
       specific_heat: [8, 80, 10]        # J/kgK

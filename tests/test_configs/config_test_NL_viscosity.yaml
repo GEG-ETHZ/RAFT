@@ -34,13 +34,13 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - faces: [z_min]
-        values: [8.0e+7]
+        values: [8.0e+6]
 
   temperature_fixed:
       - faces: [z_min]
-        values: [290]
+        values: [340]
       - faces: [z_max]
-        values: [360]
+        values: [410]
 
   fluid_flux:
      - faces: [z_max]

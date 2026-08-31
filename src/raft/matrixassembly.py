@@ -1012,7 +1012,7 @@ def integrate_residuals(  # noqa
             rho_f_qn = rho_f_q[:, :, 0].reshape(-1, 1, 1)
 
             darcy_flux = (
-                -kf / mu_q * (gradP + rho_f_qn * g) if isotropic_perm else -kf / mu_q @ (gradP + rho_f_qn * g)
+                -kf / mu_q * (gradP - rho_f_qn * g) if isotropic_perm else -kf / mu_q @ (gradP - rho_f_qn * g)
             )
 
             phi_L, _, _ = get_porosity_lagrangian(
@@ -1371,7 +1371,7 @@ def integrate_tangent_matrices(  # noqa
             drho_dT = drho_dT[:, :, 0].reshape(-1, 1, 1)
             drho_dp = drho_dp[:, :, 0].reshape(-1, 1, 1)
 
-            gradP_mod = gradP + rho_f_n * g
+            gradP_mod = gradP - rho_f_n * g
 
             # Darcy flux
             darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
@@ -1594,7 +1594,7 @@ def integrate_tangent_matrices(  # noqa
             if fully_coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                integrand_dFsdT = cv[0] * (dphi_L_dT * rho_f_n + phi_L_n * drho_dT)
+                integrand_dFsdT = (1 - steady_pres) * cv[0] * (dphi_L_dT * rho_f_n + phi_L_n * drho_dT)
                 element_matrices["KpT"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdT, N_q, wJe_q, scalar=True
                 )
@@ -1605,9 +1605,13 @@ def integrate_tangent_matrices(  # noqa
 
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
-                integrand_dFCdT = cv[0] * (
-                    phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
-                    + dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                integrand_dFCdT = (
+                    (1 - steady_temp)
+                    * cv[0]
+                    * (
+                        phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
+                        + dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                    )
                 )
                 element_matrices["KTp"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFCdT, N_q, wJe_q, scalar=True
@@ -1619,7 +1623,8 @@ def integrate_tangent_matrices(  # noqa
 
                 if advection_on:
                     dR_dp = (
-                        cv[0]
+                        (1 - steady_temp)
+                        * cv[0]
                         * (
                             dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
                             + phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)

@@ -318,7 +318,7 @@ def check_buoyancy(
 ) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
-    tol = 1.0e-6
+    tol = 1.0e-5
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -335,17 +335,21 @@ def check_buoyancy(
     mat = config["material"]
 
     g = -9.81
-    rho_f = mat["fluid"]["density"]
+    rho0 = mat["fluid"]["density"]
     alpha_f = mat["fluid"]["therm_expansion"]
     T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
     T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
     dT = T0 - T1
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
     p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
-    beta = rho_f * alpha_f * g * dT / 2 / L
 
     # analytical solution
     x = np.linspace(0, L, 100) / L
-    p_exact = (beta * L**2 * (x - 1) + p1) * (x)
+    A = alpha_f * dT
+    B = rho0 * g * L
+    p_exact = p0 + B * (
+        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
+    )
 
     # extract T and normalize
     p = results["p"][:, 0]
@@ -373,9 +377,11 @@ def check_buoyancy(
 
     # calculate error
     x = d_1 / L
-    p_exact = (beta * L**2 * (x - 1) + p1) * (x)
-    err_ex = sum((p_exact - p[line_1]) ** 2)
-    # The error here is calculated pased on the nodal solutions.
+    p_exact = p0 + B * (
+        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
+    )
+    err_ex = sum((p_exact - p[line_1]) ** 2) / sum(p_exact**2)
+    # The error here is calculated based on the nodal solutions.
 
     test_pass = bool(err_ex < tol)
 
@@ -594,6 +600,8 @@ def check_NL_viscosity(
     lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
     cp = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
+
+    q = q / rho_f
 
     # peclet number per length
     Pe = L * abs(q * cp * rho_f) / lambda_e

@@ -687,7 +687,7 @@ def fully_coupled_time_integration(  # noqa
     This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = True
+    debug_plot_on = False
     # extract vectors of nodal dofs
     primary_variables_iteration = primary_variables.copy()
     p = primary_variables_iteration["p"]

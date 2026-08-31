@@ -38,7 +38,7 @@ material:
   # Fluid parameters
   fluid:
       bulk_mod: 2.10e+9         # Pa
-      density:      0         # kg/m^3
+      density:      10         # kg/m^3
       therm_cond:   3         # W/mK
       therm_expansion: 00.0e-6 # 1/K
       specific_heat: 1000       # J/kgK

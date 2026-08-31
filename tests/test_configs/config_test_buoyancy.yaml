@@ -5,7 +5,7 @@ mesh:
 material:
   # Rock mass parameters
   solid:
-      bulk_mod:  20.0e+9        # Pa
+      bulk_mod:  20.0e+19        # Pa
       density: 613.0             # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 7829.0        # J/kgK
@@ -36,9 +36,9 @@ initial_conditions:
 boundary_conditions:
   pressure_fixed:
       - nodes: [0, 1, 2, 3]
-        values: [0]
+        values: [1.0e+3]
       - nodes: [ 4, 5, 6, 7]
-        values: [-1.0e+3]
+        values: [0]
 
   temperature_fixed:
       - nodes: [0, 1, 2, 3]
