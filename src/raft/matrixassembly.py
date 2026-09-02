@@ -5,7 +5,6 @@ from __future__ import annotations
 import bisect
 import warnings
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -633,22 +632,6 @@ def _get_region_mesh_data(
     )
 
 
-@dataclass
-class _CachedCouplingVectors:
-    """Fracture/matrix coupling row/col index vectors, built once by `integrate_residuals` (on
-    its first call with `is_fracture=True`) and cached on `fmesh` for reuse every Newton
-    iteration by itself and by `integrate_tangent_matrices`/`integrate_nonlinear_matrices`.
-    """
-
-    row_vec_ff: npt.NDArray[np.int32]
-    col_vec_ff: npt.NDArray[np.int32]
-    row_vec_fm: npt.NDArray[np.int32]
-    col_vec_fm: npt.NDArray[np.int32]
-    row_vec_mm: npt.NDArray[np.int32]
-    col_vec_mm: npt.NDArray[np.int32]
-    row_vec_flux_m: npt.NDArray[np.int32]  # matrix-side scatter target for the residual vector
-
-
 def _get_region_flow_data(
     mesh: dict[str, Any],
     mat: dict[str, Any],
@@ -1074,16 +1057,16 @@ def integrate_residuals(  # noqa
                 _vec_count_flux_m,
                 row_vec_flux_m,
             ) = _create_fracture_coupling_vectors(conn, fmesh["matrix_conn"], mesh["conn"])
-            fmesh["vec_mat_asmbl"] = _CachedCouplingVectors(
-                row_vec_ff=row_vec_ff,
-                col_vec_ff=col_vec_ff,
-                row_vec_fm=row_vec_fm,
-                col_vec_fm=col_vec_fm,
-                row_vec_mm=row_vec_mm,
-                col_vec_mm=col_vec_mm,
-                row_vec_flux_m=row_vec_flux_m,
-            )
-        row_vec_flux_m = fmesh["vec_mat_asmbl"].row_vec_flux_m
+            fmesh["vec_mat_asmbl"] = {
+                "row_vec_ff": row_vec_ff,
+                "col_vec_ff": col_vec_ff,
+                "row_vec_fm": row_vec_fm,
+                "col_vec_fm": col_vec_fm,
+                "row_vec_mm": row_vec_mm,
+                "col_vec_mm": col_vec_mm,
+                "row_vec_flux_m": row_vec_flux_m,
+            }
+        row_vec_flux_m = fmesh["vec_mat_asmbl"]["row_vec_flux_m"]
         coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
             ["F_Tdiffusion_mm"] if not pressure_only else []
         )
@@ -1474,9 +1457,9 @@ def integrate_tangent_matrices(  # noqa
         # resistance, convective exchange) are always re-evaluated below, since they depend on
         # the current fracture-side viscosity.
         cached_cv = fmesh["vec_mat_asmbl"]
-        row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
-        row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
-        row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
+        row_vec_ff, col_vec_ff = cached_cv["row_vec_ff"], cached_cv["col_vec_ff"]
+        row_vec_fm, col_vec_fm = cached_cv["row_vec_fm"], cached_cv["col_vec_fm"]
+        row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
         coupling_ff_names = (["Kpp_ff"] if not temperature_only else []) + (
             ["KTT_ff"] if not pressure_only else []
@@ -2005,9 +1988,9 @@ def integrate_nonlinear_matrices(  # noqa
             # Connectivity-only (mesh-static) data, cached by integrate_residuals rather than
             # re-derived here every timestep/Newton iteration.
             cached_cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
+            row_vec_ff, col_vec_ff = cached_cv["row_vec_ff"], cached_cv["col_vec_ff"]
+            row_vec_fm, col_vec_fm = cached_cv["row_vec_fm"], cached_cv["col_vec_fm"]
+            row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
