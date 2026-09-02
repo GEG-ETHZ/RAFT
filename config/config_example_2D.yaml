@@ -1,5 +1,5 @@
 mesh:
-  file: square2D_radial.msh
+  file: square2D_plain.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -11,8 +11,8 @@ mesh:
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 0
   dimensions: 2
-  # fractures:
-  #        - values: [[12.5, 49, 0.0], [52.5], [9]]
+  fractures:
+         - values: [[25.5, 37.5], [30], [90]]
   #        - values: [[18, 28, 0.0], [62.5], [35]]
   #        - values: [[-10, 32, 0.0], [22.5], [100]]
 
@@ -20,7 +20,7 @@ mesh:
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
+      bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
       density: [20, 20, 20]             # kg/m^3
       therm_cond: [300.0, 3.0, 3.0]          # W/mK
       specific_heat: [8, 80, 10]        # J/kgK
@@ -41,16 +41,16 @@ material:
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
       therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 420       # J/kgK
-      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
+      specific_heat: 4200       # J/kgK
+      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
-  # fracture:
-  #   aperture: [1.0e-3, 1.0e-3, 1.1e-3]
-  #   nusselt: [5, 1, 5]
+  fracture:
+    aperture: [1.0e-3, 1.0e-3, 1.1e-3]
+    nusselt: [5, 1, 5]
 
 initial_conditions:
-  assignment: "BC_compatible"
+  assignment: "constant"
   T_ini: 286
   p_ini: 1.0e+6
   T_grad: 0.1
@@ -79,7 +79,7 @@ boundary_conditions:
 
   pressure_fixed:
         - faces: [y_min]
-          values: [[9.0e+6, 2.0e+6], 1000]
+          values: [[2.0e+6, 3.0e+6], 1000]
           function: "ramp"
           tag: "inflow"
         - faces: [y_max]
@@ -87,9 +87,9 @@ boundary_conditions:
 
 
   temperature_fixed:
-      - faces: [y_max]
+      - faces: [x_max]
         values: [286]
-      - faces: [y_min]
+      - faces: [x_min]
         values: [296]
       # - lines: [[[43.4, 20.0], [53, 37.5]]]
       #   function: "ramp"
@@ -97,8 +97,8 @@ boundary_conditions:
 
 
   fluid_flux:
-      - faces: [x_min]
-        values: [-1.0e-3]
+      # - faces: [x_min]
+      #   values: [-1.0e-3]
 
   temperature_flux:
 

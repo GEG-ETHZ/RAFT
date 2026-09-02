@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import bisect
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -316,6 +316,8 @@ def _create_fracture_coupling_vectors(
     int,
     npt.NDArray[np.int32],
     npt.NDArray[np.int32],
+    int,
+    npt.NDArray[np.int32],
 ]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
     count_vec_ff = 0  # Fracture-fracture on-diagonal counts
@@ -329,6 +331,9 @@ def _create_fracture_coupling_vectors(
     count_vec_mm = 0  # Matrix-matrix on-diagonal counts
     row_list_mm = []
     col_list_mm = []
+
+    count_vec_flux_m = 0  # Matrix-side scatter target for the coupling *residual* (a vector, so
+    row_list_flux_m = []  # one row index per matrix node per match - no column/nne_m^2 term)
 
     ne_f = len(conn_f)
     for e_f in range(ne_f):
@@ -356,6 +361,9 @@ def _create_fracture_coupling_vectors(
             )
             col_list_mm.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_m)).ravel())
             count_vec_mm += nne_m * nne_m
+            # flux (residual, matrix-side)
+            row_list_flux_m.append(np.array(e_nodes_m, dtype=np.int32))
+            count_vec_flux_m += nne_m
 
     row_vec_ff = np.concatenate(row_list_ff).astype(np.int32)
     col_vec_ff = np.concatenate(col_list_ff).astype(np.int32)
@@ -363,6 +371,7 @@ def _create_fracture_coupling_vectors(
     col_vec_fm = np.concatenate(col_list_fm).astype(np.int32)
     row_vec_mm = np.concatenate(row_list_mm).astype(np.int32)
     col_vec_mm = np.concatenate(col_list_mm).astype(np.int32)
+    row_vec_flux_m = np.concatenate(row_list_flux_m).astype(np.int32)
 
     return (
         count_vec_ff,
@@ -374,35 +383,29 @@ def _create_fracture_coupling_vectors(
         count_vec_mm,
         row_vec_mm,
         col_vec_mm,
+        count_vec_flux_m,
+        row_vec_flux_m,
     )
 
 
-def _integrate_fracture_matrix_coupling(
+def _iter_fracture_matrix_matches(
     e: int,
     enodes_f: list[int],
     nodes_f: npt.NDArray[np.float64],
     N_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
-    *,
-    kf_p: float | None = None,
-    mu_q: npt.NDArray[np.float64] | float | None = None,
-    h: float | None = None,
-) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]]:
-    """Integrate one fracture element's coupling contribution to its neighboring matrix elements.
+) -> Iterator[tuple[int, list[int], int, npt.NDArray[np.float64]]]:
+    """Yield `(e_m, enodes_m, nne_m, N_qm)` for each matrix element matched to fracture element `e`.
 
-    `mu_q` may be a constant (linear viscosity) or
-    a per-quadrature-point array (nonlinear viscosity).
-    Thermal coupling is included when `h` is provided; pressure coupling is included
-    when both `kf_p` and `mu_q` are provided.
+    `N_qm` are the matrix element's shape functions evaluated at the physical locations of the
+    fracture element's own quadrature points, so `N_q` and `N_qm` sample the same points -
+    shared by the tangent and residual fracture-matrix coupling assemblers below.
     """
     conn_m = mesh["conn"]
     nodes_m = mesh["nodes"]
     etype_list_m = mesh["element_type"]
     elem_indx_m = mesh["elem_indx"]
     conn_fm = mesh["fracture_mesh"]["matrix_conn"]
-
-    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
     for e_m in conn_fm[e]:
         enodes_m = conn_m[e_m]
@@ -413,16 +416,48 @@ def _integrate_fracture_matrix_coupling(
         Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes_f, :])
         N_qm = np.array([getN_m(Q[q, :].flatten()) for q in range(np.size(Q, -1))])
 
+        yield e_m, enodes_m, nne_m, N_qm
+
+
+def _integrate_fracture_matrix_coupling_tangent(
+    e: int,
+    enodes_f: list[int],
+    nodes_f: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
+    wJe_q: npt.NDArray[np.float64],
+    mesh: dict[str, Any],
+    kf_p: float,
+    mu_q: npt.NDArray[np.float64] | float,
+    h: float,
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """Integrate one fracture element's coupling *tangent* contribution to its neighboring
+    matrix elements - the leak-off/convective-exchange terms are linear in (p_f - p_m) and
+    (T_f - T_m), so these coefficient matrices double as both the Jacobian block and (via
+    `_integrate_fracture_matrix_coupling_residual`, contracted against the current state
+    instead of assembled here) the residual.
+
+    `kf_p`/`mu_q`/`h` are always the caller's real, already-resolved region coefficients;
+    `pressure_coupling`/`thermal_coupling` select which of the Kpp/KTT blocks actually get
+    assembled this call (a caller not currently using one passes an unread placeholder for it,
+    same as the sentinel convention `_get_region_flow_data`/`_get_region_thermal_data` use for
+    fields that don't apply).
+    """
+    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+
+    for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
-        if h is not None:
+        if thermal_coupling:
             ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, h, N_q, wJe_q, True)
             fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
             mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
 
-        if kf_p is not None and mu_q is not None:
+        if pressure_coupling:
             kf_p_mu = kf_p / mu_q
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
             fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
@@ -431,6 +466,75 @@ def _integrate_fracture_matrix_coupling(
         entries.append((nne_m, ff_matrices, fm_matrices, mm_matrices))
 
     return entries
+
+
+def _integrate_fracture_matrix_coupling_residual(
+    e: int,
+    enodes_f: list[int],
+    nodes_f: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
+    wJe_q: npt.NDArray[np.float64],
+    mesh: dict[str, Any],
+    pe_f: npt.NDArray[np.float64],
+    Te_f: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    kf_p: float,
+    mu_q: npt.NDArray[np.float64],
+    h: float,
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
+    """Directly integrate the fracture-matrix leak-off/convective-exchange flux at the current
+    state into nodal residual vectors - no coefficient matrices are assembled (this is evaluated
+    fresh every Newton iteration, unlike the tangent, so building and then immediately
+    contracting a matrix would be wasted work).
+
+    `kf_p`/`mu_q`/`h` are always the caller's real, already-resolved region coefficients (`mu_q`
+    is the fracture element's own quadrature-point viscosity - leak-off resistance is evaluated
+    at the fracture-side fluid state, not the matrix side); `pressure_coupling`/`thermal_coupling`
+    select which is actually used this call, matching `_integrate_fracture_matrix_coupling_tangent`.
+    `p`/`T` are the full current-iterate primary-variable vectors, indexed here at each matched
+    matrix element's own nodes (mirrors how `pe`/`Te` are sliced from them in the caller for the
+    fracture element).
+
+    Mirrors the tangent function's contract: returns `(fracture_vectors, matches)`, where
+    `fracture_vectors` accumulates directly onto this fracture element's own residual
+    ("F_Pdiffusion"/"F_Tdiffusion", like any other element vector) and `matches` is a list of
+    `(nne_m, matrix_vectors)` - one entry per matched matrix element, each `matrix_vectors` dict
+    keyed "F_Pdiffusion_mm"/"F_Tdiffusion_mm" for the caller to store into the cached
+    `row_vec_flux_m`-indexed buffer, the vector analogue of the tangent's `_mm` matrix bucket.
+    """
+    fracture_vectors: dict[str, npt.NDArray[np.float64]] = {}
+    matches: list[tuple[int, dict[str, npt.NDArray[np.float64]]]] = []
+    if not pressure_coupling and not thermal_coupling:
+        return fracture_vectors, matches
+
+    p_f_q = N_q @ pe_f
+    T_f_q = N_q @ Te_f
+    Rf_p = np.zeros((len(enodes_f), 1))
+    Rf_T = np.zeros((len(enodes_f), 1))
+
+    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
+        matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
+        if pressure_coupling:
+            p_m_q = N_qm @ p[enodes_m].reshape(-1, 1)
+            flux_p_q = kf_p / mu_q * (p_f_q - p_m_q)
+            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
+            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
+        if thermal_coupling:
+            T_m_q = N_qm @ T[enodes_m].reshape(-1, 1)
+            flux_T_q = h * (T_f_q - T_m_q)
+            Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_T_q, wJe_q, True)
+            matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_T_q, wJe_q, True)
+        matches.append((nne_m, matrix_vectors))
+
+    if pressure_coupling:
+        fracture_vectors["F_Pdiffusion"] = Rf_p
+    if thermal_coupling:
+        fracture_vectors["F_Tdiffusion"] = Rf_T
+    return fracture_vectors, matches
 
 
 def _stack_fracture_matrices(
@@ -466,6 +570,21 @@ def _stack_fracture_matrices(
         row2 = hstack([diag_matrix.T, fracture_matrix])
         body_matrices[name] = vstack([row1, row2]).tocsc()
     return body_matrices
+
+
+def _stack_fracture_vectors(
+    body_vectors: dict[str, csc_matrix[Any]],
+    fracture_vectors: dict[str, csc_matrix[Any]],
+) -> dict[str, csc_matrix[Any]]:
+    """Stack matrix-mesh and fracture-mesh residual vectors into one `(nn_m + nn_f, 1)` vector.
+
+    Unlike `_stack_fracture_matrices`, there is no off-diagonal block to build here: any
+    fracture-matrix coupling contribution must already have been folded into the two vectors
+    (matrix-side into `body_vectors`, fracture-side into `fracture_vectors`) before this runs.
+    """
+    for name in body_vectors:
+        body_vectors[name] = vstack([body_vectors[name], fracture_vectors[name]]).tocsc()
+    return body_vectors
 
 
 def _get_region_mesh_data(
@@ -516,9 +635,9 @@ def _get_region_mesh_data(
 
 @dataclass
 class _CachedCouplingVectors:
-    """Fracture/matrix coupling row/col index vectors cached on `fmesh` by
-    `integrate_linear_matrices`'s fracture pass and reused every timestep by
-    `integrate_nonlinear_matrices`.
+    """Fracture/matrix coupling row/col index vectors, built once by `integrate_residuals` (on
+    its first call with `is_fracture=True`) and cached on `fmesh` for reuse every Newton
+    iteration by itself and by `integrate_tangent_matrices`/`integrate_nonlinear_matrices`.
     """
 
     row_vec_ff: npt.NDArray[np.int32]
@@ -527,6 +646,7 @@ class _CachedCouplingVectors:
     col_vec_fm: npt.NDArray[np.int32]
     row_vec_mm: npt.NDArray[np.int32]
     col_vec_mm: npt.NDArray[np.int32]
+    row_vec_flux_m: npt.NDArray[np.int32]  # matrix-side scatter target for the residual vector
 
 
 def _get_region_flow_data(
@@ -713,9 +833,17 @@ def integrate_linear_matrices(  # noqa
         conn_fm = fmesh["matrix_conn"]
 
         list_of_matrices = ["KM", "C", "KTT"] + (["KbT", "Kpp"] if mu_linear else [])
-        list_of_ff_matrices = ["KTT_ff"] + (["Kpp_ff"] if mu_linear else [])
-        list_of_fm_matrices = ["KTT_fm"] + (["Kpp_fm"] if mu_linear else [])
-        list_of_mm_matrices = ["KTT_mm"] + (["Kpp_mm"] if mu_linear else [])
+        # Pressure (leak-off) coupling is not attempted here: it needs a per-element viscosity,
+        # which this state-independent, once-per-simulation pass has no p/T to evaluate - the
+        # active (compressible) solvers recompute it fresh every Newton iteration regardless, in
+        # integrate_residuals/integrate_tangent_matrices.
+        list_of_ff_matrices = ["KTT_ff"]
+        list_of_fm_matrices = ["KTT_fm"]
+        list_of_mm_matrices = ["KTT_mm"]
+        # This function's own (deprecated, soon-to-be-removed) row/col index vectors - local
+        # to its own KTT_ff/fm/mm assembly below. The cached copy the *active* solvers rely on
+        # (integrate_residuals/integrate_tangent_matrices) is built by integrate_residuals
+        # itself, on demand, since it can no longer assume this function ran first.
         (
             vec_count_ff,
             row_vec_ff,
@@ -726,17 +854,9 @@ def integrate_linear_matrices(  # noqa
             vec_count_mm,
             row_vec_mm,
             col_vec_mm,
+            _vec_count_flux_m,
+            _row_vec_flux_m,
         ) = _create_fracture_coupling_vectors(conn, conn_fm, mesh["conn"])
-        # Cache for reuse by integrate_nonlinear_matrices, rather than re-deriving this
-        # connectivity-only (mesh-static) data every timestep.
-        fmesh["vec_mat_asmbl"] = _CachedCouplingVectors(
-            row_vec_ff=row_vec_ff,
-            col_vec_ff=col_vec_ff,
-            row_vec_fm=row_vec_fm,
-            col_vec_fm=col_vec_fm,
-            row_vec_mm=row_vec_mm,
-            col_vec_mm=col_vec_mm,
-        )
 
         vec_ff = {name: np.zeros(vec_count_ff) for name in list_of_ff_matrices}
         vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
@@ -811,16 +931,18 @@ def integrate_linear_matrices(  # noqa
             # ---- Fractures
             if is_fracture:
                 # Coupling matrices
-                coupling_entries = _integrate_fracture_matrix_coupling(
+                coupling_entries = _integrate_fracture_matrix_coupling_tangent(
                     e,
                     enodes,
                     nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
-                    kf_p=kf_p,
-                    mu_q=(mu if mu_linear else None),
-                    h=h,
+                    kf_p,
+                    float("nan"),  # unread: pressure_coupling is always off here, see above
+                    h,
+                    pressure_coupling=False,
+                    thermal_coupling=True,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
@@ -890,7 +1012,6 @@ def integrate_residuals(  # noqa
     p_0 = mat["p_0"]
     T_0 = mat["T_0"]
 
-    mu_nonlinear = bool(controls["viscosity_nonconstant"])
     # density_nonlinear = True
     # fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
@@ -932,22 +1053,42 @@ def integrate_residuals(  # noqa
 
     if is_fracture:
         conn_global = fmesh["conn_global"]
+        nn_m = mesh["nn"]
 
-        if mu_nonlinear:
-            # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
-            # fracture pass rather than re-derived here every timestep/Newton iteration.
-            cached_cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
-
-            vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
-            vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
-            vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
-
-            vec_counter_ff = 0
-            vec_counter_fm = 0
-            vec_counter_mm = 0
+        # Connectivity-only (mesh-static) fracture/matrix coupling index vectors, built once and
+        # cached on fmesh for reuse by every Newton iteration (this function's own later calls,
+        # and integrate_tangent_matrices, which always runs after this one within an iteration)
+        # rather than re-derived every time. integrate_residuals is the entry point that owns
+        # this cache - it no longer assumes integrate_linear_matrices ran first to build it.
+        if "vec_mat_asmbl" not in fmesh:
+            (
+                _vec_count_ff,
+                row_vec_ff,
+                col_vec_ff,
+                _vec_count_fm,
+                row_vec_fm,
+                col_vec_fm,
+                _vec_count_mm,
+                row_vec_mm,
+                col_vec_mm,
+                _vec_count_flux_m,
+                row_vec_flux_m,
+            ) = _create_fracture_coupling_vectors(conn, fmesh["matrix_conn"], mesh["conn"])
+            fmesh["vec_mat_asmbl"] = _CachedCouplingVectors(
+                row_vec_ff=row_vec_ff,
+                col_vec_ff=col_vec_ff,
+                row_vec_fm=row_vec_fm,
+                col_vec_fm=col_vec_fm,
+                row_vec_mm=row_vec_mm,
+                col_vec_mm=col_vec_mm,
+                row_vec_flux_m=row_vec_flux_m,
+            )
+        row_vec_flux_m = fmesh["vec_mat_asmbl"].row_vec_flux_m
+        coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
+            ["F_Tdiffusion_mm"] if not pressure_only else []
+        )
+        vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
+        vec_counter_flux_m = 0
 
     # ----- gravity vector
     g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
@@ -957,10 +1098,14 @@ def integrate_residuals(  # noqa
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        kf_0, isotropic_perm, nodes_r, w, u, kf_p, _ = _get_region_flow_data(
+        kf_0, isotropic_perm, nodes_r, w0, u, kf_p, _ = _get_region_flow_data(
             mesh, mat, fmesh, nodes_f, is_fracture, r
         )
-        lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
+        # Gravity projected onto the fracture's own local (tangential) coordinate, matching
+        # the reduced dimensionality of the fracture's own gradP/B_q - mirrors the buoyancy
+        # projection `g.T @ u` already used for the fracture in integrate_linear_matrices.
+        g_r = (u.T @ g) if is_fracture else g
+        lambda_e, isotropic_cond, h, _, _ = _get_region_thermal_data(mat, is_fracture, r)
         K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(mat, r)
 
         # find element type of first element in region
@@ -1013,26 +1158,46 @@ def integrate_residuals(  # noqa
             rho_f_qn = rho_f_q[:, :, 0].reshape(-1, 1, 1)
 
             darcy_flux = (
-                -kf / mu_q * (gradP - rho_f_qn * g) if isotropic_perm else -kf / mu_q @ (gradP - rho_f_qn * g)
+                -kf / mu_q * (gradP - rho_f_qn * g_r)
+                if isotropic_perm
+                else -kf / mu_q @ (gradP - rho_f_qn * g_r)
             )
 
-            phi_L, _, _ = get_porosity_lagrangian(
-                P_q,
-                N_q @ p_0e,
-                T_flow_q,
-                N_q @ T_0e,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
-                volumetric_strain_on=volumetric_strain_on,
-            )
+            if is_fracture:
+                # For the fracture case, the phi terms are effectively replaced by aperture
+                phi_L = w0 * np.ones_like(T_q)
+            else:
+                # Matrix case
+                phi_L, _, _ = get_porosity_lagrangian(
+                    P_q,
+                    N_q @ p_0e,
+                    T_flow_q,
+                    N_q @ T_0e,
+                    phi_0,
+                    K_d,
+                    biot,
+                    alpha_s,
+                    volumetric_strain_on=volumetric_strain_on,
+                )
 
             # Nodal evaluation for self-consistent lumping of the storage terms (see
             # integrate_tangent_matrices for the matching tangent-side computation).
-            phi_L_nodal, _, _ = get_porosity_lagrangian(
-                pe, p_0e, Te_flow, T_0e, phi_0, K_d, biot, alpha_s, volumetric_strain_on=volumetric_strain_on
-            )
+            if is_fracture:
+                # Fracture case
+                phi_L_nodal = w0 * np.ones((nne, 4))  # nne x 1 x (n, n-1, n-2, n-3)
+            else:
+                # Matrix case
+                phi_L_nodal, _, _ = get_porosity_lagrangian(
+                    pe,
+                    p_0e,
+                    Te_flow,
+                    T_0e,
+                    phi_0,
+                    K_d,
+                    biot,
+                    alpha_s,
+                    volumetric_strain_on=volumetric_strain_on,
+                )
             rho_f_nodal, _, _ = get_density(Te_flow, pe, fluid)
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
 
@@ -1057,21 +1222,27 @@ def integrate_residuals(  # noqa
                 h_fq, _, _, cp_fq = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid
                 )  # fluid enthalpy, nq x 1 x 1
-                E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f_q * u_fq  # total energy, nq x 1 x 1
+                # total energy, nq x 1 x 1
+                E_q = (1 - phi_L) * rho_s * cp_s * T_q * (1 - is_fracture) + phi_L * rho_f_q * u_fq
                 energy_dot_q = (1 - steady_temp) * (
                     cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
                 )
 
                 # Effective conductivity
                 phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
-                lambda_e = (
-                    phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
-                    if isotropic_cond
-                    else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
-                )
+                if is_fracture:
+                    lambda_e = w0 * lambda_f
+                else:
+                    lambda_e = (
+                        phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
+                        if isotropic_cond
+                        else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
+                    )
 
                 u_f_nodal, _, _ = get_internal_energy(Te, pe, fluid)
-                E_nodal = (1 - phi_L_nodal) * rho_s * cp_s * Te + phi_L_nodal * rho_f_nodal * u_f_nodal
+                E_nodal = (1 - phi_L_nodal) * rho_s * cp_s * Te * (
+                    1 - is_fracture
+                ) + phi_L_nodal * rho_f_nodal * u_f_nodal
                 energy_dot_nodal = (1 - steady_temp) * (
                     cv[0] * E_nodal[:, 0:1] + cv[1] * E_nodal[:, 1:2] + cv[2] * E_nodal[:, 2:3]
                 )
@@ -1090,7 +1261,11 @@ def integrate_residuals(  # noqa
                     elif nsd == 2:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
                     else:
-                        flux_mag = np.abs(flux)
+                        # Keep flux_mag 1D (nq,) like the nsd 2/3 branches above, not (nq, 1, 1) -
+                        # `flux[indx_noflow, :, :]` below silently corrupts unrelated entries when
+                        # indx_noflow comes from nonzero() on a >1D array (a 3-tuple of index
+                        # arrays gets nested inside the outer index tuple instead of used directly).
+                        flux_mag = np.abs(flux[:, 0, 0])
                     indx_noflow = np.nonzero(flux_mag == 0)
                     # prevent divide by zero
                     flux_mag[indx_noflow] = 1.0e-15
@@ -1153,30 +1328,31 @@ def integrate_residuals(  # noqa
                         B_q, integrand_SUPG, wJe_q, isotropic_perm
                     )
 
-            # ----- Fracture-matrix pressure coupling
-            if is_fracture and mu_nonlinear:
-                # Coupling matrices
-                coupling_entries = _integrate_fracture_matrix_coupling(
+            # ----- Fracture-matrix leak-off/convective-exchange coupling
+            if is_fracture:
+                fracture_flux_vectors, matches = _integrate_fracture_matrix_coupling_residual(
                     e,
                     enodes,
                     nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
-                    kf_p=kf_p,
-                    mu_q=mu_q,
+                    pe[:, 0:1],
+                    Te[:, 0:1],
+                    p[:, 0],
+                    T[:, 0],
+                    kf_p,
+                    mu_q,
+                    h,
+                    pressure_coupling=not temperature_only,
+                    thermal_coupling=not pressure_only,
                 )
+                _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
 
-                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
-                    stop = vec_counter_ff + nne * nne  # vectorized index count end
-                    _store_vctrzd_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
-                    vec_counter_ff = stop
-                    stop = vec_counter_fm + nne_m * nne  # vectorized index count end
-                    _store_vctrzd_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
-                    vec_counter_fm = stop
-                    stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
-                    _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
-                    vec_counter_mm = stop
+                for nne_m, matrix_vectors in matches:
+                    stop = vec_counter_flux_m + nne_m  # vectorized index count end
+                    _store_vctrzd_element_matrix(vec_flux_m, matrix_vectors, vec_counter_flux_m, stop)
+                    vec_counter_flux_m = stop
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne  # vectorized index count end
@@ -1189,33 +1365,39 @@ def integrate_residuals(  # noqa
     )
 
     if is_fracture:  # Fracture residuals to be updated
-        if mu_nonlinear:
-            # rename to match the "K_pp_R" bucket name for `_stack_fracture_matrices`
-            nn_m = mesh["nn"]
-            pp_coupling_names = {"Kpp_ff": "K_pp_R_ff", "Kpp_fm": "K_pp_R_fm", "Kpp_mm": "K_pp_R_mm"}
-            for name in vec_ff:
-                integrated_vectors[pp_coupling_names[name]] = _make_sparse(
-                    vec_ff[name], row_vec_ff, col_vec_ff, nn, nn
-                )
-            for name in vec_fm:
-                integrated_vectors[pp_coupling_names[name]] = _make_sparse(
-                    vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn
-                )
-            for name in vec_mm:
-                integrated_vectors[pp_coupling_names[name]] = _make_sparse(
-                    vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m
-                )
+        # Matrix-side correction from the leak-off/convective-exchange coupling, scatter-assembled
+        # via the cached row_vec_flux_m (duplicate row entries at shared matrix nodes are summed
+        # by the sparse constructor) into a (nn_m, 1) vector, for the caller to fold into its own
+        # F_P/Tdiffusion - the vector analogue of how the tangent's "_mm" matrices are assembled.
+        for name in vec_flux_m:
+            integrated_vectors[name] = _make_sparse(
+                vec_flux_m[name], row_vec_flux_m, np.zeros_like(row_vec_flux_m), nn_m, 1
+            )
         return integrated_vectors
 
     if fracture_on:
         # Recursion call
-        integrated_fracture_vectors = integrate_nonlinear_matrices(
-            mesh, mat, primary_variables, controls, is_fracture=True
+        integrated_fracture_vectors = integrate_residuals(
+            mesh,
+            mat,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            is_fracture=True,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
         )
-        # Combine fracture and matrix matrices into one
-        integrated_vectors = _stack_fracture_matrices(
-            integrated_vectors, integrated_fracture_vectors, nn, mesh["fracture_mesh"]["nn"]
-        )
+        # The fracture pass also returns the matrix-side half of the fracture-matrix
+        # leak-off/convective-exchange flux under a "_mm" suffix, sized to the matrix mesh
+        # rather than the fracture mesh - fold each into the matching matrix-side residual
+        # before stacking the two meshes together below.
+        for name in ("F_Pdiffusion", "F_Tdiffusion"):
+            if name + "_mm" in integrated_fracture_vectors:
+                flux_mm = integrated_fracture_vectors[name + "_mm"]
+                integrated_vectors[name] = integrated_vectors[name] + flux_mm
+        # Combine fracture and matrix vectors into one
+        integrated_vectors = _stack_fracture_vectors(integrated_vectors, integrated_fracture_vectors)
 
     return integrated_vectors
 
@@ -1247,8 +1429,6 @@ def integrate_tangent_matrices(  # noqa
 
     p_0 = mat["p_0"]
     T_0 = mat["T_0"]
-
-    mu_nonlinear = bool(controls["viscosity_nonconstant"])
 
     # fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
@@ -1288,21 +1468,32 @@ def integrate_tangent_matrices(  # noqa
     if is_fracture:
         conn_global = fmesh["conn_global"]
 
-        if mu_nonlinear:
-            # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
-            # fracture pass rather than re-derived here every timestep/Newton iteration.
-            cached_cv = fmesh["vec_mat_asmbl"]
-            row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
-            row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
-            row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
+        # Connectivity-only (mesh-static) index vectors, built by integrate_residuals (which
+        # always runs before this function within a Newton iteration) rather than re-derived
+        # here every timestep/iteration. The coupling coefficients themselves (leak-off
+        # resistance, convective exchange) are always re-evaluated below, since they depend on
+        # the current fracture-side viscosity.
+        cached_cv = fmesh["vec_mat_asmbl"]
+        row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
+        row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
+        row_vec_mm, col_vec_mm = cached_cv.row_vec_mm, cached_cv.col_vec_mm
 
-            vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
-            vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
-            vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
+        coupling_ff_names = (["Kpp_ff"] if not temperature_only else []) + (
+            ["KTT_ff"] if not pressure_only else []
+        )
+        coupling_fm_names = (["Kpp_fm"] if not temperature_only else []) + (
+            ["KTT_fm"] if not pressure_only else []
+        )
+        coupling_mm_names = (["Kpp_mm"] if not temperature_only else []) + (
+            ["KTT_mm"] if not pressure_only else []
+        )
+        vec_ff = {name: np.zeros(row_vec_ff.size) for name in coupling_ff_names}
+        vec_fm = {name: np.zeros(row_vec_fm.size) for name in coupling_fm_names}
+        vec_mm = {name: np.zeros(row_vec_mm.size) for name in coupling_mm_names}
 
-            vec_counter_ff = 0
-            vec_counter_fm = 0
-            vec_counter_mm = 0
+        vec_counter_ff = 0
+        vec_counter_fm = 0
+        vec_counter_mm = 0
 
     # ----- gravity vector
     g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
@@ -1312,10 +1503,14 @@ def integrate_tangent_matrices(  # noqa
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        kf_0, isotropic_perm, nodes_r, w, u, kf_p, _ = _get_region_flow_data(
+        kf_0, isotropic_perm, nodes_r, w0, u, kf_p, _ = _get_region_flow_data(
             mesh, mat, fmesh, nodes_f, is_fracture, r
         )
-        lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
+        # Gravity projected onto the fracture's own local (tangential) coordinate, matching
+        # the reduced dimensionality of the fracture's own gradP/B_q - mirrors the buoyancy
+        # projection `g.T @ u` already used for the fracture in integrate_linear_matrices.
+        g_r = (u.T @ g) if is_fracture else g
+        lambda_e, isotropic_cond, h, _, _ = _get_region_thermal_data(mat, is_fracture, r)
         K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(mat, r)
 
         # find element type of first element in region
@@ -1376,45 +1571,56 @@ def integrate_tangent_matrices(  # noqa
             drho_dT = drho_dT[:, :, 0].reshape(-1, 1, 1)
             drho_dp = drho_dp[:, :, 0].reshape(-1, 1, 1)
 
-            gradP_mod = gradP - rho_f_n * g
+            gradP_mod = gradP - rho_f_n * g_r
 
             # Darcy flux
             darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
             # Darcy mass flux
             q_D = rho_f_n * darcy_flux
-            # porosity
-            phi_L, dphi_L_dT, dphi_L_dp = get_porosity_lagrangian(
-                P_q,
-                N_q @ p_0e,
-                T_flow_q,
-                N_q @ T_0e,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
-                T_flow_lagged,
-                volumetric_strain_on,
-            )
-            dphi_L_dT = dphi_L_dT[:, :, 0].reshape(-1, 1, 1)
-            dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
+            # porosity - for the fracture case, the phi terms are effectively replaced by
+            # aperture, and (being a fixed material property) do not depend on p or T.
+            if is_fracture:
+                phi_L = w0 * np.ones_like(T_q)
+                dphi_L_dT = np.zeros((nq, 1, 1))
+                dphi_L_dp = np.zeros((nq, 1, 1))
+            else:
+                phi_L, dphi_L_dT, dphi_L_dp = get_porosity_lagrangian(
+                    P_q,
+                    N_q @ p_0e,
+                    T_flow_q,
+                    N_q @ T_0e,
+                    phi_0,
+                    K_d,
+                    biot,
+                    alpha_s,
+                    T_flow_lagged,
+                    volumetric_strain_on,
+                )
+                dphi_L_dT = dphi_L_dT[:, :, 0].reshape(-1, 1, 1)
+                dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
             phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
 
             # Nodal evaluation for self-consistent lumping of the storage terms: density,
             # porosity, and internal energy are evaluated at each node's own (T, p) rather
             # than at quadrature points, so the lumped storage residual/tangent are exact
             # derivatives of one another by construction.
-            phi_L_nodal, dphi_L_dT_nodal, dphi_L_dp_nodal = get_porosity_lagrangian(
-                pe[:, 0:1],
-                p_0e,
-                Te_flow[:, 0:1],
-                T_0e,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
-                T_flow_lagged,
-                volumetric_strain_on,
-            )
+            if is_fracture:
+                phi_L_nodal = w0 * np.ones((nne, 1))
+                dphi_L_dT_nodal = np.zeros((nne, 1))
+                dphi_L_dp_nodal = np.zeros((nne, 1))
+            else:
+                phi_L_nodal, dphi_L_dT_nodal, dphi_L_dp_nodal = get_porosity_lagrangian(
+                    pe[:, 0:1],
+                    p_0e,
+                    Te_flow[:, 0:1],
+                    T_0e,
+                    phi_0,
+                    K_d,
+                    biot,
+                    alpha_s,
+                    T_flow_lagged,
+                    volumetric_strain_on,
+                )
             rho_f_nodal, drho_dT_nodal, drho_dp_nodal = get_density(
                 Te_flow[:, 0:1], pe[:, 0:1], fluid, T_flow_lagged
             )
@@ -1460,17 +1666,22 @@ def integrate_tangent_matrices(  # noqa
                 h_f, dhf_dT, dhf_dp, cp_f = get_enthalpy(
                     P_q[:, :, 0:1], T_q[:, :, 0:1], T_flow_q[:, :, 0:1], fluid, T_flow_lagged
                 )  # fluid enthalpy, nq x 1 x 1
-                E_q = (1 - phi_L) * rho_s * cp_s * T_q + phi_L * rho_f * u_f  # total energy, nq x 1 x 1
+                E_q = (1 - phi_L) * rho_s * cp_s * T_q * (
+                    1 - is_fracture
+                ) + phi_L * rho_f * u_f  # total energy, nq x 1 x 1
                 energy_dot = (1 - steady_temp) * (
                     cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
                 )
 
                 # Effective conductivity
-                lambda_e = (
-                    phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
-                    if isotropic_cond
-                    else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
-                )
+                if is_fracture:
+                    lambda_e = w0 * lambda_f
+                else:
+                    lambda_e = (
+                        phi_L_n * lambda_f + (1 - phi_L_n) * lambda_s
+                        if isotropic_cond
+                        else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
+                    )
 
                 # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight)
                 u_f_nodal, duf_dT_nodal, _ = get_internal_energy(Te[:, 0:1], pe[:, 0:1], fluid)
@@ -1478,7 +1689,7 @@ def integrate_tangent_matrices(  # noqa
                     (1 - steady_temp)
                     * cv[0]
                     * (
-                        (1 - phi_L_nodal) * rho_s * cp_s
+                        (1 - phi_L_nodal) * rho_s * cp_s * (1 - is_fracture)
                         + phi_L_nodal * (drho_dT_nodal * u_f_nodal + rho_f_nodal * duf_dT_nodal)
                         + dphi_L_dT_nodal * (rho_f_nodal * u_f_nodal - rho_s * cp_s * Te[:, 0:1])
                     )
@@ -1494,7 +1705,7 @@ def integrate_tangent_matrices(  # noqa
                     # dqD/dT
                     if isotropic_perm:
                         dqD_dT = (
-                            rho_f_n * kf / mu_q * (drho_dT * g * N_q)
+                            rho_f_n * kf / mu_q * (drho_dT * g_r * N_q)
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
@@ -1505,7 +1716,7 @@ def integrate_tangent_matrices(  # noqa
                         )
                     else:
                         dqD_dT = (
-                            rho_f_n * kf / mu_q @ (drho_dT * g * N_q)
+                            rho_f_n * kf / mu_q @ (drho_dT * g_r * N_q)
                             + (
                                 kf / mu_q * drho_dT
                                 + rho_f_n / mu_q * dkf_dT
@@ -1523,7 +1734,11 @@ def integrate_tangent_matrices(  # noqa
                     elif nsd == 2:
                         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
                     else:
-                        flux_mag = np.abs(flux)
+                        # Keep flux_mag 1D (nq,) like the nsd 2/3 branches above, not (nq, 1, 1) -
+                        # `flux[indx_noflow, :, :]` below silently corrupts unrelated entries when
+                        # indx_noflow comes from nonzero() on a >1D array (a 3-tuple of index
+                        # arrays gets nested inside the outer index tuple instead of used directly).
+                        flux_mag = np.abs(flux[:, 0, 0])
                     indx_noflow = np.nonzero(flux_mag == 0)
                     # prevent divide by zero
                     flux_mag[indx_noflow] = 1.0e-15
@@ -1578,7 +1793,8 @@ def integrate_tangent_matrices(  # noqa
                         (1 - steady_temp)
                         * cv[0]
                         * (
-                            dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
+                            (1 - phi_L_n) * rho_s * cp_s * (1 - is_fracture)
+                            + dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q[:, :, 0:1])
                             + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
                         )
                         * N_q
@@ -1648,18 +1864,20 @@ def integrate_tangent_matrices(  # noqa
                     )
                     element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG, wJe_q, False)
 
-            # ----- Fracture-matrix pressure coupling
-            if is_fracture and mu_nonlinear:
-                # Coupling matrices
-                coupling_entries = _integrate_fracture_matrix_coupling(
+            # ----- Fracture-matrix leak-off/convective-exchange coupling
+            if is_fracture:
+                coupling_entries = _integrate_fracture_matrix_coupling_tangent(
                     e,
                     enodes,
                     nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
-                    kf_p=kf_p,
-                    mu_q=mu_q,
+                    kf_p,
+                    mu_q,
+                    h,
+                    pressure_coupling=not temperature_only,
+                    thermal_coupling=not pressure_only,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
@@ -1684,28 +1902,31 @@ def integrate_tangent_matrices(  # noqa
     )
 
     if is_fracture:
-        if mu_nonlinear:
-            # rename to match the "K_pp_R" bucket name for `_stack_fracture_matrices`
-            nn_m = mesh["nn"]
-            pp_coupling_names = {"Kpp_ff": "K_pp_R_ff", "Kpp_fm": "K_pp_R_fm", "Kpp_mm": "K_pp_R_mm"}
-            for name in vec_ff:
-                integrated_matrices[pp_coupling_names[name]] = _make_sparse(
-                    vec_ff[name], row_vec_ff, col_vec_ff, nn, nn
-                )
-            for name in vec_fm:
-                integrated_matrices[pp_coupling_names[name]] = _make_sparse(
-                    vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn
-                )
-            for name in vec_mm:
-                integrated_matrices[pp_coupling_names[name]] = _make_sparse(
-                    vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m
-                )
+        # "Kpp_ff/fm/mm"/"KTT_ff/fm/mm" keys line up with the plain "Kpp"/"KTT" keys already in
+        # `list_of_matrices` above, so `_stack_fracture_matrices` merges them in directly.
+        nn_m = mesh["nn"]
+        for name in vec_ff:
+            integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
+        for name in vec_fm:
+            integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
+        for name in vec_mm:
+            integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
 
     if fracture_on:
         # Recursion call
-        integrated_fracture_matrices = integrate_nonlinear_matrices(
-            mesh, mat, primary_variables, controls, is_fracture=True
+        integrated_fracture_matrices = integrate_tangent_matrices(
+            mesh,
+            mat,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            is_fracture=True,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
+            fully_coupled=fully_coupled,
+            T_flow_lagged=T_flow_lagged,
         )
         # Combine fracture and matrix matrices into one
         integrated_matrices = _stack_fracture_matrices(
@@ -1781,8 +2002,8 @@ def integrate_nonlinear_matrices(  # noqa
         conn_global = fmesh["conn_global"]
 
         if mu_nonlinear:
-            # Connectivity-only (mesh-static) data, cached by integrate_linear_matrices's
-            # fracture pass rather than re-derived here every timestep/Newton iteration.
+            # Connectivity-only (mesh-static) data, cached by integrate_residuals rather than
+            # re-derived here every timestep/Newton iteration.
             cached_cv = fmesh["vec_mat_asmbl"]
             row_vec_ff, col_vec_ff = cached_cv.row_vec_ff, cached_cv.col_vec_ff
             row_vec_fm, col_vec_fm = cached_cv.row_vec_fm, cached_cv.col_vec_fm
@@ -1807,7 +2028,9 @@ def integrate_nonlinear_matrices(  # noqa
         kf, isotropic_perm, nodes_r, w, u, kf_p, _ = _get_region_flow_data(
             mesh, mat, fmesh, nodes_f, is_fracture, r
         )
-        lambda_e, isotropic_cond, _, _, _ = _get_region_thermal_data(mat, is_fracture, r)
+        # h (thermal coupling) is unused here - this legacy function never assembled the
+        # thermal fracture-matrix coupling, only pressure - so thermal_coupling=False below.
+        lambda_e, isotropic_cond, h, _, _ = _get_region_thermal_data(mat, is_fracture, r)
 
         # advection velocity = advection_conductivity * pressure gradient
         if mu_linear and density_linear:
@@ -1898,7 +2121,11 @@ def integrate_nonlinear_matrices(  # noqa
                 elif nsd == 2:
                     flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
                 else:
-                    flux_mag = np.abs(flux)
+                    # Keep flux_mag 1D (nq,) like the nsd 2/3 branches above, not (nq, 1, 1) -
+                    # `flux[indx_noflow, :, :]` below silently corrupts unrelated entries when
+                    # indx_noflow comes from nonzero() on a >1D array (a 3-tuple of index arrays
+                    # gets nested inside the outer index tuple instead of used directly).
+                    flux_mag = np.abs(flux[:, 0, 0])
                 indx_noflow = np.nonzero(flux_mag == 0)
                 # prevent divide by zero
                 flux_mag[indx_noflow] = 1.0e-15
@@ -2014,15 +2241,18 @@ def integrate_nonlinear_matrices(  # noqa
             # ----- Fracture-matrix pressure coupling
             if is_fracture and mu_nonlinear:
                 # Coupling matrices
-                coupling_entries = _integrate_fracture_matrix_coupling(
+                coupling_entries = _integrate_fracture_matrix_coupling_tangent(
                     e,
                     enodes,
                     nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
-                    kf_p=kf_p,
-                    mu_q=mu_q,
+                    kf_p,
+                    mu_q,
+                    h,
+                    pressure_coupling=True,
+                    thermal_coupling=False,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
