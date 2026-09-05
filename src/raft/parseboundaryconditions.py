@@ -1,4 +1,8 @@
-"""Parse the input boundary conditions and translate them into FEM input."""
+"""Parse the input boundary conditions and translate them into FEM input.
+
+Each group in `config["boundary_conditions"]` describes one geometry feature and
+carries up to two field specs, "hydraulics" and "thermal".
+"""
 
 from typing import Any
 
@@ -6,13 +10,6 @@ import numpy as np
 import numpy.typing as npt
 
 from .matrixassembly import integrate_boundary_flux_matrices
-
-
-def _createBCpairs(incoming: dict[str, Any]) -> npt.NDArray[np.float64]:
-    pairs = list(zip(incoming["nodes"], incoming["BCvalues"]))
-    if pairs:
-        return np.array(pairs, dtype=np.float64)
-    return np.empty((0, 2), dtype=np.float64)
 
 
 def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[np.float64]) -> dict[str, Any]:
@@ -50,127 +47,77 @@ def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[n
     return incoming
 
 
-def _gatherBCs(  # noqa: C901
-    mesh: dict[str, Any], t: float, incoming: list[dict[str, Any]], bctype: int, controls: dict[str, Any]
-) -> npt.NDArray[np.float64]:
-    """bctype: 1 - Dirichlet, 2 - Neumann.
+def _resolve_group_geometry(
+    mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool
+) -> list[int]:
+    """Resolve node indices for one BC group, caching its flux-weight matrix once.
 
-    Boundary condition type necessary for flux integrals, not yet implemented.
+    Shared by "hydraulics" and "thermal" so both reuse the same geometry/weights.
     """
-    BCarray = np.empty((0, 2))
-    # for each BC group
-    for group in incoming:
-        face_flag = False
-        line_flag = False
-        face_conn = []
-        face_nn = 0
-        # gather all the corresponding nodes
-        if "nodes" in group:
-            # directly append the nodes
-            # covers "nodes" and "coords" cases, which have been mapped in pre-processing
-            BCnodes = group["nodes"]
-
-            # on second passes, check if nodes is an amalgamation of faces
-            if "faces" in group:
-                face_flag = True
-            if "lines" in group:
-                line_flag = True
-        elif "faces" in group:
-            # load the groups of faces determined in the pre-processing
-            BCnodes = []
+    if "nodes" not in group:
+        if "faces" in group:
+            nodes: list[int] = []
+            conn: list[Any] = []
             for face in group["faces"]:
-                BCnodes.extend(mesh["boundaries"][face])
-                if bctype == 2:
-                    face_flag = True
-                    face_conn.extend(mesh["boundaries"][face + "_conn"])
-                    face_nn += len(mesh["boundaries"][face])
+                nodes.extend(mesh["boundaries"][face])
+                conn.extend(mesh["boundaries"][face + "_conn"])
+            group["nodes"], group["_conn"], group["_conn_kind"] = nodes, conn, "face"
         elif "lines" in group:
-            # load the line groups determined in the pre-processing
-            BCnodes = []
-            line_conn = group["line_conn"]
-            BCnodes.extend(group["line_nodes"])
-            if bctype == 2:
-                line_flag = True
+            group["nodes"] = group["line_nodes"]
+            group["_conn"], group["_conn_kind"] = group["line_conn"], "line"
         else:
             raise NotImplementedError("Invalid BC geometry specification")
 
-        # if the group has no specified nodes, skip it
-        if not BCnodes:
-            continue
-
-        # save collected nodes to group
-        group["nodes"] = BCnodes
-
-        # evaluate the value of the nodes
-        if "function" not in group:
-            group["function"] = "constant"  # assume constant value if no function given
-
-        # get the precribed value of the BC group
-        group = evaluateBCfunctions(group, t, mesh["nodes"])
-        # Evaluate face flux integrals
-        if bctype == 2 and face_flag:
-            if "flux_weight_matrix" not in group:
-                flux_mats = integrate_boundary_flux_matrices(
-                    mesh, face_conn, group["nodes"], controls, "face"
-                )
-                group["flux_weight_matrix"] = flux_mats["A"]
-
-            group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
-        # Evaluate line flux integrals
-        if bctype == 2 and line_flag:
-            if "flux_weight_matrix" not in group:
-                flux_mats = integrate_boundary_flux_matrices(
-                    mesh, line_conn, group["nodes"], controls, "line"
-                )
-                group["flux_weight_matrix"] = flux_mats["A"]
-
-            group["BCvalues"] = group["flux_weight_matrix"] @ np.asanyarray(group["BCvalues"])
-
-        # combine the group into a single array
-        grouparray = _createBCpairs(group)
-
-        # collect all applied BCs
-        BCarray = np.vstack((BCarray, grouparray))
-
-    # Ensure node specifications are unique
-    if BCarray.size > 0:
-        _, idx = np.unique(BCarray[:, 0], return_index=True)
-        BCarray = BCarray[idx]
-
-    return BCarray
-
-
-def allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
-    """Allocate WB BCs based on current flags."""
-    WB_config = bc_config["wellbore"]
-
-    for group in WB_config:
-        current_flag = group["curr_BC"]
-
-        if current_flag == "flux":
-            group["function"] = group["function_flux"]
-            group["values"] = group["values_flux"]
-            bc_config["fluid_flux"].append(group)
-        elif current_flag == "pressure":
-            group["function"] = "constant"
-            group["values"] = (
-                [group["constraints"]["maximum_pressure"]]
-                if group["pres_constraint"] == "max"
-                else [group["constraints"]["minimum_pressure"]]
+    nodes = group["nodes"]
+    if need_flux_integral and nodes:  # noqa: SIM102
+        if "_conn" in group and "flux_weight_matrix" not in group:
+            flux_mats = integrate_boundary_flux_matrices(
+                mesh, group["_conn"], nodes, controls, group["_conn_kind"]
             )
-            bc_config["pressure_fixed"].append(group)
+            group["flux_weight_matrix"] = flux_mats["A"]
 
-    return bc_config
+    return nodes
+
+
+def _apply_field(
+    mesh: dict[str, Any], t: float, group: dict[str, Any], field: str, nodes: list[int]
+) -> tuple[npt.NDArray[np.float64], bool] | None:
+    """Evaluate one field spec ("hydraulics" or "thermal") on a group into [node, value] pairs."""
+    spec = group.get(field)
+    if spec is None or not nodes:
+        return None
+
+    spec["nodes"] = nodes
+    if "function" not in spec:
+        spec["function"] = "constant"  # assume constant value if no function given
+    spec = evaluateBCfunctions(spec, t, mesh["nodes"])
+    values = np.asarray(spec["BCvalues"], dtype=np.float64)
+
+    if spec["type"] == "flux" and "flux_weight_matrix" in group:
+        values = group["flux_weight_matrix"] @ values
+
+    is_dirichlet = spec["type"] in ("pressure", "temperature")
+    pairs = np.column_stack((np.asarray(nodes, dtype=np.float64), values))
+    return pairs, is_dirichlet
+
+
+def _stack_unique(rows: list[npt.NDArray[np.float64]]) -> npt.NDArray[np.float64]:
+    """Stack collected [node, value] row blocks, keeping one entry per node."""
+    if not rows:
+        return np.empty((0, 2))
+    arr = np.vstack(rows)
+    _, idx = np.unique(arr[:, 0], return_index=True)
+    return arr[idx]
 
 
 def parsebcs(
-    bc_config: dict[str, Any],
+    bc_config: list[dict[str, Any]],
     mesh: dict[str, Any],
     primary_variables: dict[str, Any],  # noqa
     t: float,
     controls: dict[str, Any],
 ) -> dict[str, Any]:
-    """Parse input boundary conditions and return a dictionary containing the following.
+    """Parse input boundary condition groups and return a dictionary containing the following.
 
     T_dirichlet:      n x 2 vector containing a list of fixed temperature nodes and values
                         [ nodes, temperatures]
@@ -181,38 +128,34 @@ def parsebcs(
     p_neumann:        n x 2 vector containing a list of fixed fluid flux nodes and values
                         [ nodes, flux]
     """
-    WB_on = bool("wellbore" in bc_config)
-    # wellbore conditions
-    if WB_on:
-        # save the original lengths
-        original_lengths = {}
-        fields = ["pressure_fixed", "temperature_fixed", "fluid_flux", "temperature_flux"]
-        for key in fields:
-            original_lengths[key] = len(bc_config[key])
-        # allocate WB conditions to flux or pressure
-        bc_config = allocate_WB_BCs(bc_config)
+    p_dirichlet_rows: list[npt.NDArray[np.float64]] = []
+    p_neumann_rows: list[npt.NDArray[np.float64]] = []
+    T_dirichlet_rows: list[npt.NDArray[np.float64]] = []
+    T_neumann_rows: list[npt.NDArray[np.float64]] = []
 
-    # Parse the boundary condition types
-    # Temperature - Dirichlet
-    T_dirichlet = _gatherBCs(mesh, t, bc_config["temperature_fixed"], 1, controls)
+    for group in bc_config:
+        need_flux_integral = False
+        for field in ("hydraulics", "thermal"):
+            if field in group and group[field]["type"] == "flux":
+                need_flux_integral = True
 
-    # Pressure - Dirichlet
-    p_dirichlet = _gatherBCs(mesh, t, bc_config["pressure_fixed"], 1, controls)
+        nodes = _resolve_group_geometry(mesh, group, controls, need_flux_integral)
+        if not nodes:
+            continue
 
-    # Temperature - Neumann
-    T_neumann = _gatherBCs(mesh, t, bc_config["temperature_flux"], 2, controls)
+        hydraulics = _apply_field(mesh, t, group, "hydraulics", nodes)
+        if hydraulics is not None:
+            pairs, is_dirichlet = hydraulics
+            (p_dirichlet_rows if is_dirichlet else p_neumann_rows).append(pairs)
 
-    # Pressure - Neumann
-    p_neumann = _gatherBCs(mesh, t, bc_config["fluid_flux"], 2, controls)
-
-    # Return the config to its original lengths
-    if WB_on:
-        for key in fields:
-            bc_config[key] = bc_config[key][0 : original_lengths[key]]
+        thermal = _apply_field(mesh, t, group, "thermal", nodes)
+        if thermal is not None:
+            pairs, is_dirichlet = thermal
+            (T_dirichlet_rows if is_dirichlet else T_neumann_rows).append(pairs)
 
     return {
-        "T_dirichlet": T_dirichlet,
-        "T_neumann": T_neumann,
-        "p_dirichlet": p_dirichlet,
-        "p_neumann": p_neumann,
+        "T_dirichlet": _stack_unique(T_dirichlet_rows),
+        "T_neumann": _stack_unique(T_neumann_rows),
+        "p_dirichlet": _stack_unique(p_dirichlet_rows),
+        "p_neumann": _stack_unique(p_neumann_rows),
     }

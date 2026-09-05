@@ -30,22 +30,30 @@ initial_conditions:
   p_surf: 1.0
 
 boundary_conditions:
-  pressure_fixed:
-      - lines: [[[51, 0], [51, 75]]]
-        values: [43]
-
-  temperature_fixed:
-      - lines: [[[0, 0], [0, 75]]]
-        values: [72]
-
-  fluid_flux:
-     - lines: [[[0, 0], [0, 75]]]
-       values: [7]
-
-  temperature_flux:
-      - lines: [[[51, 0], [51, 75]]]
-        values: [-91.0]
-
+  - lines:
+    - - [51, 0]
+      - [51, 75]
+    hydraulics:
+      values: [43]
+      type: pressure
+  - lines:
+    - - [0, 0]
+      - [0, 75]
+    hydraulics:
+      values: [7]
+      type: flux
+  - lines:
+    - - [0, 0]
+      - [0, 75]
+    thermal:
+      values: [72]
+      type: temperature
+  - lines:
+    - - [51, 0]
+      - [51, 75]
+    thermal:
+      values: [-91.0]
+      type: flux
 
 simulation:
   # Time

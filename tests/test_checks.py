@@ -10,6 +10,15 @@ import numpy.typing as npt
 from raft.preprocessing import load_config
 
 
+def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
+    """Return values[0] of the nth BC group whose `field` spec is of type `bc_type`."""
+    groups = config["boundary_conditions"]
+    matches = [
+        group[field]["values"] for group in groups if field in group and group[field]["type"] == bc_type
+    ]
+    return matches[index][0]
+
+
 def check_patch_test(
     config_name: str,
     config_dir: Path,
@@ -71,8 +80,8 @@ def check_patch_test(
 
     # check temperature
 
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
 
     T = results["T"][:, 0]
 
@@ -99,8 +108,8 @@ def check_patch_test(
     err_ex += sum((_lin_exact(T0, T1, d_4, L) - T[line_4]) ** 2)
 
     # check pressure
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    p1 = _bc_value(config, "hydraulics", "pressure", 1)
 
     p = results["p"][:, 0]
 
@@ -173,8 +182,8 @@ def check_patch_test_flux(
 
     # check temperature
 
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    q = _bc_value(config, "thermal", "flux", 0)
     k = config["material"]["solid"]["therm_cond"]
 
     # define exact solution - linear
@@ -203,8 +212,8 @@ def check_patch_test_flux(
     err_ex += sum((_lin_exact(T0, m, d_2) - T[line_2]) ** 2) / mean_val
 
     # check pressure
-    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    p1 = _bc_value(config, "hydraulics", "pressure", 0)
+    q = _bc_value(config, "hydraulics", "flux", 0)
     k = config["material"]["solid"]["permeability"]
     mu = config["material"]["fluid"]["viscosity"]
 
@@ -263,8 +272,8 @@ def check_advection(
     # Define analytical solution
     mat = config["material"]
     # flux
-    p0 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
-    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 1)
+    p1 = _bc_value(config, "hydraulics", "pressure", 0)
     kf = mat["solid"]["permeability"]
     mu = mat["fluid"]["viscosity"]
     q = kf / mu * (p1 - p0) / L
@@ -282,8 +291,8 @@ def check_advection(
     x = np.linspace(0, L, 100) / L
     T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
 
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
 
     # extract T and normalize
     T = (results["T"][:, 0] - T0) / (T1 - T0)
@@ -337,11 +346,11 @@ def check_buoyancy(
     g = -9.81
     rho0 = mat["fluid"]["density"]
     alpha_f = mat["fluid"]["therm_expansion"]
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
     dT = T0 - T1
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    p1 = _bc_value(config, "hydraulics", "pressure", 1)
 
     # analytical solution
     x = np.linspace(0, L, 100) / L
@@ -425,7 +434,7 @@ def check_pressurization(
     # effective expansion modulus
     alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
 
-    dT = -config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    dT = -_bc_value(config, "thermal", "temperature", 1)
 
     beta = alpha_e * dT * mu * L**2 / 6 / kf
 
@@ -500,8 +509,8 @@ def check_heterogeneous(
 
     # check temperature
 
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    q = _bc_value(config, "thermal", "flux", 0)
     A = max(mesh["nodes"][:, 0]) * max(mesh["nodes"][:, 1])
     q = -q / A * 4
 
@@ -525,8 +534,8 @@ def check_heterogeneous(
     err_ex = sum((T_ex - T[line_1]) ** 2 / T_ex**2)
 
     # check pressure
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    q = _bc_value(config, "hydraulics", "flux", 0)
     q = -q / A * 4
 
     k = config["material"]["solid"]["permeability"]
@@ -588,12 +597,12 @@ def check_NL_viscosity(
     # Define analytical solution
     mat = config["material"]
     # flux
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    q = _bc_value(config, "hydraulics", "flux", 0)
 
     # temperature
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
 
     # conductivity
     phi = mat["solid"]["porosity"]
@@ -690,8 +699,8 @@ def check_axisymmetry(
 
     # check temperature
 
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    q = _bc_value(config, "thermal", "flux", 0)
     k = config["material"]["solid"]["therm_cond"]
 
     # define exact solution
@@ -721,8 +730,8 @@ def check_axisymmetry(
     err_ex += sum((_y_exact(d_2, T0, q, k, Ri, Ro) - T[line_2]) ** 2) / mean_val**2
 
     # check pressure
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    q = _bc_value(config, "hydraulics", "flux", 0)
     k = config["material"]["solid"]["permeability"] / config["material"]["fluid"]["viscosity"]
 
     # define exact solution
@@ -838,10 +847,10 @@ def check_fracture_perpendicular_patch(
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
 
-    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
-    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
-    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
-    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    p1 = _bc_value(config, "hydraulics", "pressure", 1)
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
 
     # Gradient direction is x; extents taken from the (uncut) matrix nodes.
     nodes = mesh["nodes"]

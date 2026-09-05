@@ -34,17 +34,22 @@ initial_conditions:
   p_ini: 1.5e+5
 
 boundary_conditions:
-  pressure_fixed:
-      - faces: [x_min]
-        values: [2.0e+5]
-      - faces: [x_max]
-        values: [1.0e+5]
-
-  temperature_fixed:
-      - faces: [x_min]
-        values: [350]
-      - faces: [x_max]
-        values: [300]
+  - faces: [x_min]
+    hydraulics:
+      values: [200000.0]
+      type: pressure
+  - faces: [x_max]
+    hydraulics:
+      values: [100000.0]
+      type: pressure
+  - faces: [x_min]
+    thermal:
+      values: [350]
+      type: temperature
+  - faces: [x_max]
+    thermal:
+      values: [300]
+      type: temperature
 
 simulation:
   # Time

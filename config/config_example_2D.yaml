@@ -61,54 +61,72 @@ initial_conditions:
 
 
 boundary_conditions:
-  # wellbore:
+        # Inlet/outlet example: a rate-controlled well, switching to a pressure
+        # limit if it would otherwise exceed the given bounds.
         # - lines: [[[43.4, 20.0], [53, 37.5]]]
-        #   values: [[0, 0.01], 100]
-        #   function: "ramp"
         #   tag: "inlet"
-        #   constraints:
-        #       maximum_pressure: 3.0e+7
-        #       minimum_pressure: 1.0e+5
+        #   hydraulics:
+        #       type: "flux"
+        #       values: [[0, 0.01], 100]
+        #       function: "ramp"
+        #       constraints:
+        #           maximum_pressure: 3.0e+7
+        #           minimum_pressure: 1.0e+5
         # - coords: [[27, 48]]
-        #   values: [[0, -0.01], 100]
-        #   function: "ramp"
         #   tag: "outlet"
-        #   constraints:
-        #       maximum_pressure: 3.0e+7
-        #       minimum_pressure: 1.0e+5
+        #   hydraulics:
+        #       type: "flux"
+        #       values: [[0, -0.01], 100]
+        #       function: "ramp"
+        #       constraints:
+        #           maximum_pressure: 3.0e+7
+        #           minimum_pressure: 1.0e+5
 
-  pressure_fixed:
-        # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
-        - faces: [x_max]
-          values: [1.0e+6]
+        - lines: [[[20.0, 10.0], [40.2, 15.0]]]
+        # - faces: [x_max]
+          hydraulics:
+              type: "flux"
+              values: [0.01]
+              constraints:
+                  maximum_pressure: 3.0e+6
+                  minimum_pressure: 1.0e+5
+          thermal:
+              type: "temperature"
+              values: [296]
         - faces: [x_min]
-          values: [3.0e+6]
-          # function: "ramp"
-        #   tag: "inflow"
+          hydraulics:
+              type: "pressure"
+              values: [1.0e+6]
+              # function: "ramp"
+          # tag: "inflow"
         # - coords: [[43.4, 20.0]]
-        #   values: [1.0e6]
+        #   hydraulics:
+        #       type: "pressure"
+        #       values: [1.0e6]
 
+        - faces: [y_max]
+          thermal:
+              type: "temperature"
+              values: [321]
+        # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
+        #   thermal:
+        #       type: "temperature"
+        #       values: [343]
 
-  temperature_fixed:
-      - faces: [y_max]
-        values: [321]
-      # values: [321]
-      # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
-      #   values: [343]
-      - faces: [y_min]
-        values: [296]
-      # - lines: [[[43.4, 20.0], [53, 37.5]]]
-      #   function: "ramp"
-      #   values: [[343, 403], 100000]
+        # - lines: [[[43.4, 20.0], [53, 37.5]]]
+        #   thermal:
+        #       type: "temperature"
+        #       function: "ramp"
+        #       values: [[343, 403], 100000]
 
-
-  fluid_flux:
         # - faces: [x_min]
-        #   values: [1.0e-3]
+        #   hydraulics:
+        #       type: "flux"
+        #       values: [1.0e-3]
         # - coords: [[15, 56]]
-        #   values: [0.01]
-
-  temperature_flux:
+        #   hydraulics:
+        #       type: "flux"
+        #       values: [0.01]
 
 
 

@@ -59,12 +59,7 @@ DEFAULTS: dict[str, Any] = {
         "grad_direction_p": [0, 0, -1],  # unit vector in gradient direction
     },
     # ---- boundary conditions -------------------------------------------------
-    "boundary_conditions": {
-        "pressure_fixed": [{"nodes": [], "values": []}],
-        "temperature_fixed": [{"nodes": [], "values": []}],
-        "fluid_flux": [{"nodes": [], "values": []}],
-        "temperature_flux": [{"nodes": [], "values": []}],
-    },
+    "boundary_conditions": [],
     # ---- simulation ----------------------------------------------------------
     "simulation": {
         "t_start": 0.0,
@@ -493,75 +488,75 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
 
     3. Line boundary conditions need to find nodes and connectivity.
     """
-    BC_dict = config["boundary_conditions"]
+    BC_groups = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
     config["simulation"]["wellbore_check"] = 0  # Default 0
 
     if np.size(nodes, 1) < 3:
         nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
 
-    for BC_type in BC_dict:
-        for group in BC_dict[BC_type]:
-            BCnodes = []
-            # Check if wellbore restrictions exist
-            if "constraints" in group:
+    for group in BC_groups:
+        BCnodes = []
+        # Check if wellbore restrictions exist
+        hydraulics = group.get("hydraulics")
+        if hydraulics is not None and "constraints" in hydraulics:
+            if verbose:
+                print("Wellbore group detected:")
+            config["simulation"]["wellbore_check"] += 1
+
+            max_pressure = hydraulics["constraints"].get("maximum_pressure")
+            min_pressure = hydraulics["constraints"].get("minimum_pressure")
+
+            if max_pressure is None and min_pressure is None:
+                warnings.warn(
+                    "Wellbore boundary condition specified without maximum or minimum pressure.",
+                    stacklevel=2,
+                )
+
+            if max_pressure is None:
+                max_pressure = 1.0e100
+                hydraulics["constraints"]["maximum_pressure"] = max_pressure
                 if verbose:
-                    print("Wellbore group detected:")
-                config["simulation"]["wellbore_check"] += 1
+                    print("  Maximum pressure unbounded (1.0e+100).")
+            elif verbose:
+                print(f"  Maximum pressure: {max_pressure:.2e}")
 
-                max_pressure = group["constraints"].get("maximum_pressure")
-                min_pressure = group["constraints"].get("minimum_pressure")
+            if min_pressure is None:
+                min_pressure = -1.0e100
+                hydraulics["constraints"]["minimum_pressure"] = min_pressure
+                if verbose:
+                    print("  Minimum pressure unbounded (1.0e+100). \n")
+            elif verbose:
+                print(f"  Minimum pressure: {min_pressure:.2e} \n")
 
-                if max_pressure is None and min_pressure is None:
-                    warnings.warn(
-                        "Wellbore boundary condition specified without maximum or minimum pressure.",
-                        stacklevel=2,
-                    )
+        # Convert coordinates to node numbers
+        if "coords" in group:
+            for xi in group["coords"]:
+                if np.size(xi, 0) != 3:
+                    xi.append(0.0)
+                d = np.linalg.norm(nodes - xi, axis=1)
+                # In the case of duplicate nodes, take the highest node number.
+                # This prioritizes fracture nodes over matrix nodes.
+                d_min = np.min(d)
+                closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
+                BCnodes.append(closest_node)
+            group["nodes"] = BCnodes
 
-                if max_pressure is None:
-                    max_pressure = 1.0e100
-                    group["constraints"]["maximum_pressure"] = max_pressure
-                    if verbose:
-                        print("  Maximum pressure unbounded (1.0e+100).")
-                elif verbose:
-                    print(f"  Maximum pressure: {max_pressure:.2e}")
+        if "lines" in group:
+            for line in group["lines"]:
+                line_nodes, line_conn = _find_lineBC_connectivity(mesh, line)
 
-                if min_pressure is None:
-                    min_pressure = -1.0e100
-                    group["constraints"]["minimum_pressure"] = min_pressure
-                    if verbose:
-                        print("  Minimum pressure unbounded (1.0e+100). \n")
-                elif verbose:
-                    print(f"  Minimum pressure: {min_pressure:.2e} \n")
+                if group.get("line_nodes") is None:
+                    group["line_nodes"] = line_nodes
+                else:
+                    group["line_nodes"].extend(line_nodes)
 
-            # Convert coordinates to node numbers
-            if "coords" in group:
-                for xi in group["coords"]:
-                    if np.size(xi, 0) != 3:
-                        xi.append(0.0)
-                    d = np.linalg.norm(nodes - xi, axis=1)
-                    # In the case of duplicate nodes, take the highest node number.
-                    # This prioritizes fracture nodes over matrix nodes.
-                    d_min = np.min(d)
-                    closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
-                    BCnodes.append(closest_node)
-                group["nodes"] = BCnodes
+                if group.get("line_conn") is None:
+                    group["line_conn"] = line_conn
+                else:
+                    group["line_conn"].extend(line_conn)
 
-            if "lines" in group:
-                for line in group["lines"]:
-                    line_nodes, line_conn = _find_lineBC_connectivity(mesh, line)
-
-                    if group.get("line_nodes") is None:
-                        group["line_nodes"] = line_nodes
-                    else:
-                        group["line_nodes"].extend(line_nodes)
-
-                    if group.get("line_conn") is None:
-                        group["line_conn"] = line_conn
-                    else:
-                        group["line_conn"].extend(line_conn)
-
-    config["boundary_conditions"] = BC_dict
+    config["boundary_conditions"] = BC_groups
     return config
 
 

@@ -31,25 +31,30 @@ initial_conditions:
 
 
 boundary_conditions:
-  pressure_fixed:
-      - faces: [x_min]
-        values: [7]
-      - faces: [x_max]
-        values: [43]
-
-  temperature_fixed:
-      - faces: [x_min]
-        values: [72]
-      - faces: [x_max]
-        values: [91]
-
-  fluid_flux:
-      - nodes: [0]
-        values: [10]
-
-  temperature_flux:
-      - nodes: []
-        values: []
+  - faces: [x_min]
+    hydraulics:
+      values: [7]
+      type: pressure
+  - faces: [x_max]
+    hydraulics:
+      values: [43]
+      type: pressure
+  - nodes: [0]
+    hydraulics:
+      values: [10]
+      type: flux
+  - faces: [x_min]
+    thermal:
+      values: [72]
+      type: temperature
+  - faces: [x_max]
+    thermal:
+      values: [91]
+      type: temperature
+  - nodes: []
+    thermal:
+      values: []
+      type: flux
 
 simulation:
   # Time

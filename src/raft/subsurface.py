@@ -82,18 +82,21 @@ def _update_time(  # noqa
     return t, dt, True
 
 
-def get_critical_times(bc_config: dict[str, Any], t_end: float) -> npt.NDArray[np.float64]:
+def get_critical_times(bc_config: list[dict[str, Any]], t_end: float) -> npt.NDArray[np.float64]:
     """Collect all times from BC groups using the 'table' function."""
     times: set[float] = set()
     # add end times
     times.add(t_end)
     # search for any boundary condition change times
-    for key in ("temperature_fixed", "pressure_fixed", "temperature_flux", "fluid_flux"):
-        for group in bc_config.get(key, []):
-            if group.get("function") == "table":
-                times.update(group["values"][0])
-            elif group.get("function") == "ramp":
-                times.add(float(group["values"][1]))
+    for group in bc_config:
+        for field in ("hydraulics", "thermal"):
+            spec = group.get(field)
+            if spec is None:
+                continue
+            if spec.get("function") == "table":
+                times.update(spec["values"][0])
+            elif spec.get("function") == "ramp":
+                times.add(float(spec["values"][1]))
     return np.array(sorted(times), dtype=np.float64)
 
 
@@ -178,7 +181,7 @@ def _assign_ic_bc_compatible(  # noqa
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     n: int,
     verbose: bool,
 ) -> dict[str, Any]:
@@ -230,9 +233,7 @@ def _assign_ic_bc_compatible(  # noqa
                 )
                 primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
                 # For debugging
-                postprocessing(
-                    n + i, mesh, sim_control, material, boundary_conditions, primary_variables, 0, verbose
-                )  # noqa
+                postprocessing(n + i, mesh, sim_control, material, BC_config, primary_variables, 0, verbose)  # noqa
             # Perform fully coupled solution
             if verbose:
                 print("   Solving for fully-coupled steady-state condition...")
@@ -289,7 +290,7 @@ def _assign_initial_conditions(
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     n: int,
     verbose: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -335,7 +336,7 @@ def _perform_time_integration(
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     dt: list[float],
     n: int,  # noqa
     verbose: bool,
@@ -379,24 +380,32 @@ def _perform_time_integration(
     return primary_variables, dt, converged, timestep_error
 
 
-def _initialize_WB_checks(BC_config: dict[str, Any]) -> dict[str, Any]:
+def _wellbore_groups(BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the BC groups whose hydraulics field is pressure-constrained (wellbore-style)."""
+    return [g for g in BC_config if "constraints" in g.get("hydraulics", {})]
+
+
+def _initialize_WB_checks(BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Initialize current and previous flag checks for each wellbore group."""
-    for group in BC_config["wellbore"]:
+    for group in _wellbore_groups(BC_config):
+        hydraulics = group["hydraulics"]
         # Set flags
-        group["curr_BC"] = "flux"
-        group["prev_BC"] = "flux"
+        hydraulics["curr_BC"] = "flux"
+        hydraulics["prev_BC"] = "flux"
         # Initialize constraint type
-        group["pres_constraint"] = "max"
+        hydraulics["pres_constraint"] = "max"
+        if "function" not in hydraulics:
+            hydraulics["function"] = "constant"  # assume constant value if no function given
         # Copy existing constraints
-        group["values_flux"] = group["values"]
-        group["function_flux"] = group["function"]
+        hydraulics["values_flux"] = hydraulics["values"]
+        hydraulics["function_flux"] = hydraulics["function"]
     return BC_config
 
 
-def _update_WB_flags(BC_config: dict[str, Any]) -> dict[str, Any]:
+def _update_WB_flags(BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Update wellbore flags from previous timestep."""
-    for group in BC_config["wellbore"]:
-        group["prev_BC"] = group["curr_BC"]
+    for group in _wellbore_groups(BC_config):
+        group["hydraulics"]["prev_BC"] = group["hydraulics"]["curr_BC"]
 
     return BC_config
 
@@ -413,8 +422,8 @@ def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool) -
 
 
 def _check_BC_constraints(
-    BC_config: dict[str, Any], primary_variables: dict[str, Any], t: float, WB_on: int, verbose: bool
-) -> tuple[bool, dict[str, Any]]:
+    BC_config: list[dict[str, Any]], primary_variables: dict[str, Any], t: float, WB_on: int, verbose: bool
+) -> tuple[bool, list[dict[str, Any]]]:
     """Check whether the BC constraints are satisfied, and update the flags accordingly."""
     if not WB_on:
         return True, BC_config
@@ -423,31 +432,39 @@ def _check_BC_constraints(
     p = primary_variables["p"][:, 0]
     q = primary_variables["q"][:, 0]
 
-    WB_config = BC_config["wellbore"]
-    n_WB = len(WB_config)
-    for indx in range(n_WB):
-        group = WB_config[indx]
-        curr_BC = group["curr_BC"]
-        prev_BC = group["prev_BC"]
+    for group in _wellbore_groups(BC_config):
+        hydraulics = group["hydraulics"]
+        curr_BC = hydraulics["curr_BC"]
+        prev_BC = hydraulics["prev_BC"]
         # Only 1 swap allowed per timestep to prevent oscillations
         if curr_BC != prev_BC:
             continue
 
         if curr_BC == "flux":
             p_local = p[group["nodes"]]
-            p_max = group["constraints"]["maximum_pressure"]
-            p_min = group["constraints"]["minimum_pressure"]
+            p_max = hydraulics["constraints"]["maximum_pressure"]
+            p_min = hydraulics["constraints"]["minimum_pressure"]
             # Check max pressure
             if np.any(p_local >= p_max):
-                WB_config[indx]["curr_BC"] = "pressure"
-                WB_config[indx]["pres_constraint"] = "max"
+                hydraulics["curr_BC"] = "pressure"
+                hydraulics["pres_constraint"] = "max"
+                hydraulics["type"], hydraulics["function"], hydraulics["values"] = (
+                    "pressure",
+                    "constant",
+                    [p_max],
+                )
                 constraints_satisfied = False
                 _announce_WB_change(group, "Max pressure", verbose)
                 break
             # Check min pressure
             if np.any(p_local <= p_min):
-                WB_config[indx]["curr_BC"] = "pressure"
-                WB_config[indx]["pres_constraint"] = "min"
+                hydraulics["curr_BC"] = "pressure"
+                hydraulics["pres_constraint"] = "min"
+                hydraulics["type"], hydraulics["function"], hydraulics["values"] = (
+                    "pressure",
+                    "constant",
+                    [p_min],
+                )
                 constraints_satisfied = False
                 _announce_WB_change(group, "Min pressure", verbose)
                 break
@@ -455,11 +472,13 @@ def _check_BC_constraints(
         if curr_BC == "pressure":
             q_local = q[group["nodes"]]
             # Determine flux constraint
-            group_local = group.copy()
-            group_local["function"] = group_local["function_flux"]
-            group_local["values"] = group_local["values_flux"]
-            group_local = evaluateBCfunctions(group_local, t, np.empty((0, 0)))
-            q_goal = group_local["BCvalues"]
+            probe = {
+                "function": hydraulics["function_flux"],
+                "values": hydraulics["values_flux"],
+                "nodes": group["nodes"],
+            }
+            probe = evaluateBCfunctions(probe, t, np.empty((0, 0)))
+            q_goal = probe["BCvalues"]
 
             if "flux_weight_matrix" in group:
                 weight_matrix = group["flux_weight_matrix"]
@@ -467,7 +486,12 @@ def _check_BC_constraints(
 
             # Check against current fluxes. If exceeded, switch back over.
             if np.any(np.abs(q_local) >= np.abs(q_goal)):
-                WB_config[indx]["curr_BC"] = "flux"
+                hydraulics["curr_BC"] = "flux"
+                hydraulics["type"], hydraulics["function"], hydraulics["values"] = (
+                    "flux",
+                    hydraulics["function_flux"],
+                    hydraulics["values_flux"],
+                )
                 constraints_satisfied = False
                 _announce_WB_change(group, "Fluid flux", verbose)
                 break

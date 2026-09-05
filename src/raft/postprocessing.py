@@ -254,28 +254,17 @@ def _export_flow_logs(
     n: int,
     primary_variables: dict[str, Any],
     controls: dict[str, Any],  # noqa
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     io_path: str,
     t: float,
 ) -> None:
-    """Export flow logs from BC groups.
-
-    Loops over the Neumann and Dirichlet boundary conditions on the flow
-    problem and exports pressure, flow rate, and temperature associated with
-    each tagged BC group. Only exports tagged groups. Flows and pressures are
-    summed over the group and temperatures are taken as a flow weighted mean.
-    """
+    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
     # ---- Collect tagged groups
-    bc_types_to_log = ("pressure_fixed", "fluid_flux", "wellbore")
-    tagged_groups: list[dict[str, Any]] = []
-    for bc_type in bc_types_to_log:
-        for entry in BC_config.get(bc_type, []):
-            if "tag" in entry:
-                tagged_groups.append(entry)
+    tagged_groups = [group for group in BC_config if "tag" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -415,14 +404,13 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     return scalardata_point
 
 
-def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build a single indicator field marking every node involved in any line boundary condition."""
     data = np.zeros(mesh["nn"])
-    for bc_type in BC_config:
-        for group in BC_config[bc_type]:
-            line_nodes = group.get("line_nodes")
-            if line_nodes:
-                data[np.asarray(line_nodes)] = 1
+    for group in BC_config:
+        line_nodes = group.get("line_nodes")
+        if line_nodes:
+            data[np.asarray(line_nodes)] = 1
 
     return [{"name": "line_BC_nodes", "data": data}]
 
@@ -706,7 +694,7 @@ def export_domain_properties(
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
 ) -> None:
     """Export the matrix domain's static properties to a standalone VTK file.
 
@@ -746,7 +734,7 @@ def postprocessing(
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,

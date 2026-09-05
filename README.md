@@ -182,14 +182,17 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * `"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. Pressurization is time-dependent and thus neglected. Buoyancy requires an reference temperature and is thus neglected. The solved pressure and temperature fields are applied as initial conditions and reference temperatures. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
 
 ### `boundary_conditions`
-Boundary conditions are specified in groups. Each group can be applied using one of four geometric specification methods: node indices, coordinate proximity, named faces, or lines. Each group can also specify either constant or time-dependent values.
+`boundary_conditions` is a list of groups at the root of the config. Each group applies to one geometry feature (specified using one of four geometric methods: node indices, coordinate proximity, named faces, or lines), and can carry a `hydraulics` block, a `thermal` block, or both — so a well or boundary that constrains both pressure and temperature is one entry instead of two.
 
-**Boundary Condition Types:**
-* **`pressure_fixed`**: Dirichlet boundary conditions for fluid pressure.
-* **`temperature_fixed`**: Dirichlet boundary conditions for temperature.
-* **`fluid_flux`**: Neumann boundary conditions for fluid flow flux.
-* **`temperature_flux`**: Neumann boundary conditions for heat flux.
-* **`wellbore`**: A fluid-flux boundary condition that automatically swaps to a fixed pressure when a pressure limit is reached (and back again once the flux implied by that pressure would exceed the original flux target). See [Wellbore Constraints](#wellbore-constraints) below.
+**Field Blocks:**
+* **`hydraulics`**: controls fluid pressure/flux at this group.
+  * `type: "pressure"`: Dirichlet condition (fixed pressure).
+  * `type: "flux"`: Neumann condition (fixed fluid flux).
+* **`thermal`**: controls temperature/heat flux at this group.
+  * `type: "temperature"`: Dirichlet condition (fixed temperature).
+  * `type: "flux"`: Neumann condition (fixed heat flux).
+
+A group with only `hydraulics` affects pressure alone; a group with only `thermal` affects temperature alone; a group with both applies both conditions over the same geometry. Each block carries its own `function`/`values` (and, for `hydraulics`, an optional `constraints` block — see [Wellbore Constraints](#wellbore-constraints) below).
 
 **Geometry Specification Methods:**
 Each boundary condition group must specify nodes using one or a combination of the following methods:
@@ -233,24 +236,25 @@ Each boundary condition group must specify nodes using one or a combination of t
 * groupname_temperature: flow-weighted average temperature over the group nodes.
 
 #### Wellbore Constraints
-A `wellbore` group is specified like a `fluid_flux` group, plus a nested `constraints` block giving pressure limits. Wellbores accept all the same `values`, geometries, and all the same `function` options except the `"gradient"` function. Example:
+A wellbore is a `hydraulics` block with `type: "flux"` plus a nested `constraints` block giving pressure limits. Wellbore `hydraulics` blocks accept all the same `values`, geometries, and `function` options as any other flux condition, except the `"gradient"` function. Example:
 
 ```yaml
-wellbore:
-  - coords: [[x, y, z]]
-    values: [[0, 0.001], 100]
-    function: "ramp"
-    tag: "inlet"
-    constraints:
-        maximum_pressure: 16.0e+6
-        minimum_pressure: 1.0e+4
+- coords: [[x, y, z]]
+  tag: "inlet"
+  hydraulics:
+      type: "flux"
+      values: [[0, 0.001], 100]
+      function: "ramp"
+      constraints:
+          maximum_pressure: 16.0e+6
+          minimum_pressure: 1.0e+4
 ```
 
 * **`maximum_pressure`** / **`minimum_pressure`** *(float, optional)*: Pressure limits at the wellbore nodes. Either may be omitted to leave that side unbounded.
 
 At each timestep, the group is applied as its specified flux until a node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition at that limit for the rest of the timestep. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Each group is evaluated collectively - any one pressure node exceeding the constraints triggers the swap. For fluid flux constraints, line and face geometry types are integrated over the line/face and the prescribed integrated total flux is compared against the current integrated total flux.
 
-Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. `wellbore` groups are included when tagging groups for `outflow.log`.
+Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. Wellbore groups are included when tagging groups for `outflow.log`.
 
 ### `simulation`
  Simulation controls

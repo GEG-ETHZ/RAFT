@@ -69,7 +69,7 @@ The coupled problem seeks $p(\vec{X},t)$ and $T(\vec{X},t)$ satisfying the above
 
 $$\vec{q} = -\frac{\boldsymbol{k}_f}{\mu}\nabla p = \overline{\vec{q}}(t), \qquad \vec{q}_T = -\lambda_e \nabla T = \overline{\vec{q}}_T(t)$$
 
-where $\Gamma = \Gamma_N \cup \Gamma_D$, $\Gamma_N \cap \Gamma_D = \emptyset$. These correspond directly to the `pressure_fixed`/`temperature_fixed` (Dirichlet) and `fluid_flux`/`temperature_flux` (Neumann) [boundary condition types](README.md#boundary_conditions).
+where $\Gamma = \Gamma_N \cup \Gamma_D$, $\Gamma_N \cap \Gamma_D = \emptyset$. These correspond directly to the `type: "pressure"`/`type: "temperature"` (Dirichlet) and `type: "flux"` (Neumann) [boundary condition types](README.md#boundary_conditions).
 
 ## Weak Form and Finite Element Discretization
 Multiplying by admissible variations $\delta p$, $\delta T$, integrating over the domain, and applying the divergence theorem to the Laplacian terms (the Dirichlet contribution vanishes since $\delta p = \delta T = 0$ there, and the Neumann contribution reduces to the prescribed flux) yields the weak forms:

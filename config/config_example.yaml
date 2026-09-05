@@ -57,27 +57,29 @@ initial_conditions:
 
 
 boundary_conditions:
-  pressure_fixed:
       - coords: [[40, 60, 25]]
-        values: [1.0e+5]
         tag: "wellbore_out"
+        hydraulics:
+            type: "pressure"
+            values: [1.0e+5]
 
-  temperature_fixed:
       - faces: [z_max]
-        values: [286]
+        thermal:
+            type: "temperature"
+            values: [286]
       - faces: [z_min]
-        values: [340]
+        thermal:
+            type: "temperature"
+            values: [340]
       - coords: [[10, 10, 35]]
-        values: [400.0]
-
-  fluid_flux:
-      - coords: [[10, 10, 35]]
-        values: [[0, 1000, 30000], [0, 0.1, 0.01]]
-        function: "table"
         tag: "wellbore_in"
-
-
-  temperature_flux:
+        thermal:
+            type: "temperature"
+            values: [400.0]
+        hydraulics:
+            type: "flux"
+            values: [[0, 1000, 30000], [0, 0.1, 0.01]]
+            function: "table"
 
 
 simulation:

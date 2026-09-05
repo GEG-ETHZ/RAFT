@@ -394,7 +394,7 @@ def lin_extrap_time_integration(  # noqa
     matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     dt: list[float],
     n: int,
     verbose: bool,
