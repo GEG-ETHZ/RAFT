@@ -178,6 +178,7 @@ def _assign_ic_bc_compatible(  # noqa
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
+    BC_config: dict[str, Any],
     n: int,
     verbose: bool,
 ) -> dict[str, Any]:
@@ -222,6 +223,7 @@ def _assign_ic_bc_compatible(  # noqa
                     matrices_linear,
                     primary_variables,
                     boundary_conditions,
+                    BC_config,
                     [1, 1, 1],
                     n,
                     verbose,
@@ -287,6 +289,7 @@ def _assign_initial_conditions(
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
+    BC_config: dict[str, Any],
     n: int,
     verbose: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -309,6 +312,7 @@ def _assign_initial_conditions(
             matrices_linear,
             primary_variables,
             boundary_conditions,
+            BC_config,
             n,
             verbose,
         )
@@ -554,6 +558,7 @@ def main(  # noqa
             matrices_linear,
             primary_variables,
             boundary_conditions,
+            BC_config,
             n,
             verbose,
         )

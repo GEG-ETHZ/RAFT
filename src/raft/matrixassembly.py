@@ -19,7 +19,8 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
-from .parseboundaryconditions import allocate_WB_BCs
+
+# from .parseboundaryconditions import allocate_WB_BCs
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
@@ -1424,7 +1425,8 @@ def integrate_enthlpy_bndry_residual(  # noqa
         for key in fields:
             original_lengths[key] = len(BC_config[key])
         # allocate WB conditions to flux or pressure
-        bc_config = allocate_WB_BCs(BC_config)
+        # bc_config = allocate_WB_BCs(BC_config)
+        bc_config = BC_config
 
     # Loop through fluid boundary conditions
     BC_types = ["pressure_fixed", "fluid_flux"]  # noqa

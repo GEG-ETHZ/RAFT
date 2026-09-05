@@ -170,7 +170,7 @@ def compute_residuals_comp(
         F_Tdiffusion = F_vec["F_Tdiffusion"]
         F_Tadvection = F_vec["F_Tadvection"]
         F_Tstab = F_vec["F_Tstab"]
-        F_enth_bnd = F_vec["F_enth_bnd"]
+        F_enth_bnd = F_vec.get("F_enth_bnd", 0)
         RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT - F_enth_bnd
         if fully_coupled:
             R["T"] = RT

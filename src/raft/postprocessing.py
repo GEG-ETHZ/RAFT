@@ -398,13 +398,14 @@ def _build_cell_scalars(
 def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     """Build one indicator scalar field per named BC group, for the initial-condition VTK snapshot.
 
-    Skips any group whose name ends in "_conn", since those are connectivity bookkeeping
-    entries rather than physical boundary groups and shouldn't be exported as fields.
+    Skips any group whose name ends in "_conn", "_elems", or "_regions", since those are
+    connectivity/element bookkeeping entries rather than node-index sets and shouldn't be
+    exported as fields.
     """
     scalardata_point = []
     BCgroups = mesh["boundaries"]
     for name in BCgroups:
-        if name.endswith("_conn"):
+        if name.endswith(("_conn", "_elems", "_regions")):
             continue
         label = "boundary_" + name
         data = np.zeros(mesh["nn"])
