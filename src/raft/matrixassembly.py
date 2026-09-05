@@ -19,6 +19,7 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
+from .parseboundaryconditions import allocate_WB_BCs
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
@@ -1383,6 +1384,72 @@ def integrate_residuals(  # noqa
         integrated_vectors = _stack_fracture_vectors(integrated_vectors, integrated_fracture_vectors)
 
     return integrated_vectors
+
+
+def integrate_enthlpy_bndry_residual(  # noqa
+    mesh: dict[str, Any],
+    mat: dict[str, Any],
+    primary_variables: dict[str, Any],
+    controls: dict[str, Any],
+    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
+    BC_config: dict[str, Any],
+    *,
+    is_fracture: bool = False,  # noqa
+    pressure_only: bool = False,  # noqa
+    temperature_only: bool = False,  # noqa
+    fully_coupled: bool = False,  # noqa
+    T_flow_lagged: bool = False,  # noqa
+) -> dict[str, Any]:
+    """Integrate the advective enthalpy flux boundary vector.
+
+    This is a separate integration loop because it only applies to fluid
+    BC that do not have an associated temperature BC.
+    """
+    advection_off = not bool(controls["advection_on"])  # noqa
+    nn_total = mesh["nn_total"]
+
+    # if advection_off:
+    if True:
+        return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
+
+    F_enth_bnd = np.zeros((nn_total, 1))
+    fluid = mat["fluid"]
+
+    # wellbore conditions
+    WB_on = bool("wellbore" in BC_config)
+    if WB_on:
+        # save the original lengths
+        original_lengths = {}
+        fields = ["pressure_fixed", "temperature_fixed", "fluid_flux", "temperature_flux"]
+        for key in fields:
+            original_lengths[key] = len(BC_config[key])
+        # allocate WB conditions to flux or pressure
+        bc_config = allocate_WB_BCs(BC_config)
+
+    # Loop through fluid boundary conditions
+    BC_types = ["pressure_fixed", "fluid_flux"]  # noqa
+
+    p_nodes = BC_config["p_dirichlet"]
+    nodes_i = p_nodes[:, 0:1].astype(int)
+    p_nodes = BC_config["p_neumann"]
+    nodes_i = np.vstack((nodes_i, p_nodes[:, 0:1].astype(int)))
+    nodes_i = np.unique(nodes_i)
+
+    T_i = primary_variables["T"][nodes_i, 0]
+    T_flow_i = T_flow[nodes_i, 0]
+    p_i = primary_variables["p"][nodes_i, 0]
+    q_i = primary_variables["q"][nodes_i, 0]
+    # rho_f, _, _ = get_density(T_flow_i, p_i, fluid)
+    h_f, _, _, _ = get_enthalpy(p_i, T_i, T_flow_i, fluid)
+
+    F_enth_bnd[nodes_i, 0] = q_i * h_f
+
+    # Return the config to its original lengths
+    if WB_on:
+        for key in fields:
+            bc_config[key] = bc_config[key][0 : original_lengths[key]]
+
+    return {"F_enth_bnd": csc_matrix(F_enth_bnd)}
 
 
 def integrate_tangent_matrices(  # noqa

@@ -8,7 +8,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_residuals, integrate_tangent_matrices
+from .matrixassembly import integrate_enthlpy_bndry_residual, integrate_residuals, integrate_tangent_matrices
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -170,7 +170,8 @@ def compute_residuals_comp(
         F_Tdiffusion = F_vec["F_Tdiffusion"]
         F_Tadvection = F_vec["F_Tadvection"]
         F_Tstab = F_vec["F_Tstab"]
-        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT
+        F_enth_bnd = F_vec["F_enth_bnd"]
+        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT - F_enth_bnd
         if fully_coupled:
             R["T"] = RT
         else:
@@ -393,6 +394,7 @@ def lin_extrap_time_integration(  # noqa
     matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
+    BC_config: dict[str, Any],
     dt: list[float],
     n: int,
     verbose: bool,
@@ -552,15 +554,13 @@ def lin_extrap_time_integration(  # noqa
         if debug_pressure_plot_on:
             _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["p"])
     # ---- Calculate reaction flow rates at prescribed DoFs
-    KEE = A[np.ix_(nE_p, nE_p)]
-    KEF = A[np.ix_(nE_p, nF_p)]
-    pF = p[nF_p, 0]
     q = np.zeros((nn, 1))
-    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE_p]
-    q = q + F_extp
+    q[p_fix] = R["p"][p_fix]
+    q[nF_p] = q[nF_p] + F_extp[nF_p]
 
     # ---- Update temperature matrices with new pressure
     p[:, 0:1] = p_n
+    primary_variables["q"] = q  # outlet flow rates
 
     # Begin Newton-Raphson iterative solver
     converged = False
@@ -591,6 +591,10 @@ def lin_extrap_time_integration(  # noqa
         F_vec = integrate_residuals(
             mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
         )
+        F_enth_bnd = integrate_enthlpy_bndry_residual(
+            mesh, material, primary_variables, sim_control, T_flow, BC_config
+        )
+        F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
 
         # Check convergence

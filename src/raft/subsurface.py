@@ -331,6 +331,7 @@ def _perform_time_integration(
     matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
+    BC_config: dict[str, Any],
     dt: list[float],
     n: int,  # noqa
     verbose: bool,
@@ -348,6 +349,7 @@ def _perform_time_integration(
             matrices_linear,
             primary_variables,
             boundary_conditions,
+            BC_config,
             dt,
             n,
             verbose,
@@ -579,6 +581,7 @@ def main(  # noqa
                     matrices_linear,
                     primary_variables,
                     boundary_conditions,
+                    BC_config,
                     dt,
                     n,
                     verbose,

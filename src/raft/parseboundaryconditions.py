@@ -140,7 +140,7 @@ def _gatherBCs(  # noqa: C901
     return BCarray
 
 
-def _allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
+def allocate_WB_BCs(bc_config: dict[str, Any]) -> dict[str, Any]:
     """Allocate WB BCs based on current flags."""
     WB_config = bc_config["wellbore"]
 
@@ -190,7 +190,7 @@ def parsebcs(
         for key in fields:
             original_lengths[key] = len(bc_config[key])
         # allocate WB conditions to flux or pressure
-        bc_config = _allocate_WB_BCs(bc_config)
+        bc_config = allocate_WB_BCs(bc_config)
 
     # Parse the boundary condition types
     # Temperature - Dirichlet
