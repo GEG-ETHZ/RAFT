@@ -20,11 +20,11 @@ mesh:
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
+      bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
       density: [1000, 2000, 2000]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
       specific_heat: [80, 80, 10]        # J/kgK
-      therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
+      therm_expansion: [0.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
       permeability: [[5.0e-14, 5.0e-14],   1.0e-14, 1.0e-17]       # m^2
@@ -86,7 +86,7 @@ boundary_conditions:
         # - faces: [x_max]
           hydraulics:
               type: "flux"
-              values: [0.01]
+              values: [0.001]
               constraints:
                   maximum_pressure: 3.0e+6
                   minimum_pressure: 1.0e+5
@@ -95,8 +95,8 @@ boundary_conditions:
               values: [296]
         - faces: [x_min]
           hydraulics:
-              type: "pressure"
-              values: [1.0e+6]
+              type: "flux"
+              values: [0.001]
               # function: "ramp"
           # tag: "inflow"
         # - coords: [[43.4, 20.0]]
@@ -162,4 +162,4 @@ simulation:
   iterative_controls:
       NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
-      aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
+      aitken_relaxation: 0 # Turn on/off Aitken's delta^2 relaxation

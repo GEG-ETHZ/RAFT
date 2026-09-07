@@ -8,7 +8,12 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .matrixassembly import integrate_enthlpy_bndry_residual, integrate_residuals, integrate_tangent_matrices
+from .matrixassembly import (
+    integrate_enthlpy_bndry_residual,
+    integrate_enthlpy_bndry_tangent,
+    integrate_residuals,
+    integrate_tangent_matrices,
+)
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -395,6 +400,7 @@ def lin_extrap_time_integration(  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
+    t: float,
     dt: list[float],
     n: int,
     verbose: bool,
@@ -405,7 +411,7 @@ def lin_extrap_time_integration(  # noqa
     is calculated between the predicted and calculated temperatures for convergence.
     """
     debug_pressure_plot_on = False
-    debug_temperature_plot_on = False
+    debug_temperature_plot_on = True
     # extract vectors of nodal dofs
     p = primary_variables["p"]
     T = primary_variables["T"]
@@ -592,7 +598,7 @@ def lin_extrap_time_integration(  # noqa
             mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
         )
         F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, sim_control, T_flow, BC_config
+            mesh, material, primary_variables, sim_control, t, T_flow, BC_config
         )
         F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
@@ -617,8 +623,18 @@ def lin_extrap_time_integration(  # noqa
                 temperature_only=True,
                 T_flow_lagged=True,
             )
-
-            A = jacobian["KTT"]
+            K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                mesh,
+                material,
+                primary_variables,
+                sim_control,
+                t,
+                T_flow,
+                BC_config,
+                temperature_only=True,
+                T_flow_lagged=True,
+            )
+            A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
             b = R["T"]
 
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_T, np.zeros(np.size(nE_T, 0)))

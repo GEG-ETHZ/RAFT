@@ -36,22 +36,17 @@ boundary_conditions:
     hydraulics:
       values: [8000000.0]
       type: pressure
-  - faces: [z_max]
-    hydraulics:
-      values: [-0.0007]
-      type: flux
-  - faces: [z_min]
     thermal:
       values: [340]
       type: temperature
   - faces: [z_max]
+    hydraulics:
+      values: [-0.0007]
+      type: flux
     thermal:
       values: [410]
       type: temperature
-  - faces: []
-    thermal:
-      values: []
-      type: flux
+
 
 simulation:
   # Time
