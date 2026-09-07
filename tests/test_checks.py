@@ -16,7 +16,7 @@ def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> f
     matches = [
         group[field]["values"] for group in groups if field in group and group[field]["type"] == bc_type
     ]
-    return matches[index][0]
+    return float(matches[index][0])
 
 
 def check_patch_test(

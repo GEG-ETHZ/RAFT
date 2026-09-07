@@ -612,7 +612,8 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
                 line_regions: list[Any] = []
                 line_elem_edge: list[int] = []
                 for local_edge_indx, edge in enumerate(line_conn):
-                    elems = edge_to_elems.get(tuple(sorted(edge)), [])
+                    n1, n2 = sorted(edge)
+                    elems = edge_to_elems.get((n1, n2), [])
                     line_elems.extend(elems)
                     line_regions.extend(mesh["regions"][e] for e in elems)
                     line_elem_edge.extend([edge_offset + local_edge_indx] * len(elems))
