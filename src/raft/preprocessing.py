@@ -345,16 +345,15 @@ def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
     return edges
 
 
-def _build_mesh_edge_graph(mesh: dict[str, Any]) -> scipy.sparse.csr_matrix:
-    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
-    nodes = mesh["nodes"]
+def _build_edge_element_map(mesh: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
+    """Map each unique mesh edge (sorted node pair) to the elements that contain it."""
     conn = mesh["conn"]
     nne = mesh["nne"]
     ne = mesh["ne"]
     nsd = mesh["nsd"]
     elem_indx = mesh["elem_indx"]
 
-    edge_set: set[tuple[int, int]] = set()
+    edge_to_elems: dict[tuple[int, int], list[int]] = {}
     edge_lists = _get_element_edge_lists(nne[0], nsd)
     counter = 0
 
@@ -366,10 +365,20 @@ def _build_mesh_edge_graph(mesh: dict[str, Any]) -> scipy.sparse.csr_matrix:
         elem_conn = conn[elem]
         for local_edge in edge_lists.values():
             n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
-            edge_set.add((n1, n2) if n1 < n2 else (n2, n1))
+            key = (n1, n2) if n1 < n2 else (n2, n1)
+            edge_to_elems.setdefault(key, []).append(elem)
+
+    return edge_to_elems
+
+
+def _build_mesh_edge_graph(
+    mesh: dict[str, Any], edge_to_elems: dict[tuple[int, int], list[int]]
+) -> scipy.sparse.csr_matrix:
+    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
+    nodes = mesh["nodes"]
 
     row, col, weight = [], [], []
-    for n1, n2 in edge_set:
+    for n1, n2 in edge_to_elems:
         d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
         row += [n1, n2]
         col += [n2, n1]
@@ -407,7 +416,7 @@ def _clip_line_to_domain(
 
 
 def _find_lineBC_connectivity(
-    mesh: dict[str, Any], line: list[list[float]]
+    mesh: dict[str, Any], line: list[list[float]], edge_to_elems: dict[tuple[int, int], list[int]]
 ) -> tuple[list[int], list[list[int]]]:
     """Find the line boundary condition connectivity.
     Line boundary conditions find the shortest path between the start and
@@ -442,7 +451,7 @@ def _find_lineBC_connectivity(
         raise RuntimeError("Line boundary condition start and end nodes snap to the same mesh node.")
 
     # Shortest path A -> B weighted by edge length, following existing mesh edges
-    graph = _build_mesh_edge_graph(mesh)
+    graph = _build_mesh_edge_graph(mesh, edge_to_elems)
     dist, predecessors = dijkstra(
         graph, directed=False, indices=np.array([start_node]), return_predecessors=True
     )
@@ -491,6 +500,7 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     BC_groups = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
     config["simulation"]["wellbore_check"] = 0  # Default 0
+    edge_to_elems = _build_edge_element_map(mesh) if any("lines" in group for group in BC_groups) else {}
 
     if np.size(nodes, 1) < 3:
         nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
@@ -544,7 +554,22 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
 
         if "lines" in group:
             for line in group["lines"]:
-                line_nodes, line_conn = _find_lineBC_connectivity(mesh, line)
+                line_nodes, line_conn = _find_lineBC_connectivity(mesh, line, edge_to_elems)
+
+                # Elements touching each edge of this line: on exterior lines there is
+                # exactly one element per edge, so `line_elem_edge[i]` == i naturally.
+                # Interior lines can have two or more elements per edge, so
+                # `line_elem_edge` maps each entry of `line_elems`/`line_regions` back
+                # to the index (within the group's combined `line_conn`) of the edge it touches.
+                edge_offset = len(group.get("line_conn") or [])
+                line_elems: list[int] = []
+                line_regions: list[Any] = []
+                line_elem_edge: list[int] = []
+                for local_edge_indx, edge in enumerate(line_conn):
+                    elems = edge_to_elems.get(tuple(sorted(edge)), [])
+                    line_elems.extend(elems)
+                    line_regions.extend(mesh["regions"][e] for e in elems)
+                    line_elem_edge.extend([edge_offset + local_edge_indx] * len(elems))
 
                 if group.get("line_nodes") is None:
                     group["line_nodes"] = line_nodes
@@ -555,6 +580,15 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
                     group["line_conn"] = line_conn
                 else:
                     group["line_conn"].extend(line_conn)
+
+                if group.get("line_elems") is None:
+                    group["line_elems"] = line_elems
+                    group["line_regions"] = line_regions
+                    group["line_elem_edge"] = line_elem_edge
+                else:
+                    group["line_elems"].extend(line_elems)
+                    group["line_regions"].extend(line_regions)
+                    group["line_elem_edge"].extend(line_elem_edge)
 
     config["boundary_conditions"] = BC_groups
     return config

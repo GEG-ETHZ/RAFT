@@ -58,13 +58,28 @@ def _resolve_group_geometry(
         if "faces" in group:
             nodes: list[int] = []
             conn: list[Any] = []
+            elems: list[Any] = []
+            regions: list[Any] = []
             for face in group["faces"]:
                 nodes.extend(mesh["boundaries"][face])
                 conn.extend(mesh["boundaries"][face + "_conn"])
+                elems.extend(mesh["boundaries"][face + "_elems"])
+                regions.extend(mesh["boundaries"][face + "_regions"])
             group["nodes"], group["_conn"], group["_conn_kind"] = nodes, conn, "face"
+            # Exterior faces have exactly one owning element each, so the element
+            # at position i in "_elems" touches the face at position i in "_conn".
+            group["_elems"], group["_regions"], group["_elem_edge"] = elems, regions, list(range(len(conn)))
         elif "lines" in group:
             group["nodes"] = group["line_nodes"]
             group["_conn"], group["_conn_kind"] = group["line_conn"], "line"
+            # Unlike exterior faces, an interior line edge can be touched by more
+            # than one element, so "_elem_edge" maps each "_elems"/"_regions" entry
+            # back to the index (into "_conn") of the edge it touches.
+            group["_elems"], group["_regions"], group["_elem_edge"] = (
+                group["line_elems"],
+                group["line_regions"],
+                group["line_elem_edge"],
+            )
         else:
             raise NotImplementedError("Invalid BC geometry specification")
 
