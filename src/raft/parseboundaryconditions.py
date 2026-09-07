@@ -9,8 +9,6 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matrixassembly import integrate_boundary_flux_matrices
-
 
 def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[np.float64]) -> dict[str, Any]:
     """Evaluate functions defining the boundary condition values."""
@@ -45,53 +43,6 @@ def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[n
             y = np.interp(t, tn, yn) if t >= tn[0] else 0
             incoming["BCvalues"] = [y] * len(incoming["nodes"])
     return incoming
-
-
-def _resolve_group_geometry(
-    mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool
-) -> list[int]:
-    """Resolve node indices for one BC group, caching its flux-weight matrix once.
-
-    Shared by "hydraulics" and "thermal" so both reuse the same geometry/weights.
-    """
-    if "nodes" not in group:
-        if "faces" in group:
-            nodes: list[int] = []
-            conn: list[Any] = []
-            elems: list[Any] = []
-            regions: list[Any] = []
-            for face in group["faces"]:
-                nodes.extend(mesh["boundaries"][face])
-                conn.extend(mesh["boundaries"][face + "_conn"])
-                elems.extend(mesh["boundaries"][face + "_elems"])
-                regions.extend(mesh["boundaries"][face + "_regions"])
-            group["nodes"], group["_conn"], group["_conn_kind"] = nodes, conn, "face"
-            # Exterior faces have exactly one owning element each, so the element
-            # at position i in "_elems" touches the face at position i in "_conn".
-            group["_elems"], group["_regions"], group["_elem_edge"] = elems, regions, list(range(len(conn)))
-        elif "lines" in group:
-            group["nodes"] = group["line_nodes"]
-            group["_conn"], group["_conn_kind"] = group["line_conn"], "line"
-            # Unlike exterior faces, an interior line edge can be touched by more
-            # than one element, so "_elem_edge" maps each "_elems"/"_regions" entry
-            # back to the index (into "_conn") of the edge it touches.
-            group["_elems"], group["_regions"], group["_elem_edge"] = (
-                group["line_elems"],
-                group["line_regions"],
-                group["line_elem_edge"],
-            )
-        else:
-            raise NotImplementedError("Invalid BC geometry specification")
-
-    nodes = group["nodes"]
-    if need_flux_integral and nodes:  # noqa: SIM102
-        if "_conn" in group and "flux_weight_matrix" not in group:
-            flux_mats = integrate_boundary_flux_matrices(
-                mesh, group["_conn"], nodes, controls, group["_conn_kind"]
-            )
-            group["flux_weight_matrix"] = flux_mats["A"]
-
-    return nodes
 
 
 def _apply_field(
@@ -130,7 +81,7 @@ def parsebcs(
     mesh: dict[str, Any],
     primary_variables: dict[str, Any],  # noqa
     t: float,
-    controls: dict[str, Any],
+    controls: dict[str, Any],  # noqa
 ) -> dict[str, Any]:
     """Parse input boundary condition groups and return a dictionary containing the following.
 
@@ -149,12 +100,7 @@ def parsebcs(
     T_neumann_rows: list[npt.NDArray[np.float64]] = []
 
     for group in bc_config:
-        need_flux_integral = False
-        for field in ("hydraulics", "thermal"):
-            if field in group and group[field]["type"] == "flux":
-                need_flux_integral = True
-
-        nodes = _resolve_group_geometry(mesh, group, controls, need_flux_integral)
+        nodes = group["nodes"]
         if not nodes:
             continue
 

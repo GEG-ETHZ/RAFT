@@ -11,6 +11,7 @@ import yaml
 from scipy.sparse.csgraph import dijkstra
 
 from .matprops import create_abstract_state
+from .matrixassembly import integrate_boundary_flux_matrices
 from .meshprocessing import _get_element_face_lists, load_mesh
 
 # ----- Default values for config file
@@ -487,6 +488,50 @@ def _find_lineBC_connectivity(
     return line_nodes, line_conn
 
 
+def _resolve_group_geometry(
+    mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool
+) -> None:
+    """Resolve node indices for one BC group and cache its flux-weight matrix, if needed.
+
+    Shared by "hydraulics" and "thermal" so both reuse the same geometry/weights.
+    """
+    if "nodes" not in group:
+        if "faces" in group:
+            nodes: list[int] = []
+            conn: list[Any] = []
+            elems: list[Any] = []
+            regions: list[Any] = []
+            for face in group["faces"]:
+                nodes.extend(mesh["boundaries"][face])
+                conn.extend(mesh["boundaries"][face + "_conn"])
+                elems.extend(mesh["boundaries"][face + "_elems"])
+                regions.extend(mesh["boundaries"][face + "_regions"])
+            group["nodes"], group["_conn"], group["_conn_kind"] = nodes, conn, "face"
+            # Exterior faces have exactly one owning element each, so the element
+            # at position i in "_elems" touches the face at position i in "_conn".
+            group["_elems"], group["_regions"], group["_elem_edge"] = elems, regions, list(range(len(conn)))
+        elif "lines" in group:
+            group["nodes"] = group["line_nodes"]
+            group["_conn"], group["_conn_kind"] = group["line_conn"], "line"
+            # Unlike exterior faces, an interior line edge can be touched by more
+            # than one element, so "_elem_edge" maps each "_elems"/"_regions" entry
+            # back to the index (into "_conn") of the edge it touches.
+            group["_elems"], group["_regions"], group["_elem_edge"] = (
+                group["line_elems"],
+                group["line_regions"],
+                group["line_elem_edge"],
+            )
+        else:
+            raise NotImplementedError("Invalid BC geometry specification")
+
+    nodes = group["nodes"]
+    if need_flux_integral and nodes and "_conn" in group:
+        flux_mats = integrate_boundary_flux_matrices(
+            mesh, group["_conn"], nodes, controls, group["_conn_kind"]
+        )
+        group["flux_weight_matrix"] = flux_mats["A"]
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -499,7 +544,8 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     """
     BC_groups = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
-    config["simulation"]["wellbore_check"] = 0  # Default 0
+    controls = config["simulation"]
+    controls["wellbore_check"] = 0  # Default 0
     edge_to_elems = _build_edge_element_map(mesh) if any("lines" in group for group in BC_groups) else {}
 
     if np.size(nodes, 1) < 3:
@@ -589,6 +635,11 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
                     group["line_elems"].extend(line_elems)
                     group["line_regions"].extend(line_regions)
                     group["line_elem_edge"].extend(line_elem_edge)
+
+        need_flux_integral = any(
+            field in group and group[field]["type"] == "flux" for field in ("hydraulics", "thermal")
+        )
+        _resolve_group_geometry(mesh, group, controls, need_flux_integral)
 
     config["boundary_conditions"] = BC_groups
     return config
