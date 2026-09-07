@@ -148,7 +148,7 @@ simulation:
   timestep: 100.0
   timestep_min: 1.0
   timestep_max: 100000.0
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1

@@ -689,6 +689,7 @@ def fully_coupled_time_integration(  # noqa
     matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     dt: list[float],
     n: int,  # noqa
     verbose: bool,
@@ -732,6 +733,8 @@ def fully_coupled_time_integration(  # noqa
     # free and fixed dofs for partitioning with combined [p;T] vector
     nE = np.hstack((p_fix, T_fix + nn))  # fixed DoFs
     nF = np.setdiff1d(np.arange(0, 2 * nn), nE).astype(int)  # free DoFs
+    nE_p = p_fix.astype(int)  # essential pressure DoFs
+    nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free pressure DoFs
 
     # Apply fixed boundary conditions
     p[p_fix, :] = p_bar.reshape(-1, 1)
@@ -762,6 +765,17 @@ def fully_coupled_time_integration(  # noqa
 
         # Compute residual vectors
         F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, T)
+
+        # Reaction flow rates at prescribed pressure dofs
+        q = np.zeros((nn, 1))
+        q[p_fix] = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)["p"][p_fix]
+        q[nF_p] = q[nF_p] + F_extp[nF_p]
+        primary_variables["q"] = q
+
+        F_enth_bnd = integrate_enthlpy_bndry_residual(
+            mesh, material, primary_variables, sim_control, T, BC_config
+        )
+        F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=True)
 
         # Check convergence
@@ -777,13 +791,31 @@ def fully_coupled_time_integration(  # noqa
             jacobian = integrate_tangent_matrices(
                 mesh, material, primary_variables, sim_control, cv, T, fully_coupled=True
             )
+            K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                mesh,
+                material,
+                primary_variables,
+                sim_control,
+                T,
+                BC_config,
+                fully_coupled=True,
+                Kpp=jacobian["Kpp"],
+                KpT=jacobian["KpT"],
+            )
 
             # Total combined matrix
             d = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
             A = cast(
                 sp.csc_matrix[Any],
                 sp.bmat(
-                    [[jacobian["Kpp"], -jacobian["KpT"]], [-jacobian["KTp"], jacobian["KTT"]]], format="csc"
+                    [
+                        [jacobian["Kpp"], -jacobian["KpT"]],
+                        [
+                            -jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
+                            jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
+                        ],
+                    ],
+                    format="csc",
                 ),
             )
 
@@ -827,14 +859,11 @@ def fully_coupled_time_integration(  # noqa
                 print(" - CONVERGENCE FAILED")
             break
 
-    # Calculate reaction flow rates at prescribed DoFs
-    q = np.zeros((nn, 1))
-    q[p_fix] = R["p"][p_fix]
     # save variables
     if converged:
         primary_variables["p"] = p
         primary_variables["T"] = T
-        primary_variables["q"] = q  # outlet flow rates
+        # q - already calculated in loop
 
     if verbose:
         print()  # new line for that output doesn't get overwritten
