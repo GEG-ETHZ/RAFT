@@ -400,7 +400,6 @@ def lin_extrap_time_integration(  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
-    t: float,
     dt: list[float],
     n: int,
     verbose: bool,
@@ -598,7 +597,7 @@ def lin_extrap_time_integration(  # noqa
             mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
         )
         F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, sim_control, t, T_flow, BC_config
+            mesh, material, primary_variables, sim_control, T_flow, BC_config
         )
         F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
@@ -624,15 +623,7 @@ def lin_extrap_time_integration(  # noqa
                 T_flow_lagged=True,
             )
             K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                mesh,
-                material,
-                primary_variables,
-                sim_control,
-                t,
-                T_flow,
-                BC_config,
-                temperature_only=True,
-                T_flow_lagged=True,
+                mesh, material, primary_variables, sim_control, T_flow, BC_config
             )
             A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
             b = R["T"]

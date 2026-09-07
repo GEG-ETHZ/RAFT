@@ -1387,20 +1387,13 @@ def integrate_residuals(  # noqa
     return integrated_vectors
 
 
-def integrate_enthlpy_bndry_residual(  # noqa
+def integrate_enthlpy_bndry_residual(
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
-    t: float,  # time # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
-    *,
-    is_fracture: bool = False,  # noqa
-    pressure_only: bool = False,  # noqa
-    temperature_only: bool = False,  # noqa
-    fully_coupled: bool = False,  # noqa
-    T_flow_lagged: bool = False,  # noqa
 ) -> dict[str, Any]:
     """Integrate the advective enthalpy flux boundary vector.
 
@@ -1442,20 +1435,15 @@ def integrate_enthlpy_bndry_residual(  # noqa
     return {"F_enth_bnd": csc_matrix(F_enth_bnd)}
 
 
-def integrate_enthlpy_bndry_tangent(  # noqa
+def integrate_enthlpy_bndry_tangent(
     mesh: dict[str, Any],
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
-    t: float,  # time # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
     *,
-    is_fracture: bool = False,  # noqa
-    pressure_only: bool = False,  # noqa
-    temperature_only: bool = False,  # noqa
-    fully_coupled: bool = False,  # noqa
-    T_flow_lagged: bool = False,  # noqa
+    fully_coupled: bool = False,
     Kpp: csc_matrix | float = 0,
     KpT: csc_matrix | float = 0,
 ) -> dict[str, Any]:
