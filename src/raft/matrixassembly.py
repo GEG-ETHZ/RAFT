@@ -19,7 +19,6 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
-from .parseboundaryconditions import evaluateBCfunctions
 
 # from .parseboundaryconditions import allocate_WB_BCs
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
@@ -304,37 +303,6 @@ def _get_parent_coordinates(  # noqa
             parent_coords[gp] = np.array([xi_all[gp], eta_all[gp]])
 
     return parent_coords
-
-
-def _matrix_element_gradient_at_face(
-    mesh: dict[str, Any],
-    e_m: int,
-    enodes: Sequence[int],
-    N_q: npt.NDArray[np.float64],
-    field: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
-    """Evaluate a nodal field's gradient, from its *owning matrix element*, at a boundary
-    face's own quadrature points.
-
-    A face-local B matrix only captures in-plane (tangential) derivatives, so a Dirichlet
-    pressure boundary needs the gradient from the element the face belongs to instead.
-    Mirrors `_iter_fracture_matrix_matches`'s use of `_get_parent_coordinates` to locate
-    the face's quadrature points within the matrix element's own parent coordinates.
-    """
-    conn_m = mesh["conn"]
-    nodes_m = mesh["nodes"]
-    etype_m = mesh["element_type"][bisect.bisect_left(mesh["elem_indx"], e_m)]
-    if etype_m not in ("Q4", "T3"):
-        # _get_parent_coordinates only locates points within 2D (Q4/T3) elements.
-        raise NotImplementedError(f"Pressure-driven boundary flux for matrix elements of {etype_m}.")
-    getGN_m = GNMATRIX_FUNCS[etype_m]
-
-    enodes_m = conn_m[e_m]
-    Q = _get_parent_coordinates(etype_m, nodes_m[enodes_m, :], N_q @ nodes_m[enodes, :])
-    GN_mq = np.array([getGN_m(Q[q, :].flatten()) for q in range(np.size(Q, -1))])
-    B_mq, _ = getB(GN_mq, nodes_m[enodes_m, :], mesh["nsd"])
-
-    return B_mq @ field[enodes_m]
 
 
 def _create_fracture_coupling_vectors(
@@ -1424,7 +1392,7 @@ def integrate_enthlpy_bndry_residual(  # noqa
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
-    t: float,  # time
+    t: float,  # time # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
     *,
@@ -1436,189 +1404,40 @@ def integrate_enthlpy_bndry_residual(  # noqa
 ) -> dict[str, Any]:
     """Integrate the advective enthalpy flux boundary vector.
 
-    This is a separate integration loop because it only applies to fluid
-    BC that do not have an associated temperature BC.
+    Only applies to fluid BC without an associated temperature BC. "q" already
+    carries both flux-type (via F_extp) and pressure-type (via the Dirichlet
+    reaction force) nodal mass flow - see solvers.py's `q[nF_p] += F_extp[nF_p]`
+    - so both bc_types are handled by the same node-value lookup.
     """
     advection_off = not bool(controls["advection_on"])  # noqa
     nn_total = mesh["nn_total"]
 
-    # if True:
     if advection_off:
         return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
 
     F_enth_bnd = np.zeros((nn_total, 1))
     fluid = mat["fluid"]
-    nodes = mesh["nodes"]
     T = primary_variables["T"][:, 0:1]
     p = primary_variables["p"][:, 0:1]
-    g, _ = _get_gravity(mesh["nsd"], controls["gravity"])
+    q = primary_variables["q"][:, 0:1]
+    # Collected keyed by node (not scattered in place) so a node referenced more
+    # than once - two line segments sharing an endpoint, or two groups sharing a
+    # node - is idempotent instead of double-counted.
+    node_value: dict[int, float] = {}
 
-    # Loop through fluid boundary conditions
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group and "_conn" in group:
-            # Perform the integration
-            bc_type = group["hydraulics"]["type"]  # flux or pressure
-            conn_face = group["_conn"]
-            ne = np.size(conn_face, 0)
-            nne = np.size(conn_face, 1)
-            axisymmetry = bool(controls["axisymmetric_on"])
-            elem_indx = [ne - 1]
-            nne_list = [nne]
-            intgrl_type = group["_conn_kind"]
-            if intgrl_type == "face":
-                # Faces of elements (assumed exterior)
-                nsd = mesh["nsd"] - 1
-                etype = mesh["element_type"]
-                match etype[-1]:
-                    case "B8":
-                        etype = "Q4"
-                        nq = 2
-                    case "T4":
-                        etype = "T3"
-                        nq = 1
-                    case "T3":
-                        etype = "L2"
-                        nq = 2
-                    case "Q4":
-                        etype = "L2"
-                        nq = 2
-                    case _:
-                        raise NotImplementedError(f"Face elements of {etype}.")
-            else:
-                # Lines
-                nsd = 1
-                etype = "L2"
-                nq = 2
-            # ----- Local face numbering
-            # Map each global node id in conn_face to a local index.
-            # Used for assembly.
-            face_node_ids = np.unique(np.asarray(conn_face, dtype=np.int32))
-            global_to_local = {int(g): i for i, g in enumerate(face_node_ids)}
-            nn_face = len(face_node_ids)
+            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            q_i = q[nodes_i, 0]
+            T_i = T[nodes_i, 0]
+            T_flow_i = T_flow[nodes_i, 0]
+            p_i = p[nodes_i, 0]
+            h_f_i, _, _, _ = get_enthalpy(p_i, T_i, T_flow_i, fluid)
+            node_value.update(zip(nodes_i.tolist(), (q_i * h_f_i).tolist()))
 
-            conn_face_local = [[global_to_local[int(n)] for n in enodes] for enodes in conn_face]
-            # conn_face_local is used for assembly then mapped back to global
-
-            if bc_type == "flux":
-                # Evaluate the flux BC once per group at the group's own nodes, then
-                # gather per-element below (mirrors the T/p nodal gathers).
-                q_vals = np.asarray(
-                    evaluateBCfunctions(group["hydraulics"], t, nodes)["BCvalues"], dtype=np.float64
-                )
-                q_by_node = dict(zip(group["hydraulics"]["nodes"], q_vals))
-            elif intgrl_type != "face":
-                # bc_type == pressure: needs the face's owning volume element and an
-                # outward normal (see below), neither of which are well-defined for an
-                # interior line BC.
-                raise NotImplementedError("Pressure-type BC without a thermal BC requires face geometry.")
-
-            # ----- Vectorized vector assembly
-            # Assemble lists of rows and entries and then assemble the sparse
-            # vector all at once.
-            list_of_vectors = ["F_enth"]
-            vec = _initiate_vectors(list_of_vectors, nne_list, elem_indx, ismatrix=False)
-            vec_counter = 0
-
-            # Evaluate quadrature points and get weights and shape functions.
-            W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(nq, nsd, etype)
-
-            # ----- Matrix integration element loop
-            for e in range(ne):
-                enodes = conn_face[e]  # global node ids, used for geometry
-
-                xI = nodes[enodes, :]
-                if intgrl_type == "face":
-                    # calculate face normal
-                    # Faces
-                    if nsd == 2:
-                        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
-                    else:
-                        n = np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
-
-                    # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
-                    ax = np.argmax(abs(n))
-                    xI = np.delete(xI, ax, 1)
-                else:
-                    # Lines
-                    # For lines, shift each element edge to its first node
-                    A = xI[0, :]
-                    B = xI[1, :]
-                    xI = np.zeros((2, 1))
-                    xI[1] = np.linalg.norm(B - A)
-
-                B_q, detJe_q = getB(GN_q, xI, nsd)
-                wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
-                if axisymmetry:
-                    # Add radial component to integrand for axisymmetry
-                    r_coord = N_q @ nodes[enodes, 0]
-                    wJe_q = wJe_q * r_coord.T
-
-                Te = T[enodes]
-                T_q = N_q @ Te
-                T_flow_e = T_flow[enodes, 0:1]
-                T_flow_q = N_q @ T_flow_e
-                pe = p[enodes]
-                p_q = N_q @ pe
-
-                rho_f, _, _ = get_density(T_flow_q, p_q, fluid)
-                h_f, _, _, _ = get_enthalpy(p_q, T_q, T_flow_q, fluid)
-
-                if bc_type == "flux":
-                    # flux BC values are a specified mass flux already - no rho_f needed.
-                    qe = np.array([[q_by_node[n]] for n in enodes])
-                    q_q = N_q @ qe
-                else:
-                    # bc_type == pressure: a face-local B_q only sees in-plane
-                    # (tangential) derivatives, so pull the full gradient from the
-                    # face's owning matrix element and project the Darcy flux
-                    # (mirrors integrate_residuals' domain darcy_flux) onto the
-                    # face normal, then convert to a mass flux with rho_f, to get
-                    # the flux driving the BC.
-                    e_m = group["_elems"][e]
-                    r_m = group["_regions"][e]
-                    gradP_m = _matrix_element_gradient_at_face(mesh, e_m, enodes, N_q, p)
-
-                    kf_0 = mat["solid"]["permeability_eff"][r_m]
-                    isotropic_perm = bool(isinstance(kf_0, (float, int)))
-                    kf, _, _ = get_effective_permeability(kf_0, T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
-                    mu_q, _, _ = get_viscosity(T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
-                    mu_q = mu_q.reshape(-1, 1, 1)
-
-                    darcy_flux = (
-                        -kf / mu_q * (gradP_m - rho_f * g)
-                        if isotropic_perm
-                        else -kf / mu_q @ (gradP_m - rho_f * g)
-                    )
-                    n_hat = (n / np.linalg.norm(n)).reshape(-1, 1)
-                    q_q = (darcy_flux.transpose(0, 2, 1) @ n_hat) * rho_f
-
-                integrand = q_q * h_f
-
-                # Perform vector integration and map back to global vector
-                element_vectors: dict[str, npt.NDArray[np.float64]] = {}
-                # Boundary faces may be misordered relative to their global position,
-                # relative in negative jacobians.
-                # This shouldn't be an issue because all elements are defined with the same
-                # relative numbering. Flux directions can then be controlled via
-                # the sign of the applied traction.
-                element_vectors["F_enth"] = _vctrzd_qp_vctr_integrate(N_q, integrand, abs(wJe_q), True)
-
-                # ----- Assemble element contributions into global vector
-                stop = vec_counter + nne  # vectorized index count end
-                _store_vctrzd_element_matrix(vec, element_vectors, vec_counter, stop)
-                vec_counter = stop
-
-            integrated_vectors = _assemble_global_matrices(
-                vec,
-                conn_face_local,
-                nn_face,
-                nne_list,
-                elem_indx,
-                np.arange(0, ne, dtype=np.int32),
-                isvector=True,
-            )
-            # Map local face-node ordering back to global node ids and scatter-add
-            F_enth_bnd[face_node_ids] += integrated_vectors["F_enth"].toarray()
+    if node_value:
+        node_ids = np.fromiter(node_value.keys(), dtype=np.int32)
+        F_enth_bnd[node_ids, 0] = np.fromiter(node_value.values(), dtype=np.float64)
 
     return {"F_enth_bnd": csc_matrix(F_enth_bnd)}
 
@@ -1628,7 +1447,7 @@ def integrate_enthlpy_bndry_tangent(  # noqa
     mat: dict[str, Any],
     primary_variables: dict[str, Any],
     controls: dict[str, Any],
-    t: float,  # time
+    t: float,  # time # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
     *,
@@ -1637,218 +1456,67 @@ def integrate_enthlpy_bndry_tangent(  # noqa
     temperature_only: bool = False,  # noqa
     fully_coupled: bool = False,  # noqa
     T_flow_lagged: bool = False,  # noqa
+    Kpp: csc_matrix | float = 0,
+    KpT: csc_matrix | float = 0,
 ) -> dict[str, Any]:
-    """Integrate the advective enthalpy flux boundary vector.
+    """Integrate the advective enthalpy flux boundary tangent.
 
-    This is a separate integration loop because it only applies to fluid
-    BC that do not have an associated temperature BC.
+    Only applies to fluid BC without an associated temperature BC; see the
+    residual function for why "q" unifies both bc_types. d(F_enth_bnd)/dT is
+    q*dhf_dT (diagonal) plus h_f*dq/dT, which is zero unless q itself depends on
+    T/p - true for a Dirichlet-pressure node under `fully_coupled`, where that
+    dependence is exactly the rows of "Kpp"/"KpT" (the pressure equation's own
+    Jacobian blocks, already assembled every iteration by
+    integrate_tangent_matrices(fully_coupled=True)) at that node. Callers not
+    passing `fully_coupled` never touch Kpp/KpT.
     """
     advection_off = not bool(controls["advection_on"])  # noqa
     nn_total = mesh["nn_total"]
 
-    # if True:
     if advection_off:
         return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
 
     K_enth_bnd = csc_matrix((nn_total, nn_total), dtype=float)
+    K_enth_bnd_Tp = csc_matrix((nn_total, nn_total), dtype=float)
     fluid = mat["fluid"]
-    nodes = mesh["nodes"]
     T = primary_variables["T"][:, 0:1]
     p = primary_variables["p"][:, 0:1]
-    g, _ = _get_gravity(mesh["nsd"], controls["gravity"])
+    q = primary_variables["q"][:, 0:1]
+    # See the residual function for why contributions are collected (keyed by
+    # node) rather than scattered in place.
+    node_diag_value: dict[int, float] = {}
 
-    # Loop through fluid boundary conditions
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group and "_conn" in group:
-            # Perform the integration
-            bc_type = group["hydraulics"]["type"]  # flux or pressure
-            conn_face = group["_conn"]
-            ne = np.size(conn_face, 0)
-            nne = np.size(conn_face, 1)
-            axisymmetry = bool(controls["axisymmetric_on"])
-            elem_indx = [ne - 1]
-            nne_list = [nne]
-            intgrl_type = group["_conn_kind"]
-            if intgrl_type == "face":
-                # Faces of elements (assumed exterior)
-                nsd = mesh["nsd"] - 1
-                etype = mesh["element_type"]
-                match etype[-1]:
-                    case "B8":
-                        etype = "Q4"
-                        nq = 2
-                    case "T4":
-                        etype = "T3"
-                        nq = 1
-                    case "T3":
-                        etype = "L2"
-                        nq = 2
-                    case "Q4":
-                        etype = "L2"
-                        nq = 2
-                    case _:
-                        raise NotImplementedError(f"Face elements of {etype}.")
-            else:
-                # Lines
-                nsd = 1
-                etype = "L2"
-                nq = 2
-            # ----- Local face numbering
-            # Map each global node id in conn_face to a local index.
-            # Used for assembly.
-            face_node_ids = np.unique(np.asarray(conn_face, dtype=np.int32))
-            global_to_local = {int(g): i for i, g in enumerate(face_node_ids)}
-            nn_face = len(face_node_ids)
+            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            q_i = q[nodes_i, 0]
+            T_i = T[nodes_i, 0]
+            T_flow_i = T_flow[nodes_i, 0]
+            p_i = p[nodes_i, 0]
+            h_f_i, dhf_dT_i, _, _ = get_enthalpy(p_i, T_i, T_flow_i, fluid)
+            node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
 
-            conn_face_local = [[global_to_local[int(n)] for n in enodes] for enodes in conn_face]
-            # conn_face_local is used for assembly then mapped back to global
-
-            if bc_type == "flux":
-                # Evaluate the flux BC once per group at the group's own nodes, then
-                # gather per-element below (mirrors the T/p nodal gathers).
-                q_vals = np.asarray(
-                    evaluateBCfunctions(group["hydraulics"], t, nodes)["BCvalues"], dtype=np.float64
+            # A flux-type node's q is a prescribed BC value (never a function of
+            # p/T); only a pressure-type node's q (a mass-residual row) needs the
+            # Kpp/KpT cross-terms.
+            if fully_coupled and group["hydraulics"]["type"] == "pressure":
+                rows = KpT[nodes_i, :].tocoo()
+                K_enth_bnd = K_enth_bnd + csc_matrix(
+                    (rows.data * h_f_i[rows.row], (nodes_i[rows.row], rows.col)),
+                    shape=(nn_total, nn_total),
                 )
-                q_by_node = dict(zip(group["hydraulics"]["nodes"], q_vals))
-            elif intgrl_type != "face":
-                # bc_type == pressure: needs the face's owning volume element and an
-                # outward normal (see below), neither of which are well-defined for an
-                # interior line BC.
-                raise NotImplementedError("Pressure-type BC without a thermal BC requires face geometry.")
-
-            # ----- Vectorized vector assembly
-            # Assemble lists of rows and entries and then assemble the sparse
-            # vector all at once.
-            list_of_matrices = ["K_enth"]
-            vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
-            vec_counter = 0
-
-            # Evaluate quadrature points and get weights and shape functions.
-            W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(nq, nsd, etype)
-
-            # ----- Matrix integration element loop
-            for e in range(ne):
-                enodes = conn_face[e]  # global node ids, used for geometry
-
-                xI = nodes[enodes, :]
-                if intgrl_type == "face":
-                    # calculate face normal
-                    # Faces
-                    if nsd == 2:
-                        n = np.cross(xI[1, :] - xI[0, :], xI[2, :] - xI[0, :])
-                    else:
-                        n = np.array([-(xI[1, 1] - xI[0, 1]), xI[1, 0] - xI[0, 0]])
-
-                    # Find the in-plane coordinates - assumes faces are aligned with cartesian axes
-                    ax = np.argmax(abs(n))
-                    xI = np.delete(xI, ax, 1)
-                else:
-                    # Lines
-                    # For lines, shift each element edge to its first node
-                    A = xI[0, :]
-                    B = xI[1, :]
-                    xI = np.zeros((2, 1))
-                    xI[1] = np.linalg.norm(B - A)
-
-                B_q, detJe_q = getB(GN_q, xI, nsd)
-                wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
-                if axisymmetry:
-                    # Add radial component to integrand for axisymmetry
-                    r_coord = N_q @ nodes[enodes, 0]
-                    wJe_q = wJe_q * r_coord.T
-
-                Te = T[enodes]
-                T_q = N_q @ Te
-                T_flow_e = T_flow[enodes, 0:1]
-                T_flow_q = N_q @ T_flow_e
-                pe = p[enodes]
-                p_q = N_q @ pe
-
-                rho_f, drhof_dT, drhof_dp = get_density(T_flow_q, p_q, fluid)
-                h_f, dhf_dT, dhf_dp, _ = get_enthalpy(p_q, T_q, T_flow_q, fluid)
-
-                if bc_type == "flux":
-                    # flux BC values are a specified mass flux already - no rho_f needed.
-                    qe = np.array([[q_by_node[n]] for n in enodes])
-                    q_q = N_q @ qe
-
-                    integrand = q_q * dhf_dT
-                else:
-                    # bc_type == pressure: a face-local B_q only sees in-plane
-                    # (tangential) derivatives, so pull the full gradient from the
-                    # face's owning matrix element and project the Darcy flux
-                    # (mirrors integrate_residuals' domain darcy_flux) onto the
-                    # face normal, then convert to a mass flux with rho_f, to get
-                    # the flux driving the BC.
-                    e_m = group["_elems"][e]
-                    r_m = group["_regions"][e]
-                    gradP_m = _matrix_element_gradient_at_face(mesh, e_m, enodes, N_q, p)
-
-                    kf_0 = mat["solid"]["permeability_eff"][r_m]
-                    isotropic_perm = bool(isinstance(kf_0, (float, int)))
-                    kf, dkf_dT, dkf_dp = get_effective_permeability(
-                        kf_0, T_flow_q[:, :, 0], p_q[:, :, 0], fluid
-                    )
-                    mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
-                    mu_q = mu_q.reshape(-1, 1, 1)
-                    gradP_mod = gradP_m - rho_f * g
-
-                    darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
-                    n_hat = (n / np.linalg.norm(n)).reshape(-1, 1)
-                    q_q = darcy_flux.transpose(0, 2, 1) @ n_hat
-
-                    if isotropic_perm:
-                        dqD_dT = (
-                            rho_f * kf / mu_q * (drhof_dT * g * N_q)
-                            + (kf / mu_q * drhof_dT + rho_f / mu_q * dkf_dT + rho_f * kf / mu_q**2 * dmu_dT)
-                            * gradP_mod
-                            * N_q
-                        )
-                    else:
-                        dqD_dT = (
-                            rho_f * kf / mu_q @ (drhof_dT * g * N_q)
-                            + (kf / mu_q * drhof_dT + rho_f / mu_q * dkf_dT + rho_f * kf / mu_q**2 * dmu_dT)
-                            @ gradP_mod
-                            * N_q
-                        )
-
-                    integrand = (
-                        q_q * (drhof_dT * h_f + rho_f * dhf_dT)
-                        + h_f * n_hat.T @ dqD_dT.transpose(0, 2, 1) @ n_hat
-                    )
-
-                # erform matrix integration and map back to global matrix
-                element_matrices: dict[str, npt.NDArray[np.float64]] = {}
-                # Boundary faces may be misordered relative to their global position,
-                # relative in negative jacobians.
-                # This shouldn't be an issue because all elements are defined with the same
-                # relative numbering. Flux directions can then be controlled via
-                # the sign of the applied traction.
-                element_matrices["K_enth"] = _vctrzd_quad_point_integration(
-                    N_q, integrand, N_q, abs(wJe_q), True
+                rows = Kpp[nodes_i, :].tocoo()
+                K_enth_bnd_Tp = K_enth_bnd_Tp + csc_matrix(
+                    (rows.data * h_f_i[rows.row], (nodes_i[rows.row], rows.col)),
+                    shape=(nn_total, nn_total),
                 )
 
-                # ----- Assemble element contributions into global matrix
-                stop = vec_counter + nne * nne  # vectorized index count end
-                _store_vctrzd_element_matrix(vec, element_matrices, vec_counter, stop)
-                vec_counter = stop
+    if node_diag_value:
+        node_ids = np.fromiter(node_diag_value.keys(), dtype=np.int32)
+        diag_vals = np.fromiter(node_diag_value.values(), dtype=np.float64)
+        K_enth_bnd = K_enth_bnd + csc_matrix((diag_vals, (node_ids, node_ids)), shape=(nn_total, nn_total))
 
-            matrices = _assemble_global_matrices(
-                vec,
-                conn_face_local,
-                nn_face,
-                nne_list,
-                elem_indx,
-                np.arange(0, ne, dtype=np.int32),
-            )
-            # Map local face-node ordering back to global node ids and scatter-add
-            local_K = matrices["K_enth"].tocoo()
-            K_enth_bnd = K_enth_bnd + csc_matrix(
-                (local_K.data, (face_node_ids[local_K.row], face_node_ids[local_K.col])),
-                shape=(nn_total, nn_total),
-            )
-
-    return {"K_enth_bnd": K_enth_bnd}
+    return {"K_enth_bnd": K_enth_bnd, "K_enth_bnd_Tp": K_enth_bnd_Tp}
 
 
 def integrate_tangent_matrices(  # noqa

@@ -114,6 +114,11 @@ boundary_conditions:
           thermal:
               type: "temperature"
               values: [341]
+
+        - faces: [x_min]
+          hydraulics:
+              type: "flux"
+              values: [0.001]
         # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
         #   thermal:
         #       type: "temperature"
