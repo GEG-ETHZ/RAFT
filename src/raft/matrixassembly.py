@@ -1444,8 +1444,8 @@ def integrate_enthlpy_bndry_tangent(
     BC_config: list[dict[str, Any]],
     *,
     fully_coupled: bool = False,
-    Kpp: csc_matrix | float = 0,
-    KpT: csc_matrix | float = 0,
+    Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
+    KpT: csc_matrix[Any] = csc_matrix((0, 0)),
 ) -> dict[str, Any]:
     """Integrate the advective enthalpy flux boundary tangent.
 
