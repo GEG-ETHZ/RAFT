@@ -1594,7 +1594,7 @@ def integrate_enthlpy_bndry_residual(  # noqa
 
                 integrand = q_q * h_f
 
-                # ----> Perform vector integration and map back to global vector
+                # Perform vector integration and map back to global vector
                 element_vectors: dict[str, npt.NDArray[np.float64]] = {}
                 # Boundary faces may be misordered relative to their global position,
                 # relative in negative jacobians.
@@ -1764,7 +1764,7 @@ def integrate_enthlpy_bndry_tangent(  # noqa
                 pe = p[enodes]
                 p_q = N_q @ pe
 
-                rho_f, drho_f_dT, drhof_dp = get_density(T_flow_q, p_q, fluid)
+                rho_f, drhof_dT, drhof_dp = get_density(T_flow_q, p_q, fluid)
                 h_f, dhf_dT, dhf_dp, _ = get_enthalpy(p_q, T_q, T_flow_q, fluid)
 
                 if bc_type == "flux":
@@ -1786,21 +1786,38 @@ def integrate_enthlpy_bndry_tangent(  # noqa
 
                     kf_0 = mat["solid"]["permeability_eff"][r_m]
                     isotropic_perm = bool(isinstance(kf_0, (float, int)))
-                    kf, _, _ = get_effective_permeability(kf_0, T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
-                    mu_q, _, _ = get_viscosity(T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
-                    mu_q = mu_q.reshape(-1, 1, 1)
-
-                    darcy_flux = (
-                        -kf / mu_q * (gradP_m - rho_f * g)
-                        if isotropic_perm
-                        else -kf / mu_q @ (gradP_m - rho_f * g)
+                    kf, dkf_dT, dkf_dp = get_effective_permeability(
+                        kf_0, T_flow_q[:, :, 0], p_q[:, :, 0], fluid
                     )
+                    mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q[:, :, 0], p_q[:, :, 0], fluid)
+                    mu_q = mu_q.reshape(-1, 1, 1)
+                    gradP_mod = gradP_m - rho_f * g
+
+                    darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
                     n_hat = (n / np.linalg.norm(n)).reshape(-1, 1)
-                    q_q = (darcy_flux.transpose(0, 2, 1) @ n_hat) * rho_f
+                    q_q = darcy_flux.transpose(0, 2, 1) @ n_hat
 
-                    integrand = q_q * h_f
+                    if isotropic_perm:
+                        dqD_dT = (
+                            rho_f * kf / mu_q * (drhof_dT * g * N_q)
+                            + (kf / mu_q * drhof_dT + rho_f / mu_q * dkf_dT + rho_f * kf / mu_q**2 * dmu_dT)
+                            * gradP_mod
+                            * N_q
+                        )
+                    else:
+                        dqD_dT = (
+                            rho_f * kf / mu_q @ (drhof_dT * g * N_q)
+                            + (kf / mu_q * drhof_dT + rho_f / mu_q * dkf_dT + rho_f * kf / mu_q**2 * dmu_dT)
+                            @ gradP_mod
+                            * N_q
+                        )
 
-                # ----> Perform matrix integration and map back to global matrix
+                    integrand = (
+                        q_q * (drhof_dT * h_f + rho_f * dhf_dT)
+                        + h_f * n_hat.T @ dqD_dT.transpose(0, 2, 1) @ n_hat
+                    )
+
+                # erform matrix integration and map back to global matrix
                 element_matrices: dict[str, npt.NDArray[np.float64]] = {}
                 # Boundary faces may be misordered relative to their global position,
                 # relative in negative jacobians.

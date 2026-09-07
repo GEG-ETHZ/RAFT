@@ -40,7 +40,7 @@ material:
       reference_temperature: 413 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
-      therm_expansion: 000.0e-6 # 1/K
+      therm_expansion: 00.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
       viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
@@ -85,18 +85,21 @@ boundary_conditions:
         - lines: [[[20.0, 10.0], [40.2, 15.0]]]
         # - faces: [x_max]
           hydraulics:
-              type: "flux"
-              values: [0.001]
-              constraints:
-                  maximum_pressure: 3.0e+6
-                  minimum_pressure: 1.0e+5
+              type: "pressure"
+              values: [6.0e+5]
+              # constraints:
+              #     maximum_pressure: 3.0e+6
+              #     minimum_pressure: 1.0e+5
+          # thermal:
+          #     type: "temperature"
+          #     values: [296]
+        - faces: [y_min]
+          hydraulics:
+              type: "pressure"
+              values: [1.0e+6]
           thermal:
               type: "temperature"
-              values: [296]
-        - faces: [x_min]
-          hydraulics:
-              type: "flux"
-              values: [0.001]
+              values: [281]
               # function: "ramp"
           # tag: "inflow"
         # - coords: [[43.4, 20.0]]
@@ -105,9 +108,12 @@ boundary_conditions:
         #       values: [1.0e6]
 
         - faces: [y_max]
+          hydraulics:
+              type: "pressure"
+              values: [2.0e+6]
           thermal:
               type: "temperature"
-              values: [321]
+              values: [341]
         # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
         #   thermal:
         #       type: "temperature"
@@ -134,7 +140,7 @@ simulation:
   # Time
   t_start: 0.0
   t_end: 8000000.0
-  timestep: 1.0
+  timestep: 100.0
   timestep_min: 1.0
   timestep_max: 100000.0
   solver_type: "linearized"
