@@ -469,23 +469,26 @@ def _integrate_fracture_matrix_coupling_tangent(
     return entries
 
 
-def _integrate_fracture_matrix_coupling_residual(
-    e: int,
-    enodes_f: list[int],
-    nodes_f: npt.NDArray[np.float64],
-    N_q: npt.NDArray[np.float64],
+def _integrate_fracture_matrix_coupling_residual(  # noqa
+    e: int,  # fracture element
+    enodes_f: list[int],  # fracture element connectivity
+    nodes_f: npt.NDArray[np.float64],  # fracture element nodes
+    N_q: npt.NDArray[np.float64],  # fracture shape function
     wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
-    pe_f: npt.NDArray[np.float64],
-    Te_f: npt.NDArray[np.float64],
-    p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],
-    kf_p: float,
-    mu_q: npt.NDArray[np.float64],
-    h: float,
+    fluid: dict[str, Any],
+    pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
+    Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
+    kf_p: float,  # fracture transverse permeability at quad points
+    mu_q: npt.NDArray[np.float64],  # viscosity at quad points
+    hc: float,  # convective heat transfer coefficient
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
+    advection_on: bool,
 ) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
     """Directly integrate the fracture-matrix leak-off/convective-exchange flux at the current
     state into nodal residual vectors - no coefficient matrices are assembled (this is evaluated
@@ -516,25 +519,59 @@ def _integrate_fracture_matrix_coupling_residual(
     T_f_q = N_q @ Te_f
     Rf_p = np.zeros((len(enodes_f), 1))
     Rf_T = np.zeros((len(enodes_f), 1))
+    Rf_Tadv = np.zeros((len(enodes_f), 1))
 
     for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
+        if pressure_coupling or advection_on:
+            p_m_q = N_qm @ p[enodes_m].reshape(-1, 1)  # matrix pressure
+            flux_p_q = kf_p / mu_q * (p_f_q - p_m_q)  # leak-off flux
+
         if pressure_coupling:
-            p_m_q = N_qm @ p[enodes_m].reshape(-1, 1)
-            flux_p_q = kf_p / mu_q * (p_f_q - p_m_q)
             Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
             matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
         if thermal_coupling:
-            T_m_q = N_qm @ T[enodes_m].reshape(-1, 1)
-            flux_T_q = h * (T_f_q - T_m_q)
-            Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_T_q, wJe_q, True)
-            matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_T_q, wJe_q, True)
+            T_m_q = N_qm @ T[enodes_m].reshape(-1, 1)  # matrix temperature
+            flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
+            Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
+            matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
+
+            if advection_on:
+                T_flow_fq = T_flow[enodes_f]
+                T_flow_mq = T_flow[enodes_m]
+                nq = len(p_f_q)
+                T_eval = np.empty((nq, 1, 1))
+                T_flow_eval = np.empty((nq, 1, 1))
+                p_eval = np.empty((nq, 1, 1))
+                # Loop through quadrature points and decide based on flow direction to evaluate
+                # enthalpy from matrix or fracture properties
+                for qp in range(nq):
+                    if p_f_q[qp] > p_m_q[qp]:
+                        # use fracture props
+                        T_eval[qp] = T_f_q[qp]
+                        T_flow_eval[qp] = T_flow_fq[qp]
+                        p_eval[qp] = p_f_q[qp]
+                    else:
+                        # use matrix props
+                        T_eval[qp] = T_m_q[qp]
+                        T_flow_eval[qp] = T_flow_mq[qp]
+                        p_eval[qp] = p_m_q[qp]
+
+                h_fq, _, _, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid)  # fluid enthalpy, nq x 1 x 1
+                flux_adv_T_q = h_fq * flux_p_q
+                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
+                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
+                    N_qm, -flux_adv_T_q, wJe_q, True
+                )
+
         matches.append((nne_m, matrix_vectors))
 
     if pressure_coupling:
         fracture_vectors["F_Pdiffusion"] = Rf_p
     if thermal_coupling:
         fracture_vectors["F_Tdiffusion"] = Rf_T
+        if advection_on:
+            fracture_vectors["F_Tadvection"] = Rf_Tadv
     return fracture_vectors, matches
 
 
@@ -1072,6 +1109,9 @@ def integrate_residuals(  # noqa
         coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
             ["F_Tdiffusion_mm"] if not pressure_only else []
         )
+        if not pressure_only and advection_on:
+            coupling_flux_names = coupling_flux_names + ["F_Tadvection_mm"]
+
         vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
         vec_counter_flux_m = 0
 
@@ -1322,15 +1362,18 @@ def integrate_residuals(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    fluid,
                     pe[:, 0:1],
                     Te[:, 0:1],
                     p[:, 0],
                     T[:, 0],
+                    T_flow[:, 0],
                     kf_p,
                     mu_q,
                     h,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
+                    advection_on=advection_on,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
 
@@ -1377,7 +1420,7 @@ def integrate_residuals(  # noqa
         # leak-off/convective-exchange flux under a "_mm" suffix, sized to the matrix mesh
         # rather than the fracture mesh - fold each into the matching matrix-side residual
         # before stacking the two meshes together below.
-        for name in ("F_Pdiffusion", "F_Tdiffusion"):
+        for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
             if name + "_mm" in integrated_fracture_vectors:
                 flux_mm = integrated_fracture_vectors[name + "_mm"]
                 integrated_vectors[name] = integrated_vectors[name] + flux_mm
@@ -1462,7 +1505,13 @@ def integrate_enthlpy_bndry_tangent(
     nn_total = mesh["nn_total"]
 
     if advection_off:
-        return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
+        if fully_coupled:
+            return {
+                "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
+                "K_enth_bnd_Tp": csc_matrix((nn_total, nn_total), dtype=float),
+            }
+        else:
+            return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
 
     K_enth_bnd = csc_matrix((nn_total, nn_total), dtype=float)
     K_enth_bnd_Tp = csc_matrix((nn_total, nn_total), dtype=float)
