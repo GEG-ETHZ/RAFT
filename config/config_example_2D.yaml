@@ -11,8 +11,8 @@ mesh:
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 0
   dimensions: 2
-  # fractures:
-  #        - values: [[25.5, 37.5], [30], [90]]
+  fractures:
+         - values: [[25.5, 37.5], [30], [45]]
   #        - values: [[18, 28, 0.0], [62.5], [35]]
   #        - values: [[-10, 32, 0.0], [22.5], [100]]
 
@@ -45,9 +45,9 @@ material:
       viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
-  # fracture:
-  #   aperture: [1.0e-4, 1.0e-3, 1.1e-3]
-  #   nusselt: [5, 1, 5]
+  fracture:
+    aperture: [1.0e-3, 1.0e-3, 1.1e-3]
+    nusselt: [2, 1, 5]
 
 initial_conditions:
   assignment: "constant"
@@ -82,12 +82,12 @@ boundary_conditions:
         #           maximum_pressure: 3.0e+7
         #           minimum_pressure: 1.0e+5
 
-        - lines: [[[20.0, 10.0], [40.2, 15.0]]]
-        # - faces: [x_max]
-          hydraulics:
-              type: "pressure"
-              values: [6.0e+5]
-              # constraints:
+        # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
+        # # - faces: [x_max]
+        #   hydraulics:
+        #       type: "pressure"
+        #       values: [6.0e+5]
+        #       # constraints:
               #     maximum_pressure: 3.0e+6
               #     minimum_pressure: 1.0e+5
           # thermal:
@@ -96,10 +96,10 @@ boundary_conditions:
         - faces: [y_min]
           hydraulics:
               type: "pressure"
-              values: [1.0e+6]
+              values: [1.0e+5]
           thermal:
               type: "temperature"
-              values: [281]
+              values: [286]
               # function: "ramp"
           # tag: "inflow"
         # - coords: [[43.4, 20.0]]
@@ -113,7 +113,7 @@ boundary_conditions:
               values: [2.0e+6]
           thermal:
               type: "temperature"
-              values: [341]
+              values: [310]
 
         - faces: [x_min]
           hydraulics:
@@ -148,7 +148,7 @@ simulation:
   timestep: 100.0
   timestep_min: 1.0
   timestep_max: 100000.0
-  solver_type: "fully_coupled"
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1

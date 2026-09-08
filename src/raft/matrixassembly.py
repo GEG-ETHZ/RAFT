@@ -537,8 +537,8 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
             matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
 
             if advection_on:
-                T_flow_fq = T_flow[enodes_f]
-                T_flow_mq = T_flow[enodes_m]
+                T_flow_fq = N_q @ T_flow[enodes_f]
+                T_flow_mq = N_qm @ T_flow[enodes_m]
                 nq = len(p_f_q)
                 T_eval = np.empty((nq, 1, 1))
                 T_flow_eval = np.empty((nq, 1, 1))
