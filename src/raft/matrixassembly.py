@@ -319,15 +319,22 @@ def _create_fracture_coupling_vectors(
     npt.NDArray[np.int32],
     int,
     npt.NDArray[np.int32],
+    npt.NDArray[np.int32],
+    int,
+    npt.NDArray[np.int32],
 ]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
     count_vec_ff = 0  # Fracture-fracture on-diagonal counts
     row_list_ff = []
     col_list_ff = []
 
-    count_vec_fm = 0  # Fracture-matrix off-diagonal counts
+    count_vec_fm = 0  # Fracture-matrix off-diagonal counts (row=matrix, col=fracture)
     row_list_fm = []
     col_list_fm = []
+
+    count_vec_mf = 0  # Matrix-fracture off-diagonal counts (row=fracture, col=matrix)
+    row_list_mf = []
+    col_list_mf = []
 
     count_vec_mm = 0  # Matrix-matrix on-diagonal counts
     row_list_mm = []
@@ -356,6 +363,12 @@ def _create_fracture_coupling_vectors(
             )
             col_list_fm.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
             count_vec_fm += nne_f * nne_m
+            # mf
+            row_list_mf.append(
+                np.repeat(np.array(e_nodes_f, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
+            )
+            col_list_mf.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_f)).ravel())
+            count_vec_mf += nne_f * nne_m
             # mm
             row_list_mm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
@@ -370,6 +383,8 @@ def _create_fracture_coupling_vectors(
     col_vec_ff = np.concatenate(col_list_ff).astype(np.int32)
     row_vec_fm = np.concatenate(row_list_fm).astype(np.int32)
     col_vec_fm = np.concatenate(col_list_fm).astype(np.int32)
+    row_vec_mf = np.concatenate(row_list_mf).astype(np.int32)
+    col_vec_mf = np.concatenate(col_list_mf).astype(np.int32)
     row_vec_mm = np.concatenate(row_list_mm).astype(np.int32)
     col_vec_mm = np.concatenate(col_list_mm).astype(np.int32)
     row_vec_flux_m = np.concatenate(row_list_flux_m).astype(np.int32)
@@ -381,6 +396,9 @@ def _create_fracture_coupling_vectors(
         count_vec_fm,
         row_vec_fm,
         col_vec_fm,
+        count_vec_mf,
+        row_vec_mf,
+        col_vec_mf,
         count_vec_mm,
         row_vec_mm,
         col_vec_mm,
@@ -434,7 +452,7 @@ def _integrate_fracture_matrix_coupling_tangent(
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
-) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]]:
+) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling *tangent* contribution to its neighboring
     matrix elements - the leak-off/convective-exchange terms are linear in (p_f - p_m) and
     (T_f - T_m), so these coefficient matrices double as both the Jacobian block and (via
@@ -446,26 +464,33 @@ def _integrate_fracture_matrix_coupling_tangent(
     assembled this call (a caller not currently using one passes an unread placeholder for it,
     same as the sentinel convention `_get_region_flow_data`/`_get_region_thermal_data` use for
     fields that don't apply).
+
+    `fm_matrices` (row=matrix, col=fracture) and `mf_matrices` (row=fracture, col=matrix) are
+    each built directly rather than one taken as the other's transpose, so the caller's stacking
+    doesn't have to assume the coupling is symmetric.
     """
-    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
     for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
         if thermal_coupling:
             ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, h, N_q, wJe_q, True)
             fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
+            mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -h, N_qm, wJe_q, True)
             mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
 
         if pressure_coupling:
             kf_p_mu = rhof_q * kf_p / mu_q
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
             fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, kf_p_mu, N_qm, wJe_q, True)
             mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -kf_p_mu, N_qm, wJe_q, True)
 
-        entries.append((nne_m, ff_matrices, fm_matrices, mm_matrices))
+        entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
 
     return entries
 
@@ -595,19 +620,26 @@ def _stack_fracture_matrices(
         if name + "_ff" in fracture_matrices:
             fracture_matrix = fracture_matrix + fracture_matrices[name + "_ff"].tocoo()
 
-        # Off-diagonal coupling matrix
+        # Off-diagonal coupling matrix (row=matrix, col=fracture)
         if name + "_fm" in fracture_matrices:
-            diag_matrix = fracture_matrices[name + "_fm"].tocoo()
+            fm_matrix = fracture_matrices[name + "_fm"].tocoo()
         else:
-            diag_matrix = csc_matrix((nn_m, nn_f)).tocoo()
+            fm_matrix = csc_matrix((nn_m, nn_f)).tocoo()
+
+        # Off-diagonal coupling matrix (row=fracture, col=matrix) - built independently of
+        # `fm_matrix` rather than assumed to be its transpose.
+        if name + "_mf" in fracture_matrices:
+            mf_matrix = fracture_matrices[name + "_mf"].tocoo()
+        else:
+            mf_matrix = csc_matrix((nn_f, nn_m)).tocoo()
 
         # on-diagonal correction to the matrix's own block
         matrix_matrix = body_matrices[name].tocoo()
         if name + "_mm" in fracture_matrices:
             matrix_matrix = matrix_matrix + fracture_matrices[name + "_mm"].tocoo()
 
-        row1 = hstack([matrix_matrix.tocoo(), diag_matrix])
-        row2 = hstack([diag_matrix.T, fracture_matrix])
+        row1 = hstack([matrix_matrix.tocoo(), fm_matrix])
+        row2 = hstack([mf_matrix, fracture_matrix])
         body_matrices[name] = vstack([row1, row2]).tocsc()
     return body_matrices
 
@@ -863,9 +895,10 @@ def integrate_linear_matrices(  # noqa
         # integrate_residuals/integrate_tangent_matrices.
         list_of_ff_matrices = ["KTT_ff"]
         list_of_fm_matrices = ["KTT_fm"]
+        list_of_mf_matrices = ["KTT_mf"]
         list_of_mm_matrices = ["KTT_mm"]
         # This function's own (deprecated, soon-to-be-removed) row/col index vectors - local
-        # to its own KTT_ff/fm/mm assembly below. The cached copy the *active* solvers rely on
+        # to its own KTT_ff/fm/mf/mm assembly below. The cached copy the *active* solvers rely on
         # (integrate_residuals/integrate_tangent_matrices) is built by integrate_residuals
         # itself, on demand, since it can no longer assume this function ran first.
         (
@@ -875,6 +908,9 @@ def integrate_linear_matrices(  # noqa
             vec_count_fm,
             row_vec_fm,
             col_vec_fm,
+            vec_count_mf,
+            row_vec_mf,
+            col_vec_mf,
             vec_count_mm,
             row_vec_mm,
             col_vec_mm,
@@ -884,9 +920,11 @@ def integrate_linear_matrices(  # noqa
 
         vec_ff = {name: np.zeros(vec_count_ff) for name in list_of_ff_matrices}
         vec_fm = {name: np.zeros(vec_count_fm) for name in list_of_fm_matrices}
+        vec_mf = {name: np.zeros(vec_count_mf) for name in list_of_mf_matrices}
         vec_mm = {name: np.zeros(vec_count_mm) for name in list_of_mm_matrices}
         vec_counter_ff = 0
         vec_counter_fm = 0
+        vec_counter_mf = 0
         vec_counter_mm = 0
     else:
         list_of_matrices = ["KM", "KpT", "C", "KTT"] + (["Kpp", "KbT"] if mu_linear else [])
@@ -970,13 +1008,16 @@ def integrate_linear_matrices(  # noqa
                     thermal_coupling=True,
                 )
 
-                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
                     stop = vec_counter_ff + nne * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
                     vec_counter_ff = stop
                     stop = vec_counter_fm + nne_m * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
                     vec_counter_fm = stop
+                    stop = vec_counter_mf + nne * nne_m  # vectorized index count end
+                    _store_vctrzd_element_matrix(vec_mf, mf_matrices, vec_counter_mf, stop)
+                    vec_counter_mf = stop
                     stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
                     vec_counter_mm = stop
@@ -996,6 +1037,8 @@ def integrate_linear_matrices(  # noqa
             integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
         for name in vec_fm:
             integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
+        for name in vec_mf:
+            integrated_matrices[name] = _make_sparse(vec_mf[name], row_vec_mf, col_vec_mf, nn, nn_m)
         for name in vec_mm:
             integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices, mat, mesh
@@ -1093,6 +1136,9 @@ def integrate_residuals(  # noqa
                 _vec_count_fm,
                 row_vec_fm,
                 col_vec_fm,
+                _vec_count_mf,
+                row_vec_mf,
+                col_vec_mf,
                 _vec_count_mm,
                 row_vec_mm,
                 col_vec_mm,
@@ -1104,6 +1150,8 @@ def integrate_residuals(  # noqa
                 "col_vec_ff": col_vec_ff,
                 "row_vec_fm": row_vec_fm,
                 "col_vec_fm": col_vec_fm,
+                "row_vec_mf": row_vec_mf,
+                "col_vec_mf": col_vec_mf,
                 "row_vec_mm": row_vec_mm,
                 "col_vec_mm": col_vec_mm,
                 "row_vec_flux_m": row_vec_flux_m,
@@ -1634,6 +1682,7 @@ def integrate_tangent_matrices(  # noqa
         cached_cv = fmesh["vec_mat_asmbl"]
         row_vec_ff, col_vec_ff = cached_cv["row_vec_ff"], cached_cv["col_vec_ff"]
         row_vec_fm, col_vec_fm = cached_cv["row_vec_fm"], cached_cv["col_vec_fm"]
+        row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
         row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
         coupling_ff_names = (["Kpp_ff"] if not temperature_only else []) + (
@@ -1642,15 +1691,20 @@ def integrate_tangent_matrices(  # noqa
         coupling_fm_names = (["Kpp_fm"] if not temperature_only else []) + (
             ["KTT_fm"] if not pressure_only else []
         )
+        coupling_mf_names = (["Kpp_mf"] if not temperature_only else []) + (
+            ["KTT_mf"] if not pressure_only else []
+        )
         coupling_mm_names = (["Kpp_mm"] if not temperature_only else []) + (
             ["KTT_mm"] if not pressure_only else []
         )
         vec_ff = {name: np.zeros(row_vec_ff.size) for name in coupling_ff_names}
         vec_fm = {name: np.zeros(row_vec_fm.size) for name in coupling_fm_names}
+        vec_mf = {name: np.zeros(row_vec_mf.size) for name in coupling_mf_names}
         vec_mm = {name: np.zeros(row_vec_mm.size) for name in coupling_mm_names}
 
         vec_counter_ff = 0
         vec_counter_fm = 0
+        vec_counter_mf = 0
         vec_counter_mm = 0
 
     # ----- gravity vector
@@ -2039,13 +2093,16 @@ def integrate_tangent_matrices(  # noqa
                     thermal_coupling=not pressure_only,
                 )
 
-                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
                     stop = vec_counter_ff + nne * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
                     vec_counter_ff = stop
                     stop = vec_counter_fm + nne_m * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
                     vec_counter_fm = stop
+                    stop = vec_counter_mf + nne * nne_m  # vectorized index count end
+                    _store_vctrzd_element_matrix(vec_mf, mf_matrices, vec_counter_mf, stop)
+                    vec_counter_mf = stop
                     stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
                     vec_counter_mm = stop
@@ -2061,13 +2118,16 @@ def integrate_tangent_matrices(  # noqa
     )
 
     if is_fracture:
-        # "Kpp_ff/fm/mm"/"KTT_ff/fm/mm" keys line up with the plain "Kpp"/"KTT" keys already in
-        # `list_of_matrices` above, so `_stack_fracture_matrices` merges them in directly.
+        # "Kpp_ff/fm/mf/mm"/"KTT_ff/fm/mf/mm" keys line up with the plain "Kpp"/"KTT" keys
+        # already in `list_of_matrices` above, so `_stack_fracture_matrices` merges them in
+        # directly.
         nn_m = mesh["nn"]
         for name in vec_ff:
             integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
         for name in vec_fm:
             integrated_matrices[name] = _make_sparse(vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn)
+        for name in vec_mf:
+            integrated_matrices[name] = _make_sparse(vec_mf[name], row_vec_mf, col_vec_mf, nn, nn_m)
         for name in vec_mm:
             integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
@@ -2166,14 +2226,17 @@ def integrate_nonlinear_matrices(  # noqa
             cached_cv = fmesh["vec_mat_asmbl"]
             row_vec_ff, col_vec_ff = cached_cv["row_vec_ff"], cached_cv["col_vec_ff"]
             row_vec_fm, col_vec_fm = cached_cv["row_vec_fm"], cached_cv["col_vec_fm"]
+            row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
             row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
             vec_ff = {"Kpp_ff": np.zeros(row_vec_ff.size)}
             vec_fm = {"Kpp_fm": np.zeros(row_vec_fm.size)}
+            vec_mf = {"Kpp_mf": np.zeros(row_vec_mf.size)}
             vec_mm = {"Kpp_mm": np.zeros(row_vec_mm.size)}
 
             vec_counter_ff = 0
             vec_counter_fm = 0
+            vec_counter_mf = 0
             vec_counter_mm = 0
 
     # ----- gravity vector
@@ -2409,18 +2472,22 @@ def integrate_nonlinear_matrices(  # noqa
                     mesh,
                     kf_p,
                     mu_q,
+                    rho_f_q,
                     h,
                     pressure_coupling=True,
                     thermal_coupling=False,
                 )
 
-                for nne_m, ff_matrices, fm_matrices, mm_matrices in coupling_entries:
+                for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
                     stop = vec_counter_ff + nne * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
                     vec_counter_ff = stop
                     stop = vec_counter_fm + nne_m * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_fm, fm_matrices, vec_counter_fm, stop)
                     vec_counter_fm = stop
+                    stop = vec_counter_mf + nne * nne_m  # vectorized index count end
+                    _store_vctrzd_element_matrix(vec_mf, mf_matrices, vec_counter_mf, stop)
+                    vec_counter_mf = stop
                     stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
                     vec_counter_mm = stop
@@ -2439,7 +2506,12 @@ def integrate_nonlinear_matrices(  # noqa
         if mu_nonlinear:
             # rename to match the "K_pp_R" bucket name for `_stack_fracture_matrices`
             nn_m = mesh["nn"]
-            pp_coupling_names = {"Kpp_ff": "K_pp_R_ff", "Kpp_fm": "K_pp_R_fm", "Kpp_mm": "K_pp_R_mm"}
+            pp_coupling_names = {
+                "Kpp_ff": "K_pp_R_ff",
+                "Kpp_fm": "K_pp_R_fm",
+                "Kpp_mf": "K_pp_R_mf",
+                "Kpp_mm": "K_pp_R_mm",
+            }
             for name in vec_ff:
                 integrated_matrices[pp_coupling_names[name]] = _make_sparse(
                     vec_ff[name], row_vec_ff, col_vec_ff, nn, nn
@@ -2447,6 +2519,10 @@ def integrate_nonlinear_matrices(  # noqa
             for name in vec_fm:
                 integrated_matrices[pp_coupling_names[name]] = _make_sparse(
                     vec_fm[name], row_vec_fm, col_vec_fm, nn_m, nn
+                )
+            for name in vec_mf:
+                integrated_matrices[pp_coupling_names[name]] = _make_sparse(
+                    vec_mf[name], row_vec_mf, col_vec_mf, nn, nn_m
                 )
             for name in vec_mm:
                 integrated_matrices[pp_coupling_names[name]] = _make_sparse(
