@@ -429,6 +429,7 @@ def _integrate_fracture_matrix_coupling_tangent(
     mesh: dict[str, Any],
     kf_p: float,
     mu_q: npt.NDArray[np.float64] | float,
+    rhof_q: npt.NDArray[np.float64],  # density at quadrature points
     h: float,
     *,
     pressure_coupling: bool,
@@ -459,7 +460,7 @@ def _integrate_fracture_matrix_coupling_tangent(
             mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
 
         if pressure_coupling:
-            kf_p_mu = kf_p / mu_q
+            kf_p_mu = rhof_q * kf_p / mu_q
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
             fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
             mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -kf_p_mu, N_qm, wJe_q, True)
@@ -484,6 +485,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
     kf_p: float,  # fracture transverse permeability at quad points
     mu_q: npt.NDArray[np.float64],  # viscosity at quad points
+    rhof_q: npt.NDArray[np.float64],  # density at quadrature points
     hc: float,  # convective heat transfer coefficient
     *,
     pressure_coupling: bool,
@@ -525,7 +527,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m].reshape(-1, 1)  # matrix pressure
-            flux_p_q = kf_p / mu_q * (p_f_q - p_m_q)  # leak-off flux
+            flux_p_q = rhof_q * kf_p / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
 
         if pressure_coupling:
             Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
@@ -962,6 +964,7 @@ def integrate_linear_matrices(  # noqa
                     mesh,
                     kf_p,
                     float("nan"),  # unread: pressure_coupling is always off here, see above
+                    float("nan"),  # unread: pressure_coupling is always off here, see above
                     h,
                     pressure_coupling=False,
                     thermal_coupling=True,
@@ -1370,6 +1373,7 @@ def integrate_residuals(  # noqa
                     T_flow[:, 0],
                     kf_p,
                     mu_q,
+                    rho_f_qn,
                     h,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
@@ -2029,6 +2033,7 @@ def integrate_tangent_matrices(  # noqa
                     mesh,
                     kf_p,
                     mu_q,
+                    rho_f_n,
                     h,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
