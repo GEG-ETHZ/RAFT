@@ -567,28 +567,34 @@ def _integrate_fracture_matrix_coupling_tangent(
                 # dqadv_dTf and dqadv_dTm aren't just +-hc of each other, so getting this
                 # swapped (as conduction's copy-pasted pattern did) is a real bug, not a
                 # no-op relabeling.
+                #
+                # This whole block is also negated relative to the conduction block above:
+                # the residual's advective term is accumulated into "F_Tadvection", which
+                # compute_residuals_comp subtracts (unlike "F_Tdiffusion", which it adds) -
+                # so its tangent needs the same extra sign flip already present in the Kpp
+                # coupling block (which enters the equally-subtracted "F_Pdiffusion" bucket)
+                # to stay consistent with the residual it's linearizing.
                 ff_matrices["KTT_ff"] = ff_matrices["KTT_ff"] + _vctrzd_quad_point_integration(
-                    N_q, dqadv_dTf, N_q, wJe_q, True
+                    N_q, -dqadv_dTf, N_q, wJe_q, True
                 )
                 fm_matrices["KTT_fm"] = fm_matrices["KTT_fm"] + _vctrzd_quad_point_integration(
-                    N_qm, -dqadv_dTf, N_q, wJe_q, True
+                    N_qm, dqadv_dTf, N_q, wJe_q, True
                 )
                 mf_matrices["KTT_mf"] = mf_matrices["KTT_mf"] + _vctrzd_quad_point_integration(
-                    N_q, dqadv_dTm, N_qm, wJe_q, True
+                    N_q, -dqadv_dTm, N_qm, wJe_q, True
                 )
                 mm_matrices["KTT_mm"] = mm_matrices["KTT_mm"] + _vctrzd_quad_point_integration(
-                    N_qm, -dqadv_dTm, N_qm, wJe_q, True
+                    N_qm, dqadv_dTm, N_qm, wJe_q, True
                 )
 
                 if fully_coupled:
-                    # Same row/column-vs-derivative-variable convention as KTT above: the
-                    # cross (fm/mf) blocks need the derivative wrt the *column*'s pressure.
-                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dpf, N_q, wJe_q, True)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
-                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
-                        N_qm, -dqadv_dpm, N_qm, wJe_q, True
-                    )
+                    # Same row/column-vs-derivative-variable convention as KTT above, and the
+                    # same extra sign flip (KTp's residual side also folds into the
+                    # subtracted "F_Tadvection" bucket).
+                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_qm, wJe_q, True)
 
         entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
 

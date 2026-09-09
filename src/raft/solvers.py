@@ -410,7 +410,7 @@ def lin_extrap_time_integration(  # noqa
     is calculated between the predicted and calculated temperatures for convergence.
     """
     debug_pressure_plot_on = False
-    debug_temperature_plot_on = True
+    debug_temperature_plot_on = False
     # extract vectors of nodal dofs
     p = primary_variables["p"]
     T = primary_variables["T"]
