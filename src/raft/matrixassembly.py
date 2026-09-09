@@ -445,13 +445,26 @@ def _integrate_fracture_matrix_coupling_tangent(
     N_q: npt.NDArray[np.float64],
     wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
-    kf_p: float,
-    mu_q: npt.NDArray[np.float64] | float,
+    pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
+    Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points # noqa
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    T: npt.NDArray[np.float64],  # Full temperature vector # noqa
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation  # noqa
+    kf_perp: npt.NDArray[np.float64],
+    dkfperp_dp: npt.NDArray[np.float64],
+    dkfperp_dT: npt.NDArray[np.float64],  # noqa
+    mu_q: npt.NDArray[np.float64],
+    dmu_dp: npt.NDArray[np.float64],
+    dmu_dT: npt.NDArray[np.float64],  # noqa
     rhof_q: npt.NDArray[np.float64],  # density at quadrature points
-    h: float,
+    drho_dp: npt.NDArray[np.float64],
+    drho_dT: npt.NDArray[np.float64],  # noqa
+    hc: float,
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
+    advection_on: bool,
+    T_flow_lagged: bool,  # noqa
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling *tangent* contribution to its neighboring
     matrix elements - the leak-off/convective-exchange terms are linear in (p_f - p_m) and
@@ -471,24 +484,41 @@ def _integrate_fracture_matrix_coupling_tangent(
     """
     entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
+    p_f_q = N_q @ pe_f
+    # T_f_q = N_q @ Te_f
     for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
-        if thermal_coupling:
-            ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, h, N_q, wJe_q, True)
-            fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, -h, N_q, wJe_q, True)
-            mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -h, N_qm, wJe_q, True)
-            mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, h, N_qm, wJe_q, True)
+        if pressure_coupling or advection_on:
+            p_m_q = N_qm @ p[_enodes_m].reshape(-1, 1)  # matrix pressure
+            # flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
 
         if pressure_coupling:
-            kf_p_mu = rhof_q * kf_p / mu_q
-            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -kf_p_mu, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, kf_p_mu, N_q, wJe_q, True)
-            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, kf_p_mu, N_qm, wJe_q, True)
-            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -kf_p_mu, N_qm, wJe_q, True)
+            dfluxp_dpf = (
+                rhof_q * kf_perp / mu_q
+                + (drho_dp * kf_perp + rhof_q * dkfperp_dp - rhof_q * kf_perp / mu_q * dmu_dp)
+                * (p_f_q - p_m_q)
+                / mu_q
+            )
+            dfluxp_dpm = -rhof_q * kf_perp / mu_q
+
+            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
+            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
+
+        if thermal_coupling:
+            # flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
+            dfluxc_dTf = hc
+            dfluxc_dTm = -hc
+
+            ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
+            fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxc_dTm, N_q, wJe_q, True)
+            mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxc_dTf, N_qm, wJe_q, True)
+            mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxc_dTm, N_qm, wJe_q, True)
 
         entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
 
@@ -1000,12 +1030,25 @@ def integrate_linear_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    np.zeros((nne, 1)),  # pe_f: needs matmul-compatible shape; unread otherwise
+                    float("nan"),  # Te_f: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # p: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # T: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # T_flow: unread, pressure_coupling is always off here, see above
                     kf_p,
-                    float("nan"),  # unread: pressure_coupling is always off here, see above
-                    float("nan"),  # unread: pressure_coupling is always off here, see above
+                    0.0,  # dkfperp_dp: unread, pressure_coupling is always off here, see above
+                    0.0,  # dkfperp_dT: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # mu_q: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # dmu_dp: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # dmu_dT: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # rhof_q: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # drho_dp: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # drho_dT: unread, pressure_coupling is always off here, see above
                     h,
                     pressure_coupling=False,
                     thermal_coupling=True,
+                    advection_on=False,
+                    T_flow_lagged=False,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
@@ -2085,12 +2128,25 @@ def integrate_tangent_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    pe[:, 0:1],
+                    Te[:, 0:1],
+                    p[:, 0],
+                    T[:, 0],
+                    T_flow[:, 0],
                     kf_p,
+                    0.0,  # dkfperp_dp
+                    0.0,  # dkfperp_dT
                     mu_q,
+                    dmu_dp,
+                    dmu_dT,
                     rho_f_n,
+                    drho_dp,
+                    drho_dT,
                     h,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
+                    advection_on=advection_on,
+                    T_flow_lagged=T_flow_lagged,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
@@ -2195,6 +2251,8 @@ def integrate_nonlinear_matrices(  # noqa
     cp_f = fluid["specific_heat"]
     rho_f0 = fluid["density"]
     rho_f_q = rho_f0
+    drho_f_dp_q = 0.0  # exact when density_nonlinear is False; overwritten below otherwise
+    drho_f_dT_q = 0.0
     if mu_nonlinear:
         alpha_f = fluid["therm_expansion"]
 
@@ -2470,12 +2528,25 @@ def integrate_nonlinear_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    pe,
+                    Te,
+                    p,
+                    T,
+                    T,  # T_flow: this legacy path has no distinct flow-temperature field
                     kf_p,
+                    0.0,  # dkfperp_dp
+                    0.0,  # dkfperp_dT
                     mu_q,
+                    dmu_dp_q,
+                    dmu_dT_q,
                     rho_f_q,
+                    drho_f_dp_q,
+                    drho_f_dT_q,
                     h,
                     pressure_coupling=True,
                     thermal_coupling=False,
+                    advection_on=advection_on,
+                    T_flow_lagged=False,
                 )
 
                 for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
