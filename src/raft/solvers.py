@@ -177,6 +177,7 @@ def compute_residuals_comp(
         F_Tstab = F_vec["F_Tstab"]
         F_enth_bnd = F_vec.get("F_enth_bnd", 0)
         RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT - F_enth_bnd
+
         if fully_coupled:
             R["T"] = RT
         else:
@@ -258,19 +259,21 @@ def _check_convergence_fullycoupled(
     iteration: int,
     tolerance: float,
 ) -> tuple[bool, float]:
-
+    """Normalize each key's free-dof residual norm against the norm of that same key's
+    reaction flux at its own Dirichlet dofs - a physical flux scale for the system (how
+    much is actually flowing through the domain), rather than a raw per-element residual
+    that can't tell a genuinely small residual from a tiny fraction of a much larger one.
+    """
     n_DoFs = np.arange(0, mesh["nn_total"])  # number of DoFs
-    ne = mesh["ne"]
+    nn = mesh["nn_total"]
 
     for key in R:
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
-        normalizer = 1 if iteration < 4 else np.max(NR[key][0:4])
         numerator = np.linalg.norm(R[key][nF])
+        flux_scale = np.linalg.norm(R[key][fixed_dofs[key]])
 
-        NR[key][iteration] = np.min(
-            (numerator / ne, numerator / ne / normalizer)
-        )  # norm of the residual per element
+        NR[key][iteration] = numerator / flux_scale / nn if flux_scale > 1.0e-12 else numerator / nn
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
