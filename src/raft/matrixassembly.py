@@ -449,6 +449,7 @@ def _integrate_fracture_matrix_coupling_tangent(
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
     pe_f_lag: npt.NDArray[np.float64],  # Fracture pressure, lagged - upwind decision only
     Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points # noqa
+    Te_flow_f: npt.NDArray[np.float64],  # Fracture flow-property temperature, pre-sliced by caller
     p: npt.NDArray[np.float64],  # Full pressure vector
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector # noqa
@@ -532,7 +533,7 @@ def _integrate_fracture_matrix_coupling_tangent(
                 flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
 
                 T_m_q = N_qm @ T[_enodes_m]
-                T_flow_fq = N_q @ T_flow[enodes_f]
+                T_flow_fq = N_q @ Te_flow_f
                 T_flow_mq = N_qm @ T_flow[_enodes_m]
                 p_m_q_lag = N_qm @ p_lag[_enodes_m].reshape(-1, 1)  # upwind decision only
 
@@ -620,6 +621,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
     pe_f_lag: npt.NDArray[np.float64],  # Fracture pressure, lagged - upwind decision only
     Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points
+    Te_flow_f: npt.NDArray[np.float64],  # Fracture flow-property temperature, pre-sliced by caller
     p: npt.NDArray[np.float64],  # Full pressure vector
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
@@ -682,7 +684,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
             matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
 
             if advection_on:
-                T_flow_fq = N_q @ T_flow[enodes_f]
+                T_flow_fq = N_q @ Te_flow_f
                 T_flow_mq = N_qm @ T_flow[enodes_m]
                 p_m_q_lag = N_qm @ p_lag[enodes_m].reshape(-1, 1)  # upwind decision only
                 if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
@@ -1116,6 +1118,7 @@ def integrate_linear_matrices(  # noqa
                     np.zeros((nne, 1)),  # pe_f: needs matmul-compatible shape; unread otherwise
                     np.zeros((nne, 1)),  # pe_f_lag: unread, pressure_coupling is always off here
                     float("nan"),  # Te_f: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # Te_flow_f: unread, pressure_coupling is always off here
                     float("nan"),  # p: unread, pressure_coupling is always off here, see above
                     float("nan"),  # p_lag: unread, pressure_coupling is always off here, see above
                     float("nan"),  # T: unread, pressure_coupling is always off here, see above
@@ -1546,6 +1549,7 @@ def integrate_residuals(  # noqa
                     pe[:, 0:1],
                     pe[:, 1:2],
                     Te[:, 0:1],
+                    Te_flow[:, 0:1],
                     p[:, 0:1],
                     p[:, 1:2],
                     T[:, 0:1],
@@ -2246,6 +2250,7 @@ def integrate_tangent_matrices(  # noqa
                     pe[:, 0:1],
                     pe[:, 1:2],
                     Te[:, 0:1],
+                    Te_flow[:, 0:1],
                     p[:, 0:1],
                     p[:, 1:2],
                     T[:, 0:1],
@@ -2650,6 +2655,7 @@ def integrate_nonlinear_matrices(  # noqa
                     pe,
                     pe,  # pe_f_lag: unread, thermal_coupling is always off here
                     Te,
+                    Te,  # Te_flow_f: unread, thermal_coupling is always off here
                     p,
                     p,  # p_lag: unread, thermal_coupling is always off here
                     T,
