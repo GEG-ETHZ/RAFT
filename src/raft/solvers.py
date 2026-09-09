@@ -623,7 +623,7 @@ def lin_extrap_time_integration(  # noqa
                 T_flow_lagged=True,
             )
             K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                mesh, material, primary_variables, sim_control, T_flow, BC_config
+                mesh, material, primary_variables, sim_control, T_flow, BC_config, T_flow_lagged=True
             )
             A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
             b = R["T"]

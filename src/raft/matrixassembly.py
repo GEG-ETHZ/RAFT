@@ -561,24 +561,31 @@ def _integrate_fracture_matrix_coupling_tangent(
                     dqadv_dpf = h_fq * dfluxp_dpf
                     dqadv_dpm = dhf_dp * flux_p_q + h_fq * dfluxp_dpm
 
-                # fluid enthalpy, nq x 1 x 1
+                # fluid enthalpy, nq x 1 x 1. `fm`/`mf` are cross (row!=col) blocks: their
+                # coefficient must be the derivative wrt the *column*'s temperature (Tf for
+                # fm, Tm for mf), not wrt the row's own - unlike the conduction block above,
+                # dqadv_dTf and dqadv_dTm aren't just +-hc of each other, so getting this
+                # swapped (as conduction's copy-pasted pattern did) is a real bug, not a
+                # no-op relabeling.
                 ff_matrices["KTT_ff"] = ff_matrices["KTT_ff"] + _vctrzd_quad_point_integration(
                     N_q, dqadv_dTf, N_q, wJe_q, True
                 )
                 fm_matrices["KTT_fm"] = fm_matrices["KTT_fm"] + _vctrzd_quad_point_integration(
-                    N_qm, dqadv_dTm, N_q, wJe_q, True
+                    N_qm, -dqadv_dTf, N_q, wJe_q, True
                 )
                 mf_matrices["KTT_mf"] = mf_matrices["KTT_mf"] + _vctrzd_quad_point_integration(
-                    N_q, -dqadv_dTf, N_qm, wJe_q, True
+                    N_q, dqadv_dTm, N_qm, wJe_q, True
                 )
                 mm_matrices["KTT_mm"] = mm_matrices["KTT_mm"] + _vctrzd_quad_point_integration(
                     N_qm, -dqadv_dTm, N_qm, wJe_q, True
                 )
 
                 if fully_coupled:
+                    # Same row/column-vs-derivative-variable convention as KTT above: the
+                    # cross (fm/mf) blocks need the derivative wrt the *column*'s pressure.
                     ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_q, wJe_q, True)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_qm, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dpf, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
                     mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
                         N_qm, -dqadv_dpm, N_qm, wJe_q, True
                     )
@@ -1640,6 +1647,7 @@ def integrate_enthlpy_bndry_tangent(
     BC_config: list[dict[str, Any]],
     *,
     fully_coupled: bool = False,
+    T_flow_lagged: bool = False,
     Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
     KpT: csc_matrix[Any] = csc_matrix((0, 0)),
 ) -> dict[str, Any]:
@@ -1653,6 +1661,10 @@ def integrate_enthlpy_bndry_tangent(
     Jacobian blocks, already assembled every iteration by
     integrate_tangent_matrices(fully_coupled=True)) at that node. Callers not
     passing `fully_coupled` never touch Kpp/KpT.
+
+    `T_flow_lagged` must match the flag passed to the matching
+    integrate_tangent_matrices() call so dhf_dT is consistent with the T-dependence
+    actually present in the residual (T_flow independent of T vs. T_flow == T).
     """
     advection_off = not bool(controls["advection_on"])  # noqa
     nn_total = mesh["nn_total"]
@@ -1683,7 +1695,7 @@ def integrate_enthlpy_bndry_tangent(
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
             p_i = p[nodes_i, 0]
-            h_f_i, dhf_dT_i, _, _ = get_enthalpy(p_i, T_i, T_flow_i, fluid)
+            h_f_i, dhf_dT_i, _, _ = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged)
             node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
 
             # A flux-type node's q is a prescribed BC value (never a function of
