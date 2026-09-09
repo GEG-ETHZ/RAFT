@@ -562,10 +562,18 @@ def _integrate_fracture_matrix_coupling_tangent(
                     dqadv_dpm = dhf_dp * flux_p_q + h_fq * dfluxp_dpm
 
                 # fluid enthalpy, nq x 1 x 1
-                ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dTf, N_q, wJe_q, True)
-                fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dTm, N_q, wJe_q, True)
-                mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dTf, N_qm, wJe_q, True)
-                mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
+                ff_matrices["KTT_ff"] = ff_matrices["KTT_ff"] + _vctrzd_quad_point_integration(
+                    N_q, dqadv_dTf, N_q, wJe_q, True
+                )
+                fm_matrices["KTT_fm"] = fm_matrices["KTT_fm"] + _vctrzd_quad_point_integration(
+                    N_qm, dqadv_dTm, N_q, wJe_q, True
+                )
+                mf_matrices["KTT_mf"] = mf_matrices["KTT_mf"] + _vctrzd_quad_point_integration(
+                    N_q, -dqadv_dTf, N_qm, wJe_q, True
+                )
+                mm_matrices["KTT_mm"] = mm_matrices["KTT_mm"] + _vctrzd_quad_point_integration(
+                    N_qm, -dqadv_dTm, N_qm, wJe_q, True
+                )
 
                 if fully_coupled:
                     ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
