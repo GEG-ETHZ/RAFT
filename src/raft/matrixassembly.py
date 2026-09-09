@@ -445,6 +445,7 @@ def _integrate_fracture_matrix_coupling_tangent(
     N_q: npt.NDArray[np.float64],
     wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
+    fluid: dict[str, Any],
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
     Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points # noqa
     p: npt.NDArray[np.float64],  # Full pressure vector
@@ -463,6 +464,7 @@ def _integrate_fracture_matrix_coupling_tangent(
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
+    fully_coupled: bool,
     advection_on: bool,
     T_flow_lagged: bool,  # noqa
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
@@ -484,8 +486,8 @@ def _integrate_fracture_matrix_coupling_tangent(
     """
     entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
-    p_f_q = N_q @ pe_f
-    # T_f_q = N_q @ Te_f
+    p_f_q = N_q @ pe_f  # fracture pressure
+
     for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
@@ -494,9 +496,6 @@ def _integrate_fracture_matrix_coupling_tangent(
 
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[_enodes_m].reshape(-1, 1)  # matrix pressure
-            # flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
-
-        if pressure_coupling:
             dfluxp_dpf = (
                 rhof_q * kf_perp / mu_q
                 + (drho_dp * kf_perp + rhof_q * dkfperp_dp - rhof_q * kf_perp / mu_q * dmu_dp)
@@ -505,6 +504,7 @@ def _integrate_fracture_matrix_coupling_tangent(
             )
             dfluxp_dpm = -rhof_q * kf_perp / mu_q
 
+        if pressure_coupling:
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
             fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
             mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
@@ -514,11 +514,66 @@ def _integrate_fracture_matrix_coupling_tangent(
             # flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
             dfluxc_dTf = hc
             dfluxc_dTm = -hc
+            T_f_q = N_q @ Te_f
 
             ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
             fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxc_dTm, N_q, wJe_q, True)
             mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxc_dTf, N_qm, wJe_q, True)
             mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxc_dTm, N_qm, wJe_q, True)
+
+            if advection_on:
+                flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
+
+                T_m_q = N_qm @ T[_enodes_m]
+                T_flow_fq = N_q @ T_flow[enodes_f]
+                T_flow_mq = N_qm @ T_flow[_enodes_m]
+
+                if np.mean(p_f_q) > np.mean(p_m_q):
+                    # use fracture props
+                    T_eval = T_f_q
+                    T_flow_eval = T_flow_fq
+                    p_eval = p_f_q
+
+                    h_fq, dhf_dT, dhf_dp, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
+
+                    dqadv_dTf = dhf_dT * flux_p_q + h_fq / mu_q * (
+                        drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT
+                    ) * (p_f_q - p_m_q)
+                    dqadv_dTm = 0
+                    dqadv_dpf = dhf_dp * flux_p_q + h_fq * dfluxp_dpf
+                    dqadv_dpm = 0 + h_fq * dfluxp_dpm
+
+                else:
+                    # use matrix props
+                    T_eval = T_m_q
+                    T_flow_eval = T_flow_mq
+                    p_eval = p_m_q
+
+                    h_fq, dhf_dT, dhf_dp, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
+
+                    dqadv_dTf = (
+                        h_fq
+                        / mu_q
+                        * (drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT)
+                        * (p_f_q - p_m_q)
+                    )
+                    dqadv_dTm = dhf_dT * flux_p_q
+                    dqadv_dpf = h_fq * dfluxp_dpf
+                    dqadv_dpm = dhf_dp * flux_p_q + h_fq * dfluxp_dpm
+
+                # fluid enthalpy, nq x 1 x 1
+                ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dTf, N_q, wJe_q, True)
+                fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dTm, N_q, wJe_q, True)
+                mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dTf, N_qm, wJe_q, True)
+                mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
+
+                if fully_coupled:
+                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_qm, wJe_q, True)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
+                        N_qm, -dqadv_dpm, N_qm, wJe_q, True
+                    )
 
         entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
 
@@ -596,23 +651,16 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
             if advection_on:
                 T_flow_fq = N_q @ T_flow[enodes_f]
                 T_flow_mq = N_qm @ T_flow[enodes_m]
-                nq = len(p_f_q)
-                T_eval = np.empty((nq, 1, 1))
-                T_flow_eval = np.empty((nq, 1, 1))
-                p_eval = np.empty((nq, 1, 1))
-                # Loop through quadrature points and decide based on flow direction to evaluate
-                # enthalpy from matrix or fracture properties
-                for qp in range(nq):
-                    if p_f_q[qp] > p_m_q[qp]:
-                        # use fracture props
-                        T_eval[qp] = T_f_q[qp]
-                        T_flow_eval[qp] = T_flow_fq[qp]
-                        p_eval[qp] = p_f_q[qp]
-                    else:
-                        # use matrix props
-                        T_eval[qp] = T_m_q[qp]
-                        T_flow_eval[qp] = T_flow_mq[qp]
-                        p_eval[qp] = p_m_q[qp]
+                if np.mean(p_f_q) > np.mean(p_m_q):
+                    # use fracture props
+                    T_eval = T_f_q
+                    T_flow_eval = T_flow_fq
+                    p_eval = p_f_q
+                else:
+                    # use matrix props
+                    T_eval = T_m_q
+                    T_flow_eval = T_flow_mq
+                    p_eval = p_m_q
 
                 h_fq, _, _, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid)  # fluid enthalpy, nq x 1 x 1
                 flux_adv_T_q = h_fq * flux_p_q
@@ -1030,6 +1078,7 @@ def integrate_linear_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    mat["fluid"],
                     np.zeros((nne, 1)),  # pe_f: needs matmul-compatible shape; unread otherwise
                     float("nan"),  # Te_f: unread, pressure_coupling is always off here, see above
                     float("nan"),  # p: unread, pressure_coupling is always off here, see above
@@ -1046,7 +1095,8 @@ def integrate_linear_matrices(  # noqa
                     float("nan"),  # drho_dT: unread, pressure_coupling is always off here, see above
                     h,
                     pressure_coupling=False,
-                    thermal_coupling=True,
+                    thermal_coupling=False,
+                    fully_coupled=False,  # KTp needs advection_on, always off in this pass anyway
                     advection_on=False,
                     T_flow_lagged=False,
                 )
@@ -1459,9 +1509,9 @@ def integrate_residuals(  # noqa
                     fluid,
                     pe[:, 0:1],
                     Te[:, 0:1],
-                    p[:, 0],
-                    T[:, 0],
-                    T_flow[:, 0],
+                    p[:, 0:1],
+                    T[:, 0:1],
+                    T_flow[:, 0:1],
                     kf_p,
                     mu_q,
                     rho_f_qn,
@@ -1728,17 +1778,29 @@ def integrate_tangent_matrices(  # noqa
         row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
         row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
-        coupling_ff_names = (["Kpp_ff"] if not temperature_only else []) + (
-            ["KTT_ff"] if not pressure_only else []
+        # KTp_* only ever gets populated when thermal_coupling (not pressure_only) is on and
+        # the tangent function's own `advection_on and fully_coupled` gate is satisfied - matches
+        # `_integrate_fracture_matrix_coupling_tangent`'s KTp block condition.
+        ktp_on = not pressure_only and advection_on and fully_coupled
+        coupling_ff_names = (
+            (["Kpp_ff"] if not temperature_only else [])
+            + (["KTT_ff"] if not pressure_only else [])
+            + (["KTp_ff"] if ktp_on else [])
         )
-        coupling_fm_names = (["Kpp_fm"] if not temperature_only else []) + (
-            ["KTT_fm"] if not pressure_only else []
+        coupling_fm_names = (
+            (["Kpp_fm"] if not temperature_only else [])
+            + (["KTT_fm"] if not pressure_only else [])
+            + (["KTp_fm"] if ktp_on else [])
         )
-        coupling_mf_names = (["Kpp_mf"] if not temperature_only else []) + (
-            ["KTT_mf"] if not pressure_only else []
+        coupling_mf_names = (
+            (["Kpp_mf"] if not temperature_only else [])
+            + (["KTT_mf"] if not pressure_only else [])
+            + (["KTp_mf"] if ktp_on else [])
         )
-        coupling_mm_names = (["Kpp_mm"] if not temperature_only else []) + (
-            ["KTT_mm"] if not pressure_only else []
+        coupling_mm_names = (
+            (["Kpp_mm"] if not temperature_only else [])
+            + (["KTT_mm"] if not pressure_only else [])
+            + (["KTp_mm"] if ktp_on else [])
         )
         vec_ff = {name: np.zeros(row_vec_ff.size) for name in coupling_ff_names}
         vec_fm = {name: np.zeros(row_vec_fm.size) for name in coupling_fm_names}
@@ -2128,11 +2190,12 @@ def integrate_tangent_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    fluid,
                     pe[:, 0:1],
                     Te[:, 0:1],
-                    p[:, 0],
-                    T[:, 0],
-                    T_flow[:, 0],
+                    p[:, 0:1],
+                    T[:, 0:1],
+                    T_flow[:, 0:1],
                     kf_p,
                     0.0,  # dkfperp_dp
                     0.0,  # dkfperp_dT
@@ -2145,6 +2208,7 @@ def integrate_tangent_matrices(  # noqa
                     h,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
+                    fully_coupled=fully_coupled,
                     advection_on=advection_on,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -2528,6 +2592,7 @@ def integrate_nonlinear_matrices(  # noqa
                     N_q,
                     wJe_q,
                     mesh,
+                    fluid,
                     pe,
                     Te,
                     p,
@@ -2545,6 +2610,7 @@ def integrate_nonlinear_matrices(  # noqa
                     h,
                     pressure_coupling=True,
                     thermal_coupling=False,
+                    fully_coupled=fully_coupled,  # unread: thermal_coupling is always off here
                     advection_on=advection_on,
                     T_flow_lagged=False,
                 )

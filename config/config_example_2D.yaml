@@ -21,7 +21,7 @@ material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
       bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
-      density: [1000, 2000, 2000]             # kg/m^3
+      density: [100, 2000, 2000]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
       specific_heat: [80, 80, 10]        # J/kgK
       therm_expansion: [0.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
