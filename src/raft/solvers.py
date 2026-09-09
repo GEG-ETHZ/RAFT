@@ -809,9 +809,16 @@ def fully_coupled_time_integration(  # noqa
                 sp.csc_matrix[Any],
                 sp.bmat(
                     [
-                        [jacobian["Kpp"], -jacobian["KpT"]],
+                        # `KpT`/`KTp` are computed as literal +d(R_p)/dT and +d(R_T)/dp
+                        # respectively (same convention as the on-diagonal `Kpp`/`KTT`, which
+                        # this "A" already uses unnegated) - so they belong here unnegated too.
+                        # `Kpp`'s own dqD_dp-based terms look "flipped" only because `dqD_dp`
+                        # itself is computed as -d(q_D)/dp, a convention `Kpp`/`KpT` are built
+                        # around directly; it's not evidence that this off-diagonal block needs
+                        # negating too.
+                        [jacobian["Kpp"], jacobian["KpT"]],
                         [
-                            -jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
+                            jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
                             jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
                         ],
                     ],

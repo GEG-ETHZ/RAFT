@@ -2132,6 +2132,11 @@ def integrate_tangent_matrices(  # noqa
                     )  # discretized residual
 
                     D2 = grad_rhof.transpose(0, 2, 1) @ q_D  # d/dTe of (grad_rhof . q_D), nq x 1 x 1
+                    # `dqD_dT` (like `dqD_dp` below) is d(q_D)/dT with the sign Kpp/KpT need
+                    # (those go through the F_Pdiffusion bucket, which absorbs the flip) - here
+                    # we're differentiating F_Tadvection/RTh directly, which need the literal
+                    # +d(q_D)/dT, so negate it locally rather than reuse the raw variable.
+                    dqD_dT_direct = -dqD_dT
                     dR_dT = (
                         (1 - steady_temp)
                         * cv[0]
@@ -2142,13 +2147,13 @@ def integrate_tangent_matrices(  # noqa
                         )
                         * N_q
                         + (dhf_dT + h_f / rho_f_n * drho_dT) * (q_D.transpose(0, 2, 1) @ B_q)
-                        + (grad_hf + h_f * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT
+                        + (grad_hf + h_f * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT_direct
                         + (dhf_dT / rho_f_n - h_f * drho_dT / rho_f_n**2) * D2 * N_q
                     )
 
                     # Combined integrands
-                    integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT
-                    integrand_SUPG = tau * cp_f * dR_dT * q_D + tau * cp_f * RTh * dqD_dT
+                    integrand_advection = dhf_dT * q_D * N_q + h_f * dqD_dT_direct
+                    integrand_SUPG = tau * cp_f * dR_dT * q_D + tau * cp_f * RTh * dqD_dT_direct
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )
@@ -2186,6 +2191,10 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 if advection_on:
+                    # Same sign note as `dqD_dT_direct` above: `dqD_dp` carries the Kpp/KpT-side
+                    # sign convention, but this differentiates F_Tadvection/RTh, which need
+                    # the literal +d(q_D)/dp.
+                    dqD_dp_direct = -dqD_dp
                     dR_dp = (
                         (1 - steady_temp)
                         * cv[0]
@@ -2195,13 +2204,13 @@ def integrate_tangent_matrices(  # noqa
                         )
                         * N_q
                         + (dhf_dp + h_f / rho_f_n * drho_dp) * q_D * B_q
-                        + (grad_hf + h_f * grad_rhof / rho_f_n) * dqD_dp
+                        + (grad_hf + h_f * grad_rhof / rho_f_n) * dqD_dp_direct
                         + (dhf_dp * grad_rhof / rho_f_n - h_f * grad_rhof / rho_f_n**2 * drho_dp)
                     )
 
                     # Advection tangent matrices
-                    integrand_advection = dhf_dp * q_D * N_q + h_f * dqD_dp
-                    integrand_SUPG = tau * cp_f * dR_dp * q_D + tau * cp_f * RTh * dqD_dp
+                    integrand_advection = dhf_dp * q_D * N_q + h_f * dqD_dp_direct
+                    integrand_SUPG = tau * cp_f * dR_dp * q_D + tau * cp_f * RTh * dqD_dp_direct
                     element_matrices["KTp"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, False
                     )
