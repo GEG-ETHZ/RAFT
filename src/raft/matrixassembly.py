@@ -447,8 +447,10 @@ def _integrate_fracture_matrix_coupling_tangent(
     mesh: dict[str, Any],
     fluid: dict[str, Any],
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
+    pe_f_lag: npt.NDArray[np.float64],  # Fracture pressure, lagged - upwind decision only
     Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points # noqa
     p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector # noqa
     T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation  # noqa
     kf_perp: npt.NDArray[np.float64],
@@ -483,10 +485,15 @@ def _integrate_fracture_matrix_coupling_tangent(
     `fm_matrices` (row=matrix, col=fracture) and `mf_matrices` (row=fracture, col=matrix) are
     each built directly rather than one taken as the other's transpose, so the caller's stacking
     doesn't have to assume the coupling is symmetric.
+
+    `pe_f_lag`/`p_lag` (previous-timestep pressure) pick the advection upwind direction instead
+    of the current-iterate `pe_f`/`p`, so the choice is fixed for the whole Newton loop and can't
+    flip-flop between iterations when fracture and matrix pressure are nearly equal.
     """
     entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
 
     p_f_q = N_q @ pe_f  # fracture pressure
+    p_f_q_lag = N_q @ pe_f_lag  # lagged fracture pressure, upwind decision only
 
     for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
@@ -527,8 +534,9 @@ def _integrate_fracture_matrix_coupling_tangent(
                 T_m_q = N_qm @ T[_enodes_m]
                 T_flow_fq = N_q @ T_flow[enodes_f]
                 T_flow_mq = N_qm @ T_flow[_enodes_m]
+                p_m_q_lag = N_qm @ p_lag[_enodes_m].reshape(-1, 1)  # upwind decision only
 
-                if np.mean(p_f_q) > np.mean(p_m_q):
+                if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
                     # use fracture props
                     T_eval = T_f_q
                     T_flow_eval = T_flow_fq
@@ -610,8 +618,10 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     mesh: dict[str, Any],
     fluid: dict[str, Any],
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
+    pe_f_lag: npt.NDArray[np.float64],  # Fracture pressure, lagged - upwind decision only
     Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points
     p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
     T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
     kf_p: float,  # fracture transverse permeability at quad points
@@ -634,7 +644,8 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     select which is actually used this call, matching `_integrate_fracture_matrix_coupling_tangent`.
     `p`/`T` are the full current-iterate primary-variable vectors, indexed here at each matched
     matrix element's own nodes (mirrors how `pe`/`Te` are sliced from them in the caller for the
-    fracture element).
+    fracture element). `pe_f_lag`/`p_lag` (previous-timestep pressure) pick the advection upwind
+    direction instead, matching `_integrate_fracture_matrix_coupling_tangent`.
 
     Mirrors the tangent function's contract: returns `(fracture_vectors, matches)`, where
     `fracture_vectors` accumulates directly onto this fracture element's own residual
@@ -649,6 +660,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
         return fracture_vectors, matches
 
     p_f_q = N_q @ pe_f
+    p_f_q_lag = N_q @ pe_f_lag  # lagged fracture pressure, upwind decision only
     T_f_q = N_q @ Te_f
     Rf_p = np.zeros((len(enodes_f), 1))
     Rf_T = np.zeros((len(enodes_f), 1))
@@ -672,7 +684,8 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
             if advection_on:
                 T_flow_fq = N_q @ T_flow[enodes_f]
                 T_flow_mq = N_qm @ T_flow[enodes_m]
-                if np.mean(p_f_q) > np.mean(p_m_q):
+                p_m_q_lag = N_qm @ p_lag[enodes_m].reshape(-1, 1)  # upwind decision only
+                if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
                     # use fracture props
                     T_eval = T_f_q
                     T_flow_eval = T_flow_fq
@@ -1101,8 +1114,10 @@ def integrate_linear_matrices(  # noqa
                     mesh,
                     mat["fluid"],
                     np.zeros((nne, 1)),  # pe_f: needs matmul-compatible shape; unread otherwise
+                    np.zeros((nne, 1)),  # pe_f_lag: unread, pressure_coupling is always off here
                     float("nan"),  # Te_f: unread, pressure_coupling is always off here, see above
                     float("nan"),  # p: unread, pressure_coupling is always off here, see above
+                    float("nan"),  # p_lag: unread, pressure_coupling is always off here, see above
                     float("nan"),  # T: unread, pressure_coupling is always off here, see above
                     float("nan"),  # T_flow: unread, pressure_coupling is always off here, see above
                     kf_p,
@@ -1529,8 +1544,10 @@ def integrate_residuals(  # noqa
                     mesh,
                     fluid,
                     pe[:, 0:1],
+                    pe[:, 1:2],
                     Te[:, 0:1],
                     p[:, 0:1],
+                    p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
                     kf_p,
@@ -2227,8 +2244,10 @@ def integrate_tangent_matrices(  # noqa
                     mesh,
                     fluid,
                     pe[:, 0:1],
+                    pe[:, 1:2],
                     Te[:, 0:1],
                     p[:, 0:1],
+                    p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
                     kf_p,
@@ -2629,8 +2648,10 @@ def integrate_nonlinear_matrices(  # noqa
                     mesh,
                     fluid,
                     pe,
+                    pe,  # pe_f_lag: unread, thermal_coupling is always off here
                     Te,
                     p,
+                    p,  # p_lag: unread, thermal_coupling is always off here
                     T,
                     T,  # T_flow: this legacy path has no distinct flow-temperature field
                     kf_p,
