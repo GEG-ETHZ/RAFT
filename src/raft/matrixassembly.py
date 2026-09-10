@@ -496,21 +496,17 @@ def _integrate_fracture_matrix_coupling_tangent(
     p_f_q = N_q @ pe_f  # fracture pressure
     p_f_q_lag = N_q @ pe_f_lag  # lagged fracture pressure, upwind decision only
 
-    for _e_m, _enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
+    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
         if pressure_coupling or advection_on:
-            p_m_q = N_qm @ p[_enodes_m]  # matrix pressure
-            dfluxp_dpf = (
-                rhof_q * kf_perp / mu_q
-                + (drho_dp * kf_perp + rhof_q * dkfperp_dp - rhof_q * kf_perp / mu_q * dmu_dp)
-                * (p_f_q - p_m_q)
-                / mu_q
+            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
+            flux_p_q, dfluxp_dpf, dfluxp_dpm = _evaluate_fracture_leakoff_flux(
+                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, dkfperp_dp, dmu_dp, drho_dp, want_tangent_dp=True
             )
-            dfluxp_dpm = -rhof_q * kf_perp / mu_q
 
         if pressure_coupling:
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
@@ -519,10 +515,11 @@ def _integrate_fracture_matrix_coupling_tangent(
             mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
 
         if thermal_coupling:
-            # flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
-            dfluxc_dTf = hc
-            dfluxc_dTm = -hc
             T_f_q = N_q @ Te_f
+            T_m_q = N_qm @ T[enodes_m]
+            _, dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
+                hc, T_f_q, T_m_q, want_tangent_dT=True
+            )
 
             ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
             fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxc_dTm, N_q, wJe_q, True)
@@ -530,47 +527,34 @@ def _integrate_fracture_matrix_coupling_tangent(
             mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxc_dTm, N_qm, wJe_q, True)
 
             if advection_on:
-                flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
-
-                T_m_q = N_qm @ T[_enodes_m]
                 T_flow_fq = N_q @ Te_flow_f
-                T_flow_mq = N_qm @ T_flow[_enodes_m]
-                p_m_q_lag = N_qm @ p_lag[_enodes_m]  # upwind decision only
+                T_flow_mq = N_qm @ T_flow[enodes_m]
+                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
 
-                if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
-                    # use fracture props
-                    T_eval = T_f_q
-                    T_flow_eval = T_flow_fq
-                    p_eval = p_f_q
+                _, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm = _evaluate_fracture_advection_flux(
+                    p_f_q,
+                    p_m_q,
+                    p_f_q_lag,
+                    p_m_q_lag,
+                    T_f_q,
+                    T_m_q,
+                    T_flow_fq,
+                    T_flow_mq,
+                    flux_p_q,
+                    fluid,
+                    kf_perp,
+                    mu_q,
+                    rhof_q,
+                    dfluxp_dpf,
+                    dfluxp_dpm,
+                    dkfperp_dT,
+                    dmu_dT,
+                    drho_dT,
+                    want_tangent=True,
+                    T_flow_lagged=T_flow_lagged,
+                )
 
-                    hf_q, dhf_dT, dhf_dp, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
-
-                    dqadv_dTf = dhf_dT * flux_p_q + hf_q / mu_q * (
-                        drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT
-                    ) * (p_f_q - p_m_q)
-                    dqadv_dTm = np.zeros_like(dqadv_dTf)
-                    dqadv_dpf = dhf_dp * flux_p_q + hf_q * dfluxp_dpf
-                    dqadv_dpm = hf_q * dfluxp_dpm
-
-                else:
-                    # use matrix props
-                    T_eval = T_m_q
-                    T_flow_eval = T_flow_mq
-                    p_eval = p_m_q
-
-                    hf_q, dhf_dT, dhf_dp, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
-
-                    dqadv_dTf = (
-                        hf_q
-                        / mu_q
-                        * (drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT)
-                        * (p_f_q - p_m_q)
-                    )
-                    dqadv_dTm = dhf_dT * flux_p_q
-                    dqadv_dpf = hf_q * dfluxp_dpf
-                    dqadv_dpm = dhf_dp * flux_p_q + hf_q * dfluxp_dpm
-
-                # fluid enthalpy, nq x 1 x 1. `fm`/`mf` are cross (row!=col) blocks: their
+                # `fm`/`mf` are cross (row!=col) blocks: their
                 # coefficient must be the derivative wrt the *column*'s temperature (Tf for
                 # fm, Tm for mf), not wrt the row's own - unlike the conduction block above,
                 # dqadv_dTf and dqadv_dTm aren't just +-hc of each other, so getting this
@@ -672,14 +656,14 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
-            flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
+            flux_p_q, _, _ = _evaluate_fracture_leakoff_flux(rhof_q, kf_perp, mu_q, p_f_q, p_m_q)
 
         if pressure_coupling:
             Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
             matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
         if thermal_coupling:
             T_m_q = N_qm @ T[enodes_m]  # matrix temperature
-            flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
+            flux_hc_T_q, _, _ = _evaluate_fracture_conduction_flux(hc, T_f_q, T_m_q)
             Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
             matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
 
@@ -687,19 +671,22 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
                 T_flow_fq = N_q @ Te_flow_f
                 T_flow_mq = N_qm @ T_flow[enodes_m]
                 p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
-                if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
-                    # use fracture props
-                    T_eval = T_f_q
-                    T_flow_eval = T_flow_fq
-                    p_eval = p_f_q
-                else:
-                    # use matrix props
-                    T_eval = T_m_q
-                    T_flow_eval = T_flow_mq
-                    p_eval = p_m_q
 
-                hf_q, _, _, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid)  # fluid enthalpy, nq x 1 x 1
-                flux_adv_T_q = hf_q * flux_p_q
+                flux_adv_T_q, _, _, _, _ = _evaluate_fracture_advection_flux(
+                    p_f_q,
+                    p_m_q,
+                    p_f_q_lag,
+                    p_m_q_lag,
+                    T_f_q,
+                    T_m_q,
+                    T_flow_fq,
+                    T_flow_mq,
+                    flux_p_q,
+                    fluid,
+                    kf_perp,
+                    mu_q,
+                    rhof_q,
+                )
                 Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
                 matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
                     N_qm, -flux_adv_T_q, wJe_q, True
@@ -964,6 +951,137 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
 # `mu_q`/`dmu_dp`/etc. placeholders passed into `_integrate_fracture_matrix_coupling_tangent`
 # when a coupling flag is off).
 _EMPTY = np.empty((0, 0))
+
+
+def _evaluate_fracture_leakoff_flux(
+    rhof_q: npt.NDArray[np.float64],
+    kf_perp: npt.NDArray[np.float64] | float,
+    mu_q: npt.NDArray[np.float64],
+    p_f_q: npt.NDArray[np.float64],
+    p_m_q: npt.NDArray[np.float64],
+    dkfperp_dp: npt.NDArray[np.float64] = _EMPTY,
+    dmu_dp: npt.NDArray[np.float64] = _EMPTY,
+    drho_dp: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent_dp: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_p_q
+    npt.NDArray[np.float64],  # dfluxp_dpf, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dpm, `_EMPTY` unless want_tangent_dp
+]:
+    """Evaluate the fracture-matrix leak-off mass flux (Darcy-type, driven by p_f - p_m across
+    the fracture's transverse permeability), and optionally its pressure tangent - called
+    identically by both the residual and tangent fracture-matrix coupling integrators; the
+    residual discards the tangent output.
+    """
+    flux_p_q = rhof_q * kf_perp / mu_q * (p_f_q - p_m_q)
+
+    dfluxp_dpf = dfluxp_dpm = _EMPTY
+    if want_tangent_dp:
+        dfluxp_dpf = (
+            rhof_q * kf_perp / mu_q
+            + (drho_dp * kf_perp + rhof_q * dkfperp_dp - rhof_q * kf_perp / mu_q * dmu_dp)
+            * (p_f_q - p_m_q)
+            / mu_q
+        )
+        dfluxp_dpm = -rhof_q * kf_perp / mu_q
+
+    return flux_p_q, dfluxp_dpf, dfluxp_dpm
+
+
+def _evaluate_fracture_conduction_flux(
+    hc: float,
+    T_f_q: npt.NDArray[np.float64],
+    T_m_q: npt.NDArray[np.float64],
+    *,
+    want_tangent_dT: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_hc_T_q
+    npt.NDArray[np.float64] | float,  # dfluxc_dTf, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64] | float,  # dfluxc_dTm, `_EMPTY` unless want_tangent_dT
+]:
+    """Evaluate the fracture-matrix convective conduction flux (hc * (T_f - T_m)), and
+    optionally its (constant, +-hc) temperature tangent - called identically by both the
+    residual and tangent fracture-matrix coupling integrators; the residual discards the
+    tangent output.
+    """
+    flux_hc_T_q = hc * (T_f_q - T_m_q)
+    dfluxc_dTf: npt.NDArray[np.float64] | float = _EMPTY
+    dfluxc_dTm: npt.NDArray[np.float64] | float = _EMPTY
+    if want_tangent_dT:
+        dfluxc_dTf = hc
+        dfluxc_dTm = -hc
+    return flux_hc_T_q, dfluxc_dTf, dfluxc_dTm
+
+
+def _evaluate_fracture_advection_flux(
+    p_f_q: npt.NDArray[np.float64],
+    p_m_q: npt.NDArray[np.float64],
+    p_f_q_lag: npt.NDArray[np.float64],
+    p_m_q_lag: npt.NDArray[np.float64],
+    T_f_q: npt.NDArray[np.float64],
+    T_m_q: npt.NDArray[np.float64],
+    T_flow_fq: npt.NDArray[np.float64],
+    T_flow_mq: npt.NDArray[np.float64],
+    flux_p_q: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    kf_perp: npt.NDArray[np.float64] | float,
+    mu_q: npt.NDArray[np.float64],
+    rhof_q: npt.NDArray[np.float64],
+    dfluxp_dpf: npt.NDArray[np.float64] = _EMPTY,
+    dfluxp_dpm: npt.NDArray[np.float64] = _EMPTY,
+    dkfperp_dT: npt.NDArray[np.float64] = _EMPTY,
+    dmu_dT: npt.NDArray[np.float64] = _EMPTY,
+    drho_dT: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent: bool = False,
+    T_flow_lagged: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_adv_T_q
+    npt.NDArray[np.float64],  # dqadv_dTf, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dTm, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dpf, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dpm, `_EMPTY` unless want_tangent
+]:
+    """Evaluate the fracture-matrix advective enthalpy flux (upwind-selected fluid enthalpy
+    times the leak-off mass flux), and optionally its temperature/pressure tangents - called
+    identically by both the residual and tangent fracture-matrix coupling integrators; the
+    residual discards the tangent output.
+
+    Upwind direction is picked from the lagged (previous-timestep) pressures `p_f_q_lag`/
+    `p_m_q_lag` rather than the current iterate, so it is fixed for the whole Newton loop and
+    can't flip-flop between iterations when fracture and matrix pressure are nearly equal.
+    """
+    fracture_upwind = np.mean(p_f_q_lag) > np.mean(p_m_q_lag)
+    if fracture_upwind:
+        T_eval, T_flow_eval, p_eval = T_f_q, T_flow_fq, p_f_q
+    else:
+        T_eval, T_flow_eval, p_eval = T_m_q, T_flow_mq, p_m_q
+
+    hf_q, dhf_dT, dhf_dp, _ = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
+    flux_adv_T_q = hf_q * flux_p_q
+
+    dqadv_dTf = dqadv_dTm = dqadv_dpf = dqadv_dpm = _EMPTY
+    if want_tangent:
+        if fracture_upwind:
+            dqadv_dTf = dhf_dT * flux_p_q + hf_q / mu_q * (
+                drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT
+            ) * (p_f_q - p_m_q)
+            dqadv_dTm = np.zeros_like(dqadv_dTf)
+            dqadv_dpf = dhf_dp * flux_p_q + hf_q * dfluxp_dpf
+            dqadv_dpm = hf_q * dfluxp_dpm
+        else:
+            dqadv_dTf = (
+                hf_q
+                / mu_q
+                * (drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT)
+                * (p_f_q - p_m_q)
+            )
+            dqadv_dTm = dhf_dT * flux_p_q
+            dqadv_dpf = hf_q * dfluxp_dpf
+            dqadv_dpm = dhf_dp * flux_p_q + hf_q * dfluxp_dpm
+
+    return flux_adv_T_q, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm
 
 
 def _evaluate_element_kinematics(
