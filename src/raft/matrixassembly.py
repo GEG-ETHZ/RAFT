@@ -448,28 +448,28 @@ def _integrate_fracture_matrix_coupling_tangent(
     fluid: dict[str, Any],
     pe_f: npt.NDArray[np.float64],  # Fracture pressure at quad points
     pe_f_lag: npt.NDArray[np.float64],  # Fracture pressure, lagged - upwind decision only
-    Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points # noqa
+    Te_f: npt.NDArray[np.float64],  # Fracture temperature at quad points
     Te_flow_f: npt.NDArray[np.float64],  # Fracture flow-property temperature, pre-sliced by caller
     p: npt.NDArray[np.float64],  # Full pressure vector
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
-    T: npt.NDArray[np.float64],  # Full temperature vector # noqa
-    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation  # noqa
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
     kf_perp: npt.NDArray[np.float64],
     dkfperp_dp: npt.NDArray[np.float64],
-    dkfperp_dT: npt.NDArray[np.float64],  # noqa
+    dkfperp_dT: npt.NDArray[np.float64],
     mu_q: npt.NDArray[np.float64],
     dmu_dp: npt.NDArray[np.float64],
-    dmu_dT: npt.NDArray[np.float64],  # noqa
+    dmu_dT: npt.NDArray[np.float64],
     rhof_q: npt.NDArray[np.float64],  # density at quadrature points
     drho_dp: npt.NDArray[np.float64],
-    drho_dT: npt.NDArray[np.float64],  # noqa
+    drho_dT: npt.NDArray[np.float64],
     hc: float,
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
     fully_coupled: bool,
     advection_on: bool,
-    T_flow_lagged: bool,  # noqa
+    T_flow_lagged: bool,
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling *tangent* contribution to its neighboring
     matrix elements - the leak-off/convective-exchange terms are linear in (p_f - p_m) and
@@ -1118,7 +1118,7 @@ def _evaluate_element_kinematics(
     pe = p[enodes_dof]  # element nodal pressures
     T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
     p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
-    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths # noqa
+    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths
 
     T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
     T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
@@ -2102,7 +2102,7 @@ def integrate_enthlpy_bndry_residual(
     reaction force) nodal mass flow - see solvers.py's `q[nF_p] += F_extp[nF_p]`
     - so both bc_types are handled by the same node-value lookup.
     """
-    advection_off = not bool(controls["advection_on"])  # noqa
+    advection_off = not bool(controls["advection_on"])
     nn_total = mesh["nn_total"]
 
     if advection_off:
@@ -2163,7 +2163,7 @@ def integrate_enthlpy_bndry_tangent(
     integrate_tangent_matrices() call so dhf_dT is consistent with the T-dependence
     actually present in the residual (T_flow independent of T vs. T_flow == T).
     """
-    advection_off = not bool(controls["advection_on"])  # noqa
+    advection_off = not bool(controls["advection_on"])
     nn_total = mesh["nn_total"]
 
     if advection_off:
