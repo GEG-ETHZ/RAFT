@@ -1449,9 +1449,7 @@ def _evaluate_advection_terms(
     npt.NDArray[np.float64],  # integrand_advection_dp (KTp), `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
 ]:
-    """Evaluate the SUPG-stabilized advective energy residual integrands and, optionally,
-    their temperature/pressure tangents.
-    """
+    """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
     E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
     energy_dot = (1 - steady_temp) * (
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
@@ -1578,8 +1576,6 @@ def integrate_residuals(  # noqa
     p_0 = material["p_0"]
     T_0 = material["T_0"]
 
-    # density_nonlinear = True
-    # fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
@@ -1589,13 +1585,6 @@ def integrate_residuals(  # noqa
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
-    # mu = fluid["viscosity"]
-    # mu_q = mu
-    # cp_f = fluid["specific_heat"]
-    # rho_f0 = fluid["density"]
-    # rho_f_q = rho_f0
-    # if mu_nonlinear:
-    #     alpha_f = fluid["therm_expansion"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["F_Pstorage", "F_Pdiffusion"]
@@ -2056,7 +2045,6 @@ def integrate_tangent_matrices(  # noqa
     p_0 = material["p_0"]
     T_0 = material["T_0"]
 
-    # fully_coupled = bool(controls["fully_coupled"])
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
     advection_on = bool(controls["advection_on"])
