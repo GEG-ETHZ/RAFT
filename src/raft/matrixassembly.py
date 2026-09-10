@@ -1195,26 +1195,56 @@ def _evaluate_nodal_state(
     )
 
 
+def _evaluate_rate(
+    Q: npt.NDArray[np.float64],
+    cv: npt.NDArray[np.float64],
+    steady_state_on: float,
+) -> npt.NDArray[np.float64]:
+    """Backward-difference time rate of a stored quantity, gated off under steady-state.
+
+    `Q`'s last axis must hold one time-history column per rate level (current, n-1, n-2) -
+    works for both the quadrature-point (nq, 1, 4) shape and the nodal (nne, 4) shape via
+    `Q[..., k:k+1]`, which selects history column `k` regardless of `Q`'s rank. Shared
+    between the mass and energy storage terms - the rate itself carries no physics of its
+    own, so it doesn't care what `Q` actually is.
+    """
+    rate: npt.NDArray[np.float64] = (1 - steady_state_on) * (
+        cv[0] * Q[..., 0:1] + cv[1] * Q[..., 1:2] + cv[2] * Q[..., 2:3]
+    )
+    return rate
+
+
+def _evaluate_total_energy(
+    T: npt.NDArray[np.float64],
+    phi_L: npt.NDArray[np.float64],
+    rho_f: npt.NDArray[np.float64],
+    u_f: npt.NDArray[np.float64],
+    is_fracture: bool,
+    rho_s: float,
+    cp_s: float,
+) -> npt.NDArray[np.float64]:
+    """Evaluate the total (solid + fluid) stored energy.
+
+    Shared between the quadrature-point and nodal evaluations in the caller, which differ
+    only in which sample point's T/phi_L/rho_f/u_f is passed in.
+    """
+    return (1 - phi_L) * rho_s * cp_s * T * (1 - is_fracture) + phi_L * rho_f * u_f
+
+
 def _evaluate_energy_properties(
     T_q: npt.NDArray[np.float64],
     p_q: npt.NDArray[np.float64],
     T_q_n: npt.NDArray[np.float64],
     p_q_n: npt.NDArray[np.float64],
     T_flow_q_n: npt.NDArray[np.float64],
-    phi_L: npt.NDArray[np.float64],
     phi_L_n: npt.NDArray[np.float64],
-    rho_f: npt.NDArray[np.float64],
     is_fracture: bool,
     w0: float,
-    rho_s: float,
-    cp_s: float,
     lambda_f: float,
     lambda_s: npt.NDArray[np.float64] | float,
     isotropic_cond: bool,
     nsd: int,
     fluid: dict[str, Any],
-    cv: npt.NDArray[np.float64],
-    steady_temp: float,
     *,
     T_flow_lagged: bool = False,
 ) -> tuple[
@@ -1225,23 +1255,19 @@ def _evaluate_energy_properties(
     npt.NDArray[np.float64],  # dhf_dT
     npt.NDArray[np.float64],  # dhf_dp
     npt.NDArray[np.float64],  # cp_f_q
-    npt.NDArray[np.float64],  # E_q
-    npt.NDArray[np.float64],  # energy_dot
     npt.NDArray[np.float64] | float,  # lambda_e
 ]:
-    """Evaluate fluid internal energy, enthalpy, and total energy (full time history, needed
-    for the energy storage time-derivative) at quadrature points, plus the region's
+    """Evaluate fluid internal energy and enthalpy at quadrature points, plus the region's
     effective thermal conductivity.
+
+    Total energy itself - built from `u_f` here plus `rho_f`/`phi_L`, which the caller
+    already has from `_evaluate_flow_properties`/`_evaluate_quad_porosity` - is evaluated
+    separately by `_evaluate_total_energy`, shared with the caller's nodal computation.
     """
     u_f, duf_dT, duf_dp = get_internal_energy(T_q, p_q, fluid)  # fluid internal energy, nq x 1 x 1
     hf_q, dhf_dT, dhf_dp, cp_f_q = get_enthalpy(
         p_q_n, T_q_n, T_flow_q_n, fluid, T_flow_lagged
     )  # fluid enthalpy, nq x 1 x 1
-    # total energy, nq x 1 x 1
-    E_q = (1 - phi_L) * rho_s * cp_s * T_q * (1 - is_fracture) + phi_L * rho_f * u_f
-    energy_dot = (1 - steady_temp) * (
-        cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
-    )
 
     lambda_e: npt.NDArray[np.float64] | float
     if is_fracture:
@@ -1253,7 +1279,7 @@ def _evaluate_energy_properties(
             else (phi_L_n * lambda_f * np.eye(nsd) + (1 - phi_L_n) * lambda_s)
         )
 
-    return u_f, duf_dT, duf_dp, hf_q, dhf_dT, dhf_dp, cp_f_q, E_q, energy_dot, lambda_e
+    return u_f, duf_dT, duf_dp, hf_q, dhf_dT, dhf_dp, cp_f_q, lambda_e
 
 
 def _evaluate_supg_terms(
@@ -1553,9 +1579,7 @@ def integrate_residuals(  # noqa
             if not temperature_only:
                 # Storage vector (lumped)
                 f_mass_e = phi_L_e * rho_f_e
-                mass_dot_e = (1 - steady_pres) * (
-                    cv[0] * f_mass_e[:, 0:1] + cv[1] * f_mass_e[:, 1:2] + cv[2] * f_mass_e[:, 2:3]
-                )
+                mass_dot_e = _evaluate_rate(f_mass_e, cv, steady_pres)
                 element_vectors["F_Pstorage"] = m_lump * mass_dot_e
 
                 # Diffusion vector
@@ -1563,32 +1587,25 @@ def integrate_residuals(  # noqa
 
             # ------ Conservation of energy
             if not pressure_only:
-                u_f, _, _, hf_q, _, _, cp_f_q, E_q, energy_dot, lambda_e = _evaluate_energy_properties(
+                u_f, _, _, hf_q, _, _, cp_f_q, lambda_e = _evaluate_energy_properties(
                     T_q,
                     p_q,
                     T_q_n,
                     p_q_n,
                     T_flow_q_n,
-                    phi_L,
                     phi_L_n,
-                    rho_f,
                     is_fracture,
                     w0,
-                    rho_s,
-                    cp_s,
                     lambda_f,
                     lambda_s,
                     isotropic_cond,
                     nsd,
                     fluid,
-                    cv,
-                    steady_temp,
                 )
-
-                E_e = (1 - phi_L_e) * rho_s * cp_s * Te * (1 - is_fracture) + phi_L_e * rho_f_e * u_f_e
-                energy_dot_e = (1 - steady_temp) * (
-                    cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3]
-                )
+                E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
+                energy_dot = _evaluate_rate(E_q, cv, steady_temp)
+                E_e = _evaluate_total_energy(Te, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s)
+                energy_dot_e = _evaluate_rate(E_e, cv, steady_temp)
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_e
 
                 # Diffusion vector
@@ -2118,8 +2135,6 @@ def integrate_tangent_matrices(  # noqa
                     dhf_dT,
                     dhf_dp,
                     cp_f_q,
-                    E_q,
-                    energy_dot,
                     lambda_e,
                 ) = _evaluate_energy_properties(
                     T_q,
@@ -2127,22 +2142,18 @@ def integrate_tangent_matrices(  # noqa
                     T_q_n,
                     p_q_n,
                     T_flow_q_n,
-                    phi_L,
                     phi_L_n,
-                    rho_f,
                     is_fracture,
                     w0,
-                    rho_s,
-                    cp_s,
                     lambda_f,
                     lambda_s,
                     isotropic_cond,
                     nsd,
                     fluid,
-                    cv,
-                    steady_temp,
                     T_flow_lagged=T_flow_lagged,
                 )
+                E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
+                energy_dot = _evaluate_rate(E_q, cv, steady_temp)
                 u_f_n = u_f[:, :, 0:1]
                 duf_dT_n = duf_dT[:, :, 0:1]
                 duf_dp_n = duf_dp[:, :, 0:1]
