@@ -958,6 +958,13 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
 # just also keeps the derivative outputs the residual discards - except where noted.
 # ----------------------------------------------------------------------------------------
 
+# Sentinel for a tangent-only input/output that a `want_tangent_*=False` caller doesn't have
+# or doesn't need - matches this file's existing convention of empty/placeholder arrays over
+# `None` (e.g. `integrate_enthlpy_bndry_tangent`'s `Kpp`/`KpT` defaults, or the NaN-sentinel
+# `mu_q`/`dmu_dp`/etc. placeholders passed into `_integrate_fracture_matrix_coupling_tangent`
+# when a coupling flag is off).
+_EMPTY = np.empty((0, 0))
+
 
 def _evaluate_element_kinematics(
     N_q: npt.NDArray[np.float64],
@@ -973,29 +980,24 @@ def _evaluate_element_kinematics(
     npt.NDArray[np.float64],  # Te
     npt.NDArray[np.float64],  # Te_flow
     npt.NDArray[np.float64],  # pe
-    npt.NDArray[np.float64],  # Te_n
-    npt.NDArray[np.float64],  # Te_flow_n
-    npt.NDArray[np.float64],  # pe_n
     npt.NDArray[np.float64],  # T_0e
     npt.NDArray[np.float64],  # p_0e
     npt.NDArray[np.float64],  # L_vec
     npt.NDArray[np.float64],  # T_q
     npt.NDArray[np.float64],  # T_flow_q
     npt.NDArray[np.float64],  # p_q
-    npt.NDArray[np.float64],  # T_q_n
-    npt.NDArray[np.float64],  # T_flow_q_n
-    npt.NDArray[np.float64],  # p_q_n
     npt.NDArray[np.float64],  # gradT
     npt.NDArray[np.float64],  # gradP
 ]:
-    """Slice this element's nodal primary variables and interpolate them to quadrature points."""
+    """Slice this element's nodal primary variables and interpolate them to quadrature points.
+
+    Only returns the full (4-column time-history) arrays - the caller slices out whichever
+    current-iterate (column 0) values it needs from these, since which ones it needs and how
+    many times varies by caller.
+    """
     Te = T[enodes_dof]  # element nodal temperatures
     Te_flow = T_flow[enodes_dof]  # element nodal temperatures, for flow properties
     pe = p[enodes_dof]  # element nodal pressures
-    # Current-iterate (column 0) slices, reused throughout instead of re-sliced at each use.
-    Te_n = Te[:, 0:1]
-    Te_flow_n = Te_flow[:, 0:1]
-    pe_n = pe[:, 0:1]
     T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
     p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
     L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths # noqa
@@ -1003,31 +1005,10 @@ def _evaluate_element_kinematics(
     T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
     T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
     p_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
-    T_q_n = T_q[:, :, 0:1]  # current-iterate quadrature-point temperature
-    T_flow_q_n = T_flow_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
-    p_q_n = p_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
-    gradT = B_q @ Te_n  # qudarature point temperature gradient, nq x nsd x 1
-    gradP = B_q @ pe_n  # quadrature point pressure gradient, nq x nsd x 1
+    gradT = B_q @ Te[:, 0:1]  # qudarature point temperature gradient, nq x nsd x 1
+    gradP = B_q @ pe[:, 0:1]  # quadrature point pressure gradient, nq x nsd x 1
 
-    return (
-        Te,
-        Te_flow,
-        pe,
-        Te_n,
-        Te_flow_n,
-        pe_n,
-        T_0e,
-        p_0e,
-        L_vec,
-        T_q,
-        T_flow_q,
-        p_q,
-        T_q_n,
-        T_flow_q_n,
-        p_q_n,
-        gradT,
-        gradP,
-    )
+    return Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP
 
 
 def _evaluate_flow_properties(
@@ -1046,18 +1027,17 @@ def _evaluate_flow_properties(
     npt.NDArray[np.float64],  # mu_q
     npt.NDArray[np.float64],  # dmu_dT
     npt.NDArray[np.float64],  # dmu_dp
-    npt.NDArray[np.float64],  # rho_f
+    npt.NDArray[np.float64],  # rho_f (full time history)
     npt.NDArray[np.float64],  # drho_dT (current-iterate only)
     npt.NDArray[np.float64],  # drho_dp (current-iterate only)
-    npt.NDArray[np.float64],  # rho_f_n
 ]:
     """Evaluate permeability and viscosity (current iterate only) and density (full time
     history, needed for the energy storage time-derivative) at quadrature points.
 
     Density derivatives are only ever needed at the current iterate (there's no time
-    derivative of a Jacobian term), so they're sliced down before returning - unlike `rho_f`
-    itself, which callers needing the full history (e.g. its own time-derivative) slice
-    themselves via `rho_f_n`.
+    derivative of a Jacobian term), so they're sliced down before returning. `rho_f` itself
+    is returned at full extent - the caller slices out `rho_f[:, :, 0:1]` if/when it needs
+    the current-iterate column too.
 
     `T_flow_lagged` only affects the derivative outputs, never the values themselves, so
     callers that don't need the derivatives (integrate_residuals) can simply ignore them.
@@ -1065,10 +1045,9 @@ def _evaluate_flow_properties(
     kf, dkf_dT, dkf_dp = get_effective_permeability(kf_0, T_flow_q_n, p_q_n, fluid, T_flow_lagged)
     mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q_n, p_q_n, fluid, T_flow_lagged)
     rho_f, drho_dT, drho_dp = get_density(T_flow_q, p_q, fluid, T_flow_lagged)
-    rho_f_n = rho_f[:, :, 0:1]
     drho_dT = drho_dT[:, :, 0:1]
     drho_dp = drho_dp[:, :, 0:1]
-    return kf, dkf_dT, dkf_dp, mu_q, dmu_dT, dmu_dp, rho_f, drho_dT, drho_dp, rho_f_n
+    return kf, dkf_dT, dkf_dp, mu_q, dmu_dT, dmu_dp, rho_f, drho_dT, drho_dp
 
 
 def _evaluate_darcy_flux(
@@ -1078,12 +1057,73 @@ def _evaluate_darcy_flux(
     rho_f_n: npt.NDArray[np.float64],
     g_r: npt.NDArray[np.float64],
     isotropic_perm: bool,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Evaluate the Darcy flux and Darcy mass flux at quadrature points."""
+    N_q: npt.NDArray[np.float64],
+    B_q: npt.NDArray[np.float64],
+    dkf_dp: npt.NDArray[np.float64] = _EMPTY,
+    dmu_dp: npt.NDArray[np.float64] = _EMPTY,
+    drho_dp: npt.NDArray[np.float64] = _EMPTY,
+    dkf_dT: npt.NDArray[np.float64] = _EMPTY,
+    dmu_dT: npt.NDArray[np.float64] = _EMPTY,
+    drho_dT: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent_dp: bool = False,
+    want_tangent_dT: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # gradP_mod
+    npt.NDArray[np.float64],  # darcy_flux
+    npt.NDArray[np.float64],  # q_D
+    npt.NDArray[np.float64],  # dqD_dp, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dqD_dT, `_EMPTY` unless want_tangent_dT
+]:
+    """Evaluate the Darcy flux and Darcy mass flux at quadrature points, plus (optionally)
+    their pressure/temperature tangents - kept alongside the value they're the derivative of
+    so the two can't silently drift apart.
+
+    The tangents are non-trivial (matrix products, not just an unused return slot), so unlike
+    the raw property derivatives (dmu_dT etc., always returned by matprops regardless of
+    caller), they're only computed when actually requested via `want_tangent_dp`/`_dT` -
+    residual callers never need them; `integrate_tangent_matrices` requests `dp` whenever it
+    needs `Kpp` (effectively always) and `dT` only when `advection_on or fully_coupled`.
+    """
     gradP_mod = gradP - rho_f_n * g_r
     darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
     q_D = rho_f_n * darcy_flux
-    return gradP_mod, darcy_flux, q_D
+
+    dqD_dp = _EMPTY
+    if want_tangent_dp:
+        if isotropic_perm:
+            dqD_dp = (
+                rho_f_n * kf / mu_q * (B_q + drho_dp * N_q)
+                + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
+                * gradP_mod
+                * N_q
+            )
+        else:
+            dqD_dp = (
+                rho_f_n * kf / mu_q @ (B_q + drho_dp * N_q)
+                + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
+                @ gradP_mod
+                * N_q
+            )
+
+    dqD_dT = _EMPTY
+    if want_tangent_dT:
+        if isotropic_perm:
+            dqD_dT = (
+                rho_f_n * kf / mu_q * (drho_dT * g_r * N_q)
+                + (kf / mu_q * drho_dT + rho_f_n / mu_q * dkf_dT + rho_f_n * kf / mu_q**2 * dmu_dT)
+                * gradP_mod
+                * N_q
+            )
+        else:
+            dqD_dT = (
+                rho_f_n * kf / mu_q @ (drho_dT * g_r * N_q)
+                + (kf / mu_q * drho_dT + rho_f_n / mu_q * dkf_dT + rho_f_n * kf / mu_q**2 * dmu_dT)
+                @ gradP_mod
+                * N_q
+            )
+
+    return gradP_mod, darcy_flux, q_D, dqD_dp, dqD_dT
 
 
 def _evaluate_quad_porosity(
@@ -1103,13 +1143,15 @@ def _evaluate_quad_porosity(
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
 ) -> tuple[
-    npt.NDArray[np.float64],  # phi_L
-    npt.NDArray[np.float64],  # dphi_L_dT
-    npt.NDArray[np.float64],  # dphi_L_dp
-    npt.NDArray[np.float64],  # phi_L_n
+    npt.NDArray[np.float64],  # phi_L (full time history)
+    npt.NDArray[np.float64],  # dphi_L_dT (current-iterate only)
+    npt.NDArray[np.float64],  # dphi_L_dp (current-iterate only)
 ]:
     """Evaluate the Lagrangian porosity at quadrature points: full time history (needed for
     the energy storage time-derivative), plus its current-iterate derivatives.
+
+    `phi_L` is returned at full extent - the caller slices out `phi_L[:, :, 0:1]` if/when it
+    needs the current-iterate column too.
     """
     if is_fracture:
         # For the fracture case, the phi terms are effectively replaced by aperture, and
@@ -1132,8 +1174,7 @@ def _evaluate_quad_porosity(
         )
         dphi_L_dT = dphi_L_dT[:, :, 0:1]
         dphi_L_dp = dphi_L_dp[:, :, 0:1]
-    phi_L_n = phi_L[:, :, 0:1]
-    return phi_L, dphi_L_dT, dphi_L_dp, phi_L_n
+    return phi_L, dphi_L_dT, dphi_L_dp
 
 
 def _evaluate_nodal_state(
@@ -1195,25 +1236,6 @@ def _evaluate_nodal_state(
     )
 
 
-def _evaluate_rate(
-    Q: npt.NDArray[np.float64],
-    cv: npt.NDArray[np.float64],
-    steady_state_on: float,
-) -> npt.NDArray[np.float64]:
-    """Backward-difference time rate of a stored quantity, gated off under steady-state.
-
-    `Q`'s last axis must hold one time-history column per rate level (current, n-1, n-2) -
-    works for both the quadrature-point (nq, 1, 4) shape and the nodal (nne, 4) shape via
-    `Q[..., k:k+1]`, which selects history column `k` regardless of `Q`'s rank. Shared
-    between the mass and energy storage terms - the rate itself carries no physics of its
-    own, so it doesn't care what `Q` actually is.
-    """
-    rate: npt.NDArray[np.float64] = (1 - steady_state_on) * (
-        cv[0] * Q[..., 0:1] + cv[1] * Q[..., 1:2] + cv[2] * Q[..., 2:3]
-    )
-    return rate
-
-
 def _evaluate_total_energy(
     T: npt.NDArray[np.float64],
     phi_L: npt.NDArray[np.float64],
@@ -1229,6 +1251,120 @@ def _evaluate_total_energy(
     only in which sample point's T/phi_L/rho_f/u_f is passed in.
     """
     return (1 - phi_L) * rho_s * cp_s * T * (1 - is_fracture) + phi_L * rho_f * u_f
+
+
+def _evaluate_mass_storage_integrands(
+    phi_L_e: npt.NDArray[np.float64],
+    rho_f_e: npt.NDArray[np.float64],
+    cv: npt.NDArray[np.float64],
+    steady_pres: float,
+    dphi_L_dp_e: npt.NDArray[np.float64] = _EMPTY,
+    drho_dp_e: npt.NDArray[np.float64] = _EMPTY,
+    phi_L_n: npt.NDArray[np.float64] = _EMPTY,
+    rho_f_n: npt.NDArray[np.float64] = _EMPTY,
+    dphi_L_dT: npt.NDArray[np.float64] = _EMPTY,
+    drho_dT: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent_dp: bool = False,
+    want_tangent_dT: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # mass_dot_e
+    npt.NDArray[np.float64],  # integrand_dFsdp_e (Kpp), `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # integrand_dFsdT (KpT), `_EMPTY` unless want_tangent_dT
+]:
+    """Evaluate the mass storage rate (nodal, lumped) and - optionally - its pressure and
+    temperature tangents.
+
+    Kept together so the residual's F_Pstorage and the tangent's Kpp/KpT storage
+    contributions can't silently drift apart. The dp-tangent is evaluated at nodes (matching
+    Kpp's lumped discretization); the dT-tangent at quadrature points (matching KpT's
+    consistent discretization) - hence the two separate input groups. Both tangents are cheap
+    (a handful of elementwise products on already-available arrays), so unlike the Darcy-flux
+    and SUPG tangents they aren't worth skipping - the flags exist for API clarity (a residual
+    caller has no business touching them) rather than to save real work.
+    """
+    f_mass_e = phi_L_e * rho_f_e
+    mass_dot_e = (1 - steady_pres) * (
+        cv[0] * f_mass_e[:, 0:1] + cv[1] * f_mass_e[:, 1:2] + cv[2] * f_mass_e[:, 2:3]
+    )
+
+    integrand_dFsdp_e = _EMPTY
+    if want_tangent_dp:
+        integrand_dFsdp_e = (1 - steady_pres) * cv[0] * (dphi_L_dp_e * rho_f_e + phi_L_e * drho_dp_e)
+
+    integrand_dFsdT = _EMPTY
+    if want_tangent_dT:
+        integrand_dFsdT = (1 - steady_pres) * cv[0] * (dphi_L_dT * rho_f_n + phi_L_n * drho_dT)
+
+    return mass_dot_e, integrand_dFsdp_e, integrand_dFsdT
+
+
+def _evaluate_energy_storage_integrands(
+    Te: npt.NDArray[np.float64],
+    phi_L_e: npt.NDArray[np.float64],
+    rho_f_e: npt.NDArray[np.float64],
+    u_f_e: npt.NDArray[np.float64],
+    is_fracture: bool,
+    rho_s: float,
+    cp_s: float,
+    cv: npt.NDArray[np.float64],
+    steady_temp: float,
+    Te_n: npt.NDArray[np.float64] = _EMPTY,
+    dphi_L_dT_e: npt.NDArray[np.float64] = _EMPTY,
+    drho_dT_e: npt.NDArray[np.float64] = _EMPTY,
+    duf_dT_e: npt.NDArray[np.float64] = _EMPTY,
+    T_q_n: npt.NDArray[np.float64] = _EMPTY,
+    phi_L_n: npt.NDArray[np.float64] = _EMPTY,
+    rho_f_n: npt.NDArray[np.float64] = _EMPTY,
+    u_f_n: npt.NDArray[np.float64] = _EMPTY,
+    dphi_L_dp: npt.NDArray[np.float64] = _EMPTY,
+    drho_dp: npt.NDArray[np.float64] = _EMPTY,
+    duf_dp_n: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent_dT: bool = False,
+    want_tangent_dp: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # E_e
+    npt.NDArray[np.float64],  # energy_dot_e
+    npt.NDArray[np.float64],  # integrand_dFCdT_e (KTT), `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # integrand_dFCdp (KTp), `_EMPTY` unless want_tangent_dp
+]:
+    """Evaluate the nodal (lumped) energy storage rate and - optionally - its temperature and
+    pressure tangents.
+
+    Kept together so the residual's F_Tstorage and the tangent's KTT/KTp storage
+    contributions can't silently drift apart. The dT-tangent is evaluated at nodes (matching
+    KTT's lumped discretization); the dp-tangent at quadrature points (matching KTp's
+    consistent discretization) - hence the two separate input groups. Both tangents are cheap,
+    so (like the mass-storage tangents) the flags are for API clarity, not to save real work.
+    """
+    E_e = _evaluate_total_energy(Te, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s)
+    energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
+
+    integrand_dFCdT_e = _EMPTY
+    if want_tangent_dT:
+        integrand_dFCdT_e = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                (1 - phi_L_e) * rho_s * cp_s * (1 - is_fracture)
+                + phi_L_e * (drho_dT_e * u_f_e + rho_f_e * duf_dT_e)
+                + dphi_L_dT_e * (rho_f_e * u_f_e - rho_s * cp_s * Te_n)
+            )
+        )
+
+    integrand_dFCdp = _EMPTY
+    if want_tangent_dp:
+        integrand_dFCdp = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
+                + dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
+            )
+        )
+
+    return E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp
 
 
 def _evaluate_energy_properties(
@@ -1282,13 +1418,23 @@ def _evaluate_energy_properties(
     return u_f, duf_dT, duf_dp, hf_q, dhf_dT, dhf_dp, cp_f_q, lambda_e
 
 
-def _evaluate_supg_terms(
+def _evaluate_advection_terms(
     B_q: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
     darcy_flux: npt.NDArray[np.float64],
+    q_D: npt.NDArray[np.float64],
     rho_f_n: npt.NDArray[np.float64],
+    rho_f: npt.NDArray[np.float64],
     cp_f_q: npt.NDArray[np.float64],
     hf_q: npt.NDArray[np.float64],
-    energy_dot: npt.NDArray[np.float64],
+    T_q: npt.NDArray[np.float64],
+    phi_L: npt.NDArray[np.float64],
+    u_f: npt.NDArray[np.float64],
+    is_fracture: bool,
+    rho_s: float,
+    cp_s: float,
+    cv: npt.NDArray[np.float64],
+    steady_temp: float,
     pe_n: npt.NDArray[np.float64],
     Te_n: npt.NDArray[np.float64],
     Te_flow_n: npt.NDArray[np.float64],
@@ -1299,17 +1445,46 @@ def _evaluate_supg_terms(
     lambda_e: npt.NDArray[np.float64] | float,
     isotropic_cond: bool,
     fluid: dict[str, Any],
+    dhf_dT: npt.NDArray[np.float64] = _EMPTY,
+    dqD_dT: npt.NDArray[np.float64] = _EMPTY,
+    T_q_n: npt.NDArray[np.float64] = _EMPTY,
+    phi_L_n: npt.NDArray[np.float64] = _EMPTY,
+    dphi_L_dT: npt.NDArray[np.float64] = _EMPTY,
+    drho_dT: npt.NDArray[np.float64] = _EMPTY,
+    u_f_n: npt.NDArray[np.float64] = _EMPTY,
+    duf_dT_n: npt.NDArray[np.float64] = _EMPTY,
+    dhf_dp: npt.NDArray[np.float64] = _EMPTY,
+    dqD_dp: npt.NDArray[np.float64] = _EMPTY,
+    dphi_L_dp: npt.NDArray[np.float64] = _EMPTY,
+    drho_dp: npt.NDArray[np.float64] = _EMPTY,
+    duf_dp_n: npt.NDArray[np.float64] = _EMPTY,
+    *,
+    want_tangent_dT: bool = False,
+    want_tangent_dp: bool = False,
 ) -> tuple[
-    npt.NDArray[np.float64],  # tau
-    npt.NDArray[np.float64],  # hf_e
-    npt.NDArray[np.float64],  # grad_hf
-    npt.NDArray[np.float64],  # grad_rhof
-    npt.NDArray[np.float64],  # RTh
+    npt.NDArray[np.float64],  # integrand_advection (F_Tadvection)
+    npt.NDArray[np.float64],  # integrand_SUPG (F_Tstab)
+    npt.NDArray[np.float64],  # integrand_advection_dT (KTT), `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # integrand_SUPG_dT (KTT), `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # integrand_advection_dp (KTp), `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
 ]:
-    """Evaluate the SUPG stabilization coefficient and the discretized strong-form residual
-    at quadrature points - shared between the residual's F_Tadvection/F_Tstab and the
-    tangent's dR_dT/dR_dp Jacobian terms, which differentiate this same residual.
+    """Evaluate the SUPG-stabilized advective energy residual integrands and - optionally -
+    their temperature/pressure tangents.
+
+    Kept together (rather than split between the residual's F_Tadvection/F_Tstab and the
+    tangent's KTT/KTp advection terms) because the tangent integrands are the literal
+    derivatives of the discretized strong-form residual `RTh` computed here - keeping them
+    in the same function is the only way an update to one can't silently leave the other
+    stale. The dT and dp tangents are non-trivial (transposes and matrix products, not just
+    an unused return slot), so - unlike the residual integrands, always returned - they're
+    only computed when requested.
     """
+    E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
+    energy_dot = (1 - steady_temp) * (
+        cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
+    )
+
     flux = rho_f_n * cp_f_q * darcy_flux
     if nsd == 3:
         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
@@ -1363,7 +1538,68 @@ def _evaluate_supg_terms(
         energy_dot + (grad_hf * rho_f_n + hf_q * grad_rhof).transpose(0, 2, 1) @ darcy_flux
     )  # discretized residual
 
-    return tau, hf_e, grad_hf, grad_rhof, RTh
+    # advection (subtracted at the residual level, like the mass flux term) and its SUPG
+    # stabilization (a Petrov-Galerkin test-function correction, added with its own
+    # independent sign - not part of the divergence term being integrated by parts, so it
+    # does not flip sign along with plain advection)
+    integrand_advection = rho_f_n * darcy_flux * hf_q
+    integrand_SUPG = cp_f_q * rho_f_n * darcy_flux * tau * RTh
+
+    integrand_advection_dT = _EMPTY
+    integrand_SUPG_dT = _EMPTY
+    if want_tangent_dT:
+        D2 = grad_rhof.transpose(0, 2, 1) @ q_D  # d/dTe of (grad_rhof . q_D), nq x 1 x 1
+        # `dqD_dT` is d(q_D)/dT with the sign Kpp/KpT need (those go through the
+        # F_Pdiffusion bucket, which absorbs the flip) - here we're differentiating
+        # F_Tadvection/RTh directly, which need the literal +d(q_D)/dT, so negate it locally
+        # rather than reuse the raw variable.
+        dqD_dT_direct = -dqD_dT
+        dR_dT = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                (1 - phi_L_n) * rho_s * cp_s * (1 - is_fracture)
+                + dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
+                + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
+            )
+            * N_q
+            + (dhf_dT + hf_q / rho_f_n * drho_dT) * (q_D.transpose(0, 2, 1) @ B_q)
+            + (grad_hf + hf_q * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT_direct
+            + (dhf_dT / rho_f_n - hf_q * drho_dT / rho_f_n**2) * D2 * N_q
+        )
+        integrand_advection_dT = dhf_dT * q_D * N_q + hf_q * dqD_dT_direct
+        integrand_SUPG_dT = tau * cp_f_q * dR_dT * q_D + tau * cp_f_q * RTh * dqD_dT_direct
+
+    integrand_advection_dp = _EMPTY
+    integrand_SUPG_dp = _EMPTY
+    if want_tangent_dp:
+        # Same sign note as `dqD_dT_direct` above: `dqD_dp` carries the Kpp/KpT-side sign
+        # convention, but this differentiates F_Tadvection/RTh, which need the literal
+        # +d(q_D)/dp.
+        dqD_dp_direct = -dqD_dp
+        dR_dp = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
+                + phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
+            )
+            * N_q
+            + (dhf_dp + hf_q / rho_f_n * drho_dp) * q_D * B_q
+            + (grad_hf + hf_q * grad_rhof / rho_f_n) * dqD_dp_direct
+            + (dhf_dp * grad_rhof / rho_f_n - hf_q * grad_rhof / rho_f_n**2 * drho_dp)
+        )
+        integrand_advection_dp = dhf_dp * q_D * N_q + hf_q * dqD_dp_direct
+        integrand_SUPG_dp = tau * cp_f_q * dR_dp * q_D + tau * cp_f_q * RTh * dqD_dp_direct
+
+    return (
+        integrand_advection,
+        integrand_SUPG,
+        integrand_advection_dT,
+        integrand_SUPG_dT,
+        integrand_advection_dp,
+        integrand_SUPG_dp,
+    )
 
 
 def integrate_residuals(  # noqa
@@ -1519,28 +1755,32 @@ def integrate_residuals(  # noqa
                 Te,
                 Te_flow,
                 pe,
-                Te_n,
-                Te_flow_n,
-                pe_n,
                 T_0e,
                 p_0e,
                 L_vec,
                 T_q,
                 T_flow_q,
                 p_q,
-                T_q_n,
-                T_flow_q_n,
-                p_q_n,
                 gradT,
                 gradP,
             ) = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            # Current-iterate (column 0) slices, reused throughout below.
+            Te_n = Te[:, 0:1]
+            Te_flow_n = Te_flow[:, 0:1]
+            pe_n = pe[:, 0:1]
+            T_q_n = T_q[:, :, 0:1]
+            T_flow_q_n = T_flow_q[:, :, 0:1]
+            p_q_n = p_q[:, :, 0:1]
 
-            kf, _, _, mu_q, _, _, rho_f, _, _, rho_f_n = _evaluate_flow_properties(
+            kf, _, _, mu_q, _, _, rho_f, _, _ = _evaluate_flow_properties(
                 kf_0, T_flow_q_n, p_q_n, T_flow_q, p_q, fluid
             )
-            gradP_mod, darcy_flux, q_D = _evaluate_darcy_flux(kf, mu_q, gradP, rho_f_n, g_r, isotropic_perm)
+            rho_f_n = rho_f[:, :, 0:1]
+            gradP_mod, darcy_flux, q_D, _, _ = _evaluate_darcy_flux(
+                kf, mu_q, gradP, rho_f_n, g_r, isotropic_perm, N_q, B_q
+            )
 
-            phi_L, _, _, phi_L_n = _evaluate_quad_porosity(
+            phi_L, _, _ = _evaluate_quad_porosity(
                 p_q,
                 p_0e,
                 T_flow_q,
@@ -1555,6 +1795,7 @@ def integrate_residuals(  # noqa
                 nq,
                 volumetric_strain_on=volumetric_strain_on,
             )
+            phi_L_n = phi_L[:, :, 0:1]
 
             # Nodal evaluation for self-consistent lumping of the storage terms (see
             # integrate_tangent_matrices for the matching tangent-side computation).
@@ -1577,9 +1818,7 @@ def integrate_residuals(  # noqa
 
             # ------ Conservation of mass
             if not temperature_only:
-                # Storage vector (lumped)
-                f_mass_e = phi_L_e * rho_f_e
-                mass_dot_e = _evaluate_rate(f_mass_e, cv, steady_pres)
+                mass_dot_e, _, _ = _evaluate_mass_storage_integrands(phi_L_e, rho_f_e, cv, steady_pres)
                 element_vectors["F_Pstorage"] = m_lump * mass_dot_e
 
                 # Diffusion vector
@@ -1602,10 +1841,9 @@ def integrate_residuals(  # noqa
                     nsd,
                     fluid,
                 )
-                E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
-                energy_dot = _evaluate_rate(E_q, cv, steady_temp)
-                E_e = _evaluate_total_energy(Te, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s)
-                energy_dot_e = _evaluate_rate(E_e, cv, steady_temp)
+                _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
+                    Te, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s, cv, steady_temp
+                )
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_e
 
                 # Diffusion vector
@@ -1615,13 +1853,23 @@ def integrate_residuals(  # noqa
 
                 # Advection and SUPG stabilization
                 if advection_on:
-                    tau, hf_e, grad_hf, grad_rhof, RTh = _evaluate_supg_terms(
+                    integrand_advection, integrand_SUPG, _, _, _, _ = _evaluate_advection_terms(
                         B_q,
+                        N_q,
                         darcy_flux,
+                        q_D,
                         rho_f_n,
+                        rho_f,
                         cp_f_q,
                         hf_q,
-                        energy_dot,
+                        T_q,
+                        phi_L,
+                        u_f,
+                        is_fracture,
+                        rho_s,
+                        cp_s,
+                        cv,
+                        steady_temp,
                         pe_n,
                         Te_n,
                         Te_flow_n,
@@ -1633,13 +1881,6 @@ def integrate_residuals(  # noqa
                         isotropic_cond,
                         fluid,
                     )
-
-                    # advection (subtracted at the residual level, like the mass flux term) and
-                    # its SUPG stabilization (a Petrov-Galerkin test-function correction, added
-                    # with its own independent sign - not part of the divergence term being
-                    # integrated by parts, so it does not flip sign along with plain advection)
-                    integrand_advection = rho_f_n * darcy_flux * hf_q
-                    integrand_SUPG = cp_f_q * rho_f_n * darcy_flux * tau * RTh
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, isotropic_perm
                     )
@@ -2018,21 +2259,22 @@ def integrate_tangent_matrices(  # noqa
                 Te,
                 Te_flow,
                 pe,
-                Te_n,
-                Te_flow_n,
-                pe_n,
                 T_0e,
                 p_0e,
                 L_vec,
                 T_q,
                 T_flow_q,
                 p_q,
-                T_q_n,
-                T_flow_q_n,
-                p_q_n,
                 gradT,
                 gradP,
             ) = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            # Current-iterate (column 0) slices, reused throughout below.
+            Te_n = Te[:, 0:1]
+            Te_flow_n = Te_flow[:, 0:1]
+            pe_n = pe[:, 0:1]
+            T_q_n = T_q[:, :, 0:1]
+            T_flow_q_n = T_flow_q[:, :, 0:1]
+            p_q_n = p_q[:, :, 0:1]
 
             (
                 kf,
@@ -2044,13 +2286,30 @@ def integrate_tangent_matrices(  # noqa
                 rho_f,
                 drho_dT,
                 drho_dp,
-                rho_f_n,
             ) = _evaluate_flow_properties(
                 kf_0, T_flow_q_n, p_q_n, T_flow_q, p_q, fluid, T_flow_lagged=T_flow_lagged
             )
-            gradP_mod, darcy_flux, q_D = _evaluate_darcy_flux(kf, mu_q, gradP, rho_f_n, g_r, isotropic_perm)
+            rho_f_n = rho_f[:, :, 0:1]
+            gradP_mod, darcy_flux, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
+                kf,
+                mu_q,
+                gradP,
+                rho_f_n,
+                g_r,
+                isotropic_perm,
+                N_q,
+                B_q,
+                dkf_dp,
+                dmu_dp,
+                drho_dp,
+                dkf_dT,
+                dmu_dT,
+                drho_dT,
+                want_tangent_dp=not temperature_only,
+                want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
+            )
 
-            phi_L, dphi_L_dT, dphi_L_dp, phi_L_n = _evaluate_quad_porosity(
+            phi_L, dphi_L_dT, dphi_L_dp = _evaluate_quad_porosity(
                 p_q,
                 p_0e,
                 T_flow_q,
@@ -2066,6 +2325,7 @@ def integrate_tangent_matrices(  # noqa
                 T_flow_lagged=T_flow_lagged,
                 volumetric_strain_on=volumetric_strain_on,
             )
+            phi_L_n = phi_L[:, :, 0:1]
 
             # Nodal evaluation for self-consistent lumping of the storage terms: density,
             # porosity, and internal energy are evaluated at each node's own (T, p) rather
@@ -2099,26 +2359,28 @@ def integrate_tangent_matrices(  # noqa
             )
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
 
-            # dqD/dp
-            if isotropic_perm:
-                dqD_dp = (
-                    rho_f_n * kf / mu_q * (B_q + drho_dp * N_q)
-                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
-                    * gradP_mod
-                    * N_q
-                )
-            else:
-                dqD_dp = (
-                    rho_f_n * kf / mu_q @ (B_q + drho_dp * N_q)
-                    + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
-                    @ gradP_mod
-                    * N_q
-                )
+            # Computed here (rather than inside the two `if` blocks below) so the Kpp-side
+            # (dp) and KpT-side (dT) mass-storage tangents stay next to the same call, and so
+            # `integrand_dFsdT` is ready by the time the (separate, later) `fully_coupled`
+            # block needs it.
+            _, integrand_dFsdp_e, integrand_dFsdT = _evaluate_mass_storage_integrands(
+                phi_L_e,
+                rho_f_e,
+                cv,
+                steady_pres,
+                dphi_L_dp_e,
+                drho_dp_e,
+                phi_L_n,
+                rho_f_n,
+                dphi_L_dT,
+                drho_dT,
+                want_tangent_dp=not temperature_only,
+                want_tangent_dT=fully_coupled,
+            )
 
             # ------------------------------------ Conservation of mass wrt pressure
             if not temperature_only:
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
-                integrand_dFsdp_e = (1 - steady_pres) * cv[0] * (dphi_L_dp_e * rho_f_e + phi_L_e * drho_dp_e)
                 element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_e.ravel())
 
                 # Diffusion vector - Fk
@@ -2152,21 +2414,38 @@ def integrate_tangent_matrices(  # noqa
                     fluid,
                     T_flow_lagged=T_flow_lagged,
                 )
-                E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
-                energy_dot = _evaluate_rate(E_q, cv, steady_temp)
                 u_f_n = u_f[:, :, 0:1]
                 duf_dT_n = duf_dT[:, :, 0:1]
                 duf_dp_n = duf_dp[:, :, 0:1]
 
-                # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight)
-                integrand_dFCdT_e = (
-                    (1 - steady_temp)
-                    * cv[0]
-                    * (
-                        (1 - phi_L_e) * rho_s * cp_s * (1 - is_fracture)
-                        + phi_L_e * (drho_dT_e * u_f_e + rho_f_e * duf_dT_e)
-                        + dphi_L_dT_e * (rho_f_e * u_f_e - rho_s * cp_s * Te_n)
-                    )
+                # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight).
+                # Computed here (rather than split across this block and the separate, later
+                # `fully_coupled` block) so KTT's (dT) and KTp's (dp) energy-storage tangents
+                # stay next to the same call - `integrand_dFCdp` is ready by the time
+                # `fully_coupled` needs it.
+                _, _, integrand_dFCdT_e, integrand_dFCdp = _evaluate_energy_storage_integrands(
+                    Te,
+                    phi_L_e,
+                    rho_f_e,
+                    u_f_e,
+                    is_fracture,
+                    rho_s,
+                    cp_s,
+                    cv,
+                    steady_temp,
+                    Te_n,
+                    dphi_L_dT_e,
+                    drho_dT_e,
+                    duf_dT_e,
+                    T_q_n,
+                    phi_L_n,
+                    rho_f_n,
+                    u_f_n,
+                    dphi_L_dp,
+                    drho_dp,
+                    duf_dp_n,
+                    want_tangent_dT=True,
+                    want_tangent_dp=fully_coupled,
                 )
                 element_matrices["KTT"] = np.diag(m_lump * integrand_dFCdT_e.ravel())
 
@@ -2174,40 +2453,37 @@ def integrate_tangent_matrices(  # noqa
                 integrand_dFlambdadT = lambda_e * B_q + dphi_L_dT * (lambda_f - lambda_s) * gradT * N_q
                 element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
-                # Advection and SUPG stabilization
-                if advection_on or fully_coupled:
-                    # dqD/dT
-                    if isotropic_perm:
-                        dqD_dT = (
-                            rho_f_n * kf / mu_q * (drho_dT * g_r * N_q)
-                            + (
-                                kf / mu_q * drho_dT
-                                + rho_f_n / mu_q * dkf_dT
-                                + rho_f_n * kf / mu_q**2 * dmu_dT
-                            )
-                            * gradP_mod
-                            * N_q
-                        )
-                    else:
-                        dqD_dT = (
-                            rho_f_n * kf / mu_q @ (drho_dT * g_r * N_q)
-                            + (
-                                kf / mu_q * drho_dT
-                                + rho_f_n / mu_q * dkf_dT
-                                + rho_f_n * kf / mu_q**2 * dmu_dT
-                            )
-                            @ gradP_mod
-                            * N_q
-                        )
-
+                # Advection and SUPG stabilization. Computed here (rather than split between
+                # this block and the separate, later `fully_coupled` block) so KTT's (dT) and
+                # KTp's (dp) advection/SUPG tangents stay next to the residual `RTh` they're
+                # both derivatives of - `integrand_advection_dp`/`integrand_SUPG_dp` are ready
+                # by the time `fully_coupled` needs them.
+                integrand_advection_dp = integrand_SUPG_dp = _EMPTY
                 if advection_on:
-                    tau, hf_e, grad_hf, grad_rhof, RTh = _evaluate_supg_terms(
+                    (
+                        _,
+                        _,
+                        integrand_advection_dT,
+                        integrand_SUPG_dT,
+                        integrand_advection_dp,
+                        integrand_SUPG_dp,
+                    ) = _evaluate_advection_terms(
                         B_q,
+                        N_q,
                         darcy_flux,
+                        q_D,
                         rho_f_n,
+                        rho_f,
                         cp_f_q,
                         hf_q,
-                        energy_dot,
+                        T_q,
+                        phi_L,
+                        u_f,
+                        is_fracture,
+                        rho_s,
+                        cp_s,
+                        cv,
+                        steady_temp,
                         pe_n,
                         Te_n,
                         Te_flow_n,
@@ -2218,41 +2494,31 @@ def integrate_tangent_matrices(  # noqa
                         lambda_e,
                         isotropic_cond,
                         fluid,
+                        dhf_dT,
+                        dqD_dT,
+                        T_q_n,
+                        phi_L_n,
+                        dphi_L_dT,
+                        drho_dT,
+                        u_f_n,
+                        duf_dT_n,
+                        dhf_dp,
+                        dqD_dp,
+                        dphi_L_dp,
+                        drho_dp,
+                        duf_dp_n,
+                        want_tangent_dT=True,
+                        want_tangent_dp=fully_coupled,
                     )
-
-                    D2 = grad_rhof.transpose(0, 2, 1) @ q_D  # d/dTe of (grad_rhof . q_D), nq x 1 x 1
-                    # `dqD_dT` (like `dqD_dp` below) is d(q_D)/dT with the sign Kpp/KpT need
-                    # (those go through the F_Pdiffusion bucket, which absorbs the flip) - here
-                    # we're differentiating F_Tadvection/RTh directly, which need the literal
-                    # +d(q_D)/dT, so negate it locally rather than reuse the raw variable.
-                    dqD_dT_direct = -dqD_dT
-                    dR_dT = (
-                        (1 - steady_temp)
-                        * cv[0]
-                        * (
-                            (1 - phi_L_n) * rho_s * cp_s * (1 - is_fracture)
-                            + dphi_L_dT * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
-                            + phi_L_n * (drho_dT * u_f_n + rho_f_n * duf_dT_n)
-                        )
-                        * N_q
-                        + (dhf_dT + hf_q / rho_f_n * drho_dT) * (q_D.transpose(0, 2, 1) @ B_q)
-                        + (grad_hf + hf_q * grad_rhof / rho_f_n).transpose(0, 2, 1) @ dqD_dT_direct
-                        + (dhf_dT / rho_f_n - hf_q * drho_dT / rho_f_n**2) * D2 * N_q
-                    )
-
-                    # Combined integrands
-                    integrand_advection = dhf_dT * q_D * N_q + hf_q * dqD_dT_direct
-                    integrand_SUPG = tau * cp_f_q * dR_dT * q_D + tau * cp_f_q * RTh * dqD_dT_direct
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection, wJe_q, False
+                        B_q, integrand_advection_dT, wJe_q, False
                     )
-                    element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG, wJe_q, False)
+                    element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dT, wJe_q, False)
 
             # Fully coupled - off diagonal matrices
             if fully_coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                integrand_dFsdT = (1 - steady_pres) * cv[0] * (dphi_L_dT * rho_f_n + phi_L_n * drho_dT)
                 element_matrices["KpT"] = _vctrzd_quad_point_integration(
                     N_q, integrand_dFsdT, N_q, wJe_q, scalar=True
                 )
@@ -2263,16 +2529,8 @@ def integrate_tangent_matrices(  # noqa
 
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
-                integrand_dFCdT = (
-                    (1 - steady_temp)
-                    * cv[0]
-                    * (
-                        phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
-                        + dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
-                    )
-                )
                 element_matrices["KTp"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFCdT, N_q, wJe_q, scalar=True
+                    N_q, integrand_dFCdp, N_q, wJe_q, scalar=True
                 )
 
                 # Themal diffusion vector
@@ -2280,30 +2538,12 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 if advection_on:
-                    # Same sign note as `dqD_dT_direct` above: `dqD_dp` carries the Kpp/KpT-side
-                    # sign convention, but this differentiates F_Tadvection/RTh, which need
-                    # the literal +d(q_D)/dp.
-                    dqD_dp_direct = -dqD_dp
-                    dR_dp = (
-                        (1 - steady_temp)
-                        * cv[0]
-                        * (
-                            dphi_L_dp * (rho_f_n * u_f_n - rho_s * cp_s * T_q_n)
-                            + phi_L_n * (drho_dp * u_f_n + rho_f_n * duf_dp_n)
-                        )
-                        * N_q
-                        + (dhf_dp + hf_q / rho_f_n * drho_dp) * q_D * B_q
-                        + (grad_hf + hf_q * grad_rhof / rho_f_n) * dqD_dp_direct
-                        + (dhf_dp * grad_rhof / rho_f_n - hf_q * grad_rhof / rho_f_n**2 * drho_dp)
-                    )
-
-                    # Advection tangent matrices
-                    integrand_advection = dhf_dp * q_D * N_q + hf_q * dqD_dp_direct
-                    integrand_SUPG = tau * cp_f_q * dR_dp * q_D + tau * cp_f_q * RTh * dqD_dp_direct
+                    # Computed above, alongside KTT's dT tangent, by the same
+                    # `_evaluate_advection_terms` call (requested via want_tangent_dp=fully_coupled).
                     element_matrices["KTp"] -= _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection, wJe_q, False
+                        B_q, integrand_advection_dp, wJe_q, False
                     )
-                    element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG, wJe_q, False)
+                    element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dp, wJe_q, False)
 
             # ----- Fracture-matrix leak-off/convective-exchange coupling
             if is_fracture:
