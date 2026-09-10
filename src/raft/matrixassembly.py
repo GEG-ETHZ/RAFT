@@ -24,10 +24,10 @@ from .matprops import (
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
-def _get_gravity(nsd: int, magnitude: float) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+def _get_gravity(nsd: int, magnitude: float) -> npt.NDArray[np.float64]:
     ng = np.zeros((nsd, 1))
     ng[nsd - 1] = 1.0  # gravity normal
-    return magnitude * ng, ng
+    return magnitude * ng
 
 
 def _make_sparse(
@@ -760,52 +760,40 @@ def _get_region_flow_data(
     float,  # w, fracture aperture; NaN sentinel when not is_fracture
     npt.NDArray[np.float64],  # u, fracture tangent; NaN sentinel when not is_fracture
     float,  # kf_perp, transverse permeability, coupling only; NaN sentinel when not is_fracture
-    npt.NDArray[np.float64] | float,  # comp_f, pore/fracture fluid compressibility - KM only
 ]:
-    """Resolve per-region permeability, node-projection, and storage data."""
+    """Resolve per-region permeability and node-projection data."""
     # Fracture case
     if is_fracture:
         w = material["fracture"]["aperture"][r]
         kf = w**3 / 12  # longitudinal permeability, cubic law
         kf_perp = w / 12  # transverse permeability, coupling only
-        comp_f = w / material["fluid"]["bulk_mod"]
         u = fmesh["fracture_tangent"][r].reshape(-1, 1)
         nodes_r = nodes_f @ u  # project mesh nodes into local coordinates
-        return kf, True, nodes_r, w, u, kf_perp, comp_f
+        return kf, True, nodes_r, w, u, kf_perp
 
     # Bulk case
     kf = material["solid"]["permeability_eff"][r]
     isotropic_perm = bool(isinstance(kf, (float, int)))
-    comp_f = np.asarray(1 / material["solid"]["storage_mod"][r])
-    return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), float("nan"), comp_f
+    return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), float("nan")
 
 
-def _get_region_thermal_data(
-    material: dict[str, Any], is_fracture: bool, r: int
-) -> tuple[
-    npt.NDArray[np.float64] | float,  # lambda_e, thermal conductivity
-    bool,  # isotropic_cond
-    float,  # hc, interface heat transfer coeff, coupling only; NaN sentinel when not is_fracture
-    npt.NDArray[np.float64] | float,  # m_e, volumetric heat capacity - C only
-    npt.NDArray[np.float64],  # alpha_e, thermal expansion coeff - KpT only; NaN sentinel when is_fracture
-]:
-    """Resolve per-region thermal conductivity, capacity, and expansion data."""
+def _get_region_thermal_data(material: dict[str, Any], is_fracture: bool, r: int) -> tuple[bool, float]:
+    """Resolve the region's isotropic-conductivity flag and interface heat transfer coefficient.
+
+    `hc` is a NaN sentinel when not `is_fracture` (coupling-only quantity).
+    """
     # Fracture case
     if is_fracture:
         w = material["fracture"]["aperture"][r]
         lambda_f = material["fluid"]["therm_cond"]
-        lambda_e = lambda_f * w
         nusselt = material["fracture"]["nusselt"][r]
         hc = nusselt * lambda_f / 2 / w  # interface heat transfer coefficient, coupling only
-        m_e = material["fluid"]["density"] * material["fluid"]["specific_heat"] * w
-        return lambda_e, True, hc, m_e, np.full((1, 1), np.nan)
+        return True, hc
 
     # Bulk case
     lambda_e = material["solid"]["therm_cond_eff"][r]
     isotropic_cond = bool(isinstance(lambda_e, (float, int)))
-    m_e = material["solid"]["volumetric_heat_capacity_eff"][r]
-    alpha_e = np.asarray(material["solid"]["therm_expansion_eff"][r])
-    return lambda_e, isotropic_cond, float("nan"), m_e, alpha_e
+    return isotropic_cond, float("nan")
 
 
 def _get_region_solid_data(
@@ -1089,7 +1077,6 @@ def _evaluate_darcy_flux(
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
-    npt.NDArray[np.float64],  # gradP_mod
     npt.NDArray[np.float64],  # darcy_flux
     npt.NDArray[np.float64],  # q_D
     npt.NDArray[np.float64],  # dqD_dp, `_EMPTY` unless want_tangent_dp
@@ -1097,44 +1084,27 @@ def _evaluate_darcy_flux(
 ]:
     """Evaluate the Darcy flux and derivatives at quadrature points."""
     gradP_mod = gradP - rho_f_n * g_r
-    darcy_flux = -kf / mu_q * gradP_mod if isotropic_perm else -kf / mu_q @ gradP_mod
+    kfmu = kf / mu_q
+    darcy_flux = -kfmu * gradP_mod if isotropic_perm else -kfmu @ gradP_mod
     q_D = rho_f_n * darcy_flux
 
     dqD_dp = _EMPTY
     if want_tangent_dp:
+        term_2 = kfmu * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp
         if isotropic_perm:
-            dqD_dp = (
-                rho_f_n * kf / mu_q * (B_q + drho_dp * N_q)
-                + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
-                * gradP_mod
-                * N_q
-            )
+            dqD_dp = rho_f_n * kfmu * (B_q + drho_dp * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dp = (
-                rho_f_n * kf / mu_q @ (B_q + drho_dp * N_q)
-                + (kf / mu_q * drho_dp + rho_f_n / mu_q * dkf_dp + rho_f_n * kf / mu_q**2 * dmu_dp)
-                @ gradP_mod
-                * N_q
-            )
+            dqD_dp = rho_f_n * kfmu @ (B_q + drho_dp * N_q) + term_2 @ gradP_mod * N_q
 
     dqD_dT = _EMPTY
     if want_tangent_dT:
+        term_2 = kfmu * drho_dT + rho_f_n / mu_q * dkf_dT + rho_f_n * kf / mu_q**2 * dmu_dT
         if isotropic_perm:
-            dqD_dT = (
-                rho_f_n * kf / mu_q * (drho_dT * g_r * N_q)
-                + (kf / mu_q * drho_dT + rho_f_n / mu_q * dkf_dT + rho_f_n * kf / mu_q**2 * dmu_dT)
-                * gradP_mod
-                * N_q
-            )
+            dqD_dT = rho_f_n * kfmu * (drho_dT * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dT = (
-                rho_f_n * kf / mu_q @ (drho_dT * g_r * N_q)
-                + (kf / mu_q * drho_dT + rho_f_n / mu_q * dkf_dT + rho_f_n * kf / mu_q**2 * dmu_dT)
-                @ gradP_mod
-                * N_q
-            )
+            dqD_dT = rho_f_n * kfmu @ (drho_dT * g_r * N_q) + term_2 @ gradP_mod * N_q
 
-    return gradP_mod, darcy_flux, q_D, dqD_dp, dqD_dT
+    return darcy_flux, q_D, dqD_dp, dqD_dT
 
 
 def _evaluate_quad_porosity(
@@ -1207,7 +1177,6 @@ def _evaluate_nodal_state(
     npt.NDArray[np.float64],  # drho_dp_e
     npt.NDArray[np.float64],  # u_f_e
     npt.NDArray[np.float64],  # duf_dT_e
-    npt.NDArray[np.float64],  # duf_dp_e
 ]:
     """Evaluate porosity, density, and internal energy at this element's own nodes."""
     if is_fracture:
@@ -1219,7 +1188,7 @@ def _evaluate_nodal_state(
             pe, p_0e, Te_flow, T_0e, phi_0, K_d, biot, alpha_s, T_flow_lagged, volumetric_strain_on
         )
     rho_f_e, drho_dT_e, drho_dp_e = get_density(Te_flow, pe, fluid, T_flow_lagged)
-    u_f_e, duf_dT_e, duf_dp_e = get_internal_energy(Te, pe, fluid)
+    u_f_e, duf_dT_e, _ = get_internal_energy(Te, pe, fluid)
     return (
         phi_L_e,
         dphi_L_dT_e,
@@ -1229,7 +1198,6 @@ def _evaluate_nodal_state(
         drho_dp_e,
         u_f_e,
         duf_dT_e,
-        duf_dp_e,
     )
 
 
@@ -1401,8 +1369,7 @@ def _evaluate_energy_properties(
 def _evaluate_advection_terms(
     B_q: npt.NDArray[np.float64],
     N_q: npt.NDArray[np.float64],
-    darcy_flux: npt.NDArray[np.float64],
-    q_D: npt.NDArray[np.float64],
+    q_D: npt.NDArray[np.float64],  # mass flux
     rho_f_n: npt.NDArray[np.float64],
     rho_f: npt.NDArray[np.float64],
     cp_f_q: npt.NDArray[np.float64],
@@ -1450,12 +1417,13 @@ def _evaluate_advection_terms(
     npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
 ]:
     """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
+    darcy_flux = q_D / rho_f_n
     E_q = _evaluate_total_energy(T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
     energy_dot = (1 - steady_temp) * (
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
     )
 
-    flux = rho_f_n * cp_f_q * darcy_flux
+    flux = cp_f_q * q_D
     if nsd == 3:
         flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
     elif nsd == 2:
@@ -1504,8 +1472,8 @@ def _evaluate_advection_terms(
         energy_dot + (grad_hf * rho_f_n + hf_q * grad_rhof).transpose(0, 2, 1) @ darcy_flux
     )  # discretized residual
 
-    integrand_advection = rho_f_n * darcy_flux * hf_q
-    integrand_SUPG = cp_f_q * rho_f_n * darcy_flux * tau * RTh
+    integrand_advection = q_D * hf_q
+    integrand_SUPG = cp_f_q * q_D * tau * RTh
 
     integrand_advection_dT = _EMPTY
     integrand_SUPG_dT = _EMPTY
@@ -1650,20 +1618,20 @@ def integrate_residuals(  # noqa
         vec_counter_flux_m = 0
 
     # ----- gravity vector
-    g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
+    g = _get_gravity(mesh["nsd"], controls["gravity"])
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx, ismatrix=False)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp, _ = _get_region_flow_data(
+        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
             mesh, material, fmesh, nodes_f, is_fracture, r
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
-        lambda_e, isotropic_cond, hc, _, _ = _get_region_thermal_data(material, is_fracture, r)
+        isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
         K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(material, r)
 
         # find element type of first element in region
@@ -1718,9 +1686,7 @@ def integrate_residuals(  # noqa
                 kf_0, T_flow_q_n, p_q_n, T_flow_q, p_q, fluid
             )
             rho_f_n = rho_f[:, :, 0:1]
-            gradP_mod, darcy_flux, q_D, _, _ = _evaluate_darcy_flux(
-                kf, mu_q, gradP, rho_f_n, g_r, isotropic_perm, N_q, B_q
-            )
+            _, q_D, _, _ = _evaluate_darcy_flux(kf, mu_q, gradP, rho_f_n, g_r, isotropic_perm, N_q, B_q)
 
             phi_L, _, _ = _evaluate_quad_porosity(
                 p_q,
@@ -1740,7 +1706,7 @@ def integrate_residuals(  # noqa
             phi_L_n = phi_L[:, :, 0:1]
 
             # Nodal evaluation for self-consistent lumping of the storage terms.
-            phi_L_e, _, _, rho_f_e, _, _, u_f_e, _, _ = _evaluate_nodal_state(
+            phi_L_e, _, _, rho_f_e, _, _, u_f_e, _ = _evaluate_nodal_state(
                 pe,
                 p_0e,
                 Te,
@@ -1797,7 +1763,6 @@ def integrate_residuals(  # noqa
                     integrand_advection, integrand_SUPG, _, _, _, _ = _evaluate_advection_terms(
                         B_q,
                         N_q,
-                        darcy_flux,
                         q_D,
                         rho_f_n,
                         rho_f,
@@ -2121,20 +2086,20 @@ def integrate_tangent_matrices(  # noqa
         vec_counter_mm = 0
 
     # ----- gravity vector
-    g, ng = _get_gravity(mesh["nsd"], controls["gravity"])
+    g = _get_gravity(mesh["nsd"], controls["gravity"])
 
     vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
     for r in range(num_regions):
-        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp, _ = _get_region_flow_data(
+        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
             mesh, material, fmesh, nodes_f, is_fracture, r
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
-        lambda_e, isotropic_cond, hc, _, _ = _get_region_thermal_data(material, is_fracture, r)
+        isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
         K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(material, r)
 
         # find element type of first element in region
@@ -2199,7 +2164,7 @@ def integrate_tangent_matrices(  # noqa
                 kf_0, T_flow_q_n, p_q_n, T_flow_q, p_q, fluid, T_flow_lagged=T_flow_lagged
             )
             rho_f_n = rho_f[:, :, 0:1]
-            gradP_mod, darcy_flux, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
+            _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
                 kf,
                 mu_q,
                 gradP,
@@ -2246,7 +2211,6 @@ def integrate_tangent_matrices(  # noqa
                 drho_dp_e,
                 u_f_e,
                 duf_dT_e,
-                _,
             ) = _evaluate_nodal_state(
                 pe_n,
                 p_0e,
@@ -2364,7 +2328,6 @@ def integrate_tangent_matrices(  # noqa
                     ) = _evaluate_advection_terms(
                         B_q,
                         N_q,
-                        darcy_flux,
                         q_D,
                         rho_f_n,
                         rho_f,
