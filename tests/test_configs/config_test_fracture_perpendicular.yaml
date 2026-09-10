@@ -6,20 +6,20 @@ mesh:
 
 material:
   solid:
-      bulk_mod: 20.0e+9        # Pa
+      bulk_mod: 20.0e+19        # Pa
       density: 2600.0          # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 800.0     # J/kgK
-      therm_expansion: 12.0e-6 # 1/K
+      therm_expansion: 0.0e-6 # 1/K
       porosity: 0.1            # -
       biot_coeff: 0.5          # -
       permeability: 1.0e-14    # m^2
 
   fluid:
-      bulk_mod: 2.0e+9         # Pa
+      bulk_mod: 2.0e+19         # Pa
       density: 1000.0          # kg/m^3
       therm_cond: 0.6          # W/mK
-      therm_expansion: 200.0e-6 # 1/K
+      therm_expansion: 00.0e-6 # 1/K
       specific_heat: 4180.0    # J/kgK
       viscosity: 1.0e-3        # Pa-s
 
@@ -62,7 +62,7 @@ simulation:
 
   # Output
   output_frequency: 1
-  output_vtk: 0
+  output_vtk: 1
 
   # Physical controls
   rate_order: 1
