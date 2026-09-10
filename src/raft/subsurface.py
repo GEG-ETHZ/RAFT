@@ -11,7 +11,6 @@ import numpy as np
 import numpy.typing as npt
 
 from .logging_utils import RunLogger
-from .matrixassembly import integrate_linear_matrices
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
@@ -178,7 +177,6 @@ def _assign_ic_bc_compatible(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
@@ -223,7 +221,6 @@ def _assign_ic_bc_compatible(  # noqa
                     sim_control_SS,
                     mesh,
                     material,
-                    matrices_linear,
                     primary_variables,
                     boundary_conditions,
                     BC_config,
@@ -243,7 +240,6 @@ def _assign_ic_bc_compatible(  # noqa
                 sim_control_SS,
                 mesh,
                 material,
-                matrices_linear,
                 primary_variables,
                 boundary_conditions,
                 BC_config,
@@ -267,7 +263,6 @@ def _assign_ic_bc_compatible(  # noqa
             sim_control_SS,
             mesh,
             material,
-            matrices_linear,
             primary_variables,
             boundary_conditions,
             BC_config,
@@ -289,7 +284,6 @@ def _assign_initial_conditions(
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
@@ -312,7 +306,6 @@ def _assign_initial_conditions(
             sim_control,
             mesh,
             material,
-            matrices_linear,
             primary_variables,
             boundary_conditions,
             BC_config,
@@ -335,7 +328,6 @@ def _perform_time_integration(
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
@@ -353,7 +345,6 @@ def _perform_time_integration(
             sim_control,
             mesh,
             material,
-            matrices_linear,
             primary_variables,
             boundary_conditions,
             BC_config,
@@ -367,7 +358,6 @@ def _perform_time_integration(
             sim_control,
             mesh,
             material,
-            matrices_linear,
             primary_variables,
             boundary_conditions,
             BC_config,
@@ -559,17 +549,12 @@ def main(  # noqa
         if WB_on:
             BC_config = _initialize_WB_checks(BC_config)
 
-        # Linear Matrix Assembly
         #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
         #                        there should be an edge integral perform to remove its contribution
         #                        along the upper surfaces.
         if verbose:
             print("     Exporting domain material properties...")
         export_domain_properties(mesh, controls, material, BC_config)
-
-        if verbose:
-            print("     Assembling linear matrices...")
-        matrices_linear, material, mesh = integrate_linear_matrices(mesh, material, controls)
 
         # --- Initial Conditions
         # Update Boundary Conditions for initial step
@@ -582,7 +567,6 @@ def main(  # noqa
             controls,
             mesh,
             material,
-            matrices_linear,
             primary_variables,
             boundary_conditions,
             BC_config,
@@ -610,7 +594,6 @@ def main(  # noqa
                     controls,
                     mesh,
                     material,
-                    matrices_linear,
                     primary_variables,
                     boundary_conditions,
                     BC_config,

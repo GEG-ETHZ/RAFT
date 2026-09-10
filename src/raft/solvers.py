@@ -13,6 +13,7 @@ from .matrixassembly import (
     integrate_enthlpy_bndry_tangent,
     integrate_residuals,
     integrate_tangent_matrices,
+    warn_nonmonotone_pressure_diffusion,
 )
 
 
@@ -100,60 +101,6 @@ def _unpack_boundary_conditions(
     return T_fix, T_bar, p_fix, p_bar, F_extT, F_extp
 
 
-def compute_residuals(
-    nonlinear_matrices: dict[str, Any],
-    matrices_linear: dict[str, Any],
-    p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],
-    T_dot: npt.NDArray[np.float64],
-    cv: npt.NDArray[np.float64],
-    F_extp: npt.NDArray[np.float64],
-    F_extT: npt.NDArray[np.float64],
-    material: dict[str, Any],
-    sim_control: dict[str, Any],
-    *,
-    fully_coupled: bool,
-    mu_nonlinear: bool,
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Assemble residual vectors from `nonlinear_matrices` ("K_{block}_R"/"K_{block}_tan" buckets,
-    signs pre-baked) and the current primary-variable state. `T_dot` is the fully coupled
-    solver's current-iterate rate, or the linearized solver's extrapolated rate.
-    """
-    prez_on = sim_control["pressurization_on"]
-    steady_pres = sim_control["steady_pressure"]
-
-    KM = matrices_linear["KM"] * (1 - steady_pres)
-    KpT = matrices_linear["KpT"]
-    # linear viscosity: Kpp/KbT are static, from matrices_linear (unnegated, hence the flip)
-    if mu_nonlinear:
-        K_pp_R = nonlinear_matrices["K_pp_R"]
-        K_pT_R = nonlinear_matrices["K_pT_R"]
-    else:
-        K_pp_R = -matrices_linear["Kpp"]
-        K_pT_R = matrices_linear["KbT"]
-
-    pdot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
-    p_n = p[:, 0].reshape(-1, 1)
-
-    F_bT = (K_pT_R @ (T[:, 0] - material["fluid"]["reference_temperature"])).reshape(
-        -1, 1
-    )  # Buoyancy force vector
-    F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-
-    R = {"p": -KM @ pdot + K_pp_R @ p_n + F_extp + F_bT + F_pT}
-
-    if fully_coupled:
-        steady_temp = sim_control["steady_temperature"]
-        C = matrices_linear["C"] * (1 - steady_temp)
-        KTT = matrices_linear["KTT"]
-        K_TT_R = nonlinear_matrices["K_TT_R"]
-
-        T_n = T[:, 0].reshape(-1, 1)
-        R["T"] = -C @ T_dot - KTT @ T_n + K_TT_R @ T_n + F_extT
-
-    return R
-
-
 def compute_residuals_comp(
     F_vec: dict[str, Any],
     F_extp: npt.NDArray[np.float64],
@@ -184,49 +131,6 @@ def compute_residuals_comp(
             R = {"T": RT}
 
     return R
-
-
-def assemble_full_tangent(
-    nonlinear_matrices: dict[str, Any],
-    matrices_linear: dict[str, Any],
-    cv: npt.NDArray[np.float64],
-    sim_control: dict[str, Any],
-    *,
-    fully_coupled: bool,
-    mu_nonlinear: bool,
-) -> dict[str, sp.csc_matrix[Any]]:
-    """Assemble Jacobian blocks: each is `K_{block}_R + K_{block}_tan` plus linear/time-integration
-    terms. Always returns "pp"; "pT"/"Tp"/"TT" only when `fully_coupled` is set.
-    """
-    prez_on = sim_control["pressurization_on"]
-    steady_pres = sim_control["steady_pressure"]
-
-    KM = matrices_linear["KM"] * (1 - steady_pres)
-    if mu_nonlinear:
-        K_pp_R = nonlinear_matrices["K_pp_R"]
-        K_pT_R = nonlinear_matrices["K_pT_R"]
-    else:
-        K_pp_R = -matrices_linear["Kpp"]
-        K_pT_R = matrices_linear["KbT"]
-    K_pp_tan = nonlinear_matrices.get("K_pp_tan", 0)
-
-    J = {"pp": -KM * cv[0] + K_pp_R + K_pp_tan}
-
-    if fully_coupled:
-        steady_temp = sim_control["steady_temperature"]
-        C = matrices_linear["C"] * (1 - steady_temp)
-        KTT = matrices_linear["KTT"]
-        KpT = matrices_linear["KpT"]
-        K_TT_R = nonlinear_matrices["K_TT_R"]
-        K_pT_tan = nonlinear_matrices.get("K_pT_tan", 0)
-        K_TT_tan = nonlinear_matrices.get("K_TT_tan", 0)
-        K_Tp_tan = nonlinear_matrices.get("K_Tp_tan", 0)
-
-        J["pT"] = prez_on * (cv[0] * KpT) + K_pT_R + K_pT_tan
-        J["Tp"] = K_Tp_tan
-        J["TT"] = -cv[0] * C - KTT + K_TT_R + K_TT_tan
-
-    return J
 
 
 def _partition_and_solve_matrix(
@@ -399,7 +303,6 @@ def lin_extrap_time_integration(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
@@ -490,11 +393,6 @@ def lin_extrap_time_integration(  # noqa
             )
 
         # Compute residual vectors
-        # nonlinear_matrices = (
-        #     integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control, pressure_only=True)
-        #     if mu_nonlinear
-        #     else {}
-        # )
         p_n = p[:, 0].reshape(-1, 1)
         F_vec = integrate_residuals(
             mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
@@ -514,6 +412,8 @@ def lin_extrap_time_integration(  # noqa
             jacobian = integrate_tangent_matrices(
                 mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
             )
+            if iteration == 0:
+                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
             A = jacobian["Kpp"]
             b = R["p"]
@@ -689,7 +589,6 @@ def fully_coupled_time_integration(  # noqa
     sim_control: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],  # noqa
     primary_variables: dict[str, Any],
     boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
@@ -794,6 +693,8 @@ def fully_coupled_time_integration(  # noqa
             jacobian = integrate_tangent_matrices(
                 mesh, material, primary_variables, sim_control, cv, T, fully_coupled=True
             )
+            if iteration == 0:
+                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
             K_enth_bnd = integrate_enthlpy_bndry_tangent(
                 mesh,
                 material,
