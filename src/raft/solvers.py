@@ -86,18 +86,14 @@ def _unpack_boundary_conditions(
 ]:
     """Parse Dirichlet and Neumann BCs into fixed dofs/values and force vectors."""
     T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
-    T_bar = boundary_conditions["T_dirichlet"][:, 1]
+    T_bar = boundary_conditions["T_dirichlet"][:, 1:2]
     p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-    p_bar = boundary_conditions["p_dirichlet"][:, 1]
+    p_bar = boundary_conditions["p_dirichlet"][:, 1:2]
 
     F_extT = np.zeros((len(T_dofs), 1))
     F_extp = np.zeros((len(p_dofs), 1))
-    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
-        :, 1
-    ].reshape(-1, 1)
-    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][
-        :, 1
-    ].reshape(-1, 1)
+    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][:, 1:2]
+    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][:, 1:2]
     return T_fix, T_bar, p_fix, p_bar, F_extT, F_extp
 
 
@@ -348,8 +344,8 @@ def lin_extrap_time_integration(  # noqa
     fixed_dofs["T"] = T_fix
 
     # Apply fixed boundary conditions
-    p[p_fix, :] = p_bar.reshape(-1, 1)
-    T[T_fix, :] = T_bar.reshape(-1, 1)
+    p[p_fix, :] = p_bar
+    T[T_fix, :] = T_bar
     nE_p = p_fix.astype(int)  # essential DoFs
     nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free DoFs
     nE_T = T_fix.astype(int)  # essential temperature DoFs
@@ -380,7 +376,7 @@ def lin_extrap_time_integration(  # noqa
     # Initialize relaxation
     aitken_state = {}
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = p[:, 0].reshape(-1, 1)
+    aitken_state["variables_km1"] = p[:, 0:1]
     aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
     aitken_state["relax_dofs"] = p_dofs
 
@@ -393,7 +389,7 @@ def lin_extrap_time_integration(  # noqa
             )
 
         # Compute residual vectors
-        p_n = p[:, 0].reshape(-1, 1)
+        p_n = p[:, 0:1]
         F_vec = integrate_residuals(
             mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
         )
@@ -481,7 +477,7 @@ def lin_extrap_time_integration(  # noqa
     # Initialize relaxation
     aitken_state = {}
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = T[:, 0].reshape(-1, 1)
+    aitken_state["variables_km1"] = T[:, 0:1]
     aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
     aitken_state["relax_dofs"] = T_dofs
 
@@ -495,7 +491,7 @@ def lin_extrap_time_integration(  # noqa
                 flush=True,
             )
 
-        T_n = T[:, 0].reshape(-1, 1)
+        T_n = T[:, 0:1]
         F_vec = integrate_residuals(
             mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
         )
@@ -639,8 +635,8 @@ def fully_coupled_time_integration(  # noqa
     nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free pressure DoFs
 
     # Apply fixed boundary conditions
-    p[p_fix, :] = p_bar.reshape(-1, 1)
-    T[T_fix, :] = T_bar.reshape(-1, 1)
+    p[p_fix, :] = p_bar
+    T[T_fix, :] = T_bar
 
     # Begin Newton-Raphson iterative solver
     converged = False
@@ -654,7 +650,7 @@ def fully_coupled_time_integration(  # noqa
     # Initialize relaxation
     aitken_state = {}
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
+    aitken_state["variables_km1"] = np.vstack((p[:, 0:1], T[:, 0:1]))
     aitken_state["delta_variables_km1"] = np.zeros((2 * nn, 1))
     aitken_state["relax_dofs"] = nF
 
@@ -708,7 +704,7 @@ def fully_coupled_time_integration(  # noqa
             )
 
             # Total combined matrix
-            d = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
+            d = np.vstack((p[:, 0:1], T[:, 0:1]))
             A = cast(
                 sp.csc_matrix[Any],
                 sp.bmat(

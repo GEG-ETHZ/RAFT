@@ -503,7 +503,7 @@ def _integrate_fracture_matrix_coupling_tangent(
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
         if pressure_coupling or advection_on:
-            p_m_q = N_qm @ p[_enodes_m].reshape(-1, 1)  # matrix pressure
+            p_m_q = N_qm @ p[_enodes_m]  # matrix pressure
             dfluxp_dpf = (
                 rhof_q * kf_perp / mu_q
                 + (drho_dp * kf_perp + rhof_q * dkfperp_dp - rhof_q * kf_perp / mu_q * dmu_dp)
@@ -535,7 +535,7 @@ def _integrate_fracture_matrix_coupling_tangent(
                 T_m_q = N_qm @ T[_enodes_m]
                 T_flow_fq = N_q @ Te_flow_f
                 T_flow_mq = N_qm @ T_flow[_enodes_m]
-                p_m_q_lag = N_qm @ p_lag[_enodes_m].reshape(-1, 1)  # upwind decision only
+                p_m_q_lag = N_qm @ p_lag[_enodes_m]  # upwind decision only
 
                 if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
                     # use fracture props
@@ -671,14 +671,14 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
         if pressure_coupling or advection_on:
-            p_m_q = N_qm @ p[enodes_m].reshape(-1, 1)  # matrix pressure
+            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
             flux_p_q = rhof_q * kf_p / mu_q * (p_f_q - p_m_q)  # leak-off mass flux
 
         if pressure_coupling:
             Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
             matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
         if thermal_coupling:
-            T_m_q = N_qm @ T[enodes_m].reshape(-1, 1)  # matrix temperature
+            T_m_q = N_qm @ T[enodes_m]  # matrix temperature
             flux_hc_T_q = hc * (T_f_q - T_m_q)  # convective heat flux
             Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
             matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
@@ -686,7 +686,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
             if advection_on:
                 T_flow_fq = N_q @ Te_flow_f
                 T_flow_mq = N_qm @ T_flow[enodes_m]
-                p_m_q_lag = N_qm @ p_lag[enodes_m].reshape(-1, 1)  # upwind decision only
+                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
                 if np.mean(p_f_q_lag) > np.mean(p_m_q_lag):
                     # use fracture props
                     T_eval = T_f_q
@@ -843,7 +843,7 @@ def _get_region_flow_data(
         kf_p = w / 12  # transverse permeability, coupling only
         comp_f = w / mat["fluid"]["bulk_mod"]
         u = fmesh["fracture_tangent"][r].reshape(-1, 1)
-        nodes_r = (nodes_f @ u).reshape(-1, 1)  # project mesh nodes into local coordinates
+        nodes_r = nodes_f @ u  # project mesh nodes into local coordinates
         return kf, True, nodes_r, w, u, kf_p, comp_f
 
     # Bulk case
@@ -1111,8 +1111,8 @@ def integrate_residuals(  # noqa
             T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             T_flow_q = N_q @ Te_flow  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             P_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
-            gradT = B_q @ Te[:, 0].reshape(-1, 1)  # qudarature point temperature gradient, nq x nsd x 1
-            gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
+            gradT = B_q @ Te[:, 0:1]  # qudarature point temperature gradient, nq x nsd x 1
+            gradP = B_q @ pe[:, 0:1]  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
             kf, _, _ = get_effective_permeability(kf_0, T_flow_q[:, :, 0], P_q[:, :, 0], fluid)
@@ -1121,7 +1121,7 @@ def integrate_residuals(  # noqa
             mu_q = mu_q.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
             rho_f_q, _, _ = get_density(T_flow_q, P_q, fluid)
-            rho_f_qn = rho_f_q[:, :, 0].reshape(-1, 1, 1)
+            rho_f_qn = rho_f_q[:, :, 0:1]
 
             darcy_flux = (
                 -kf / mu_q * (gradP - rho_f_qn * g_r)
@@ -1195,7 +1195,7 @@ def integrate_residuals(  # noqa
                 )
 
                 # Effective conductivity
-                phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
+                phi_L_n = phi_L[:, :, 0:1]
                 if is_fracture:
                     lambda_e = w0 * lambda_f
                 else:
@@ -1270,11 +1270,11 @@ def integrate_residuals(  # noqa
 
                     # Discretized strong form residual at quadrature points
                     hf_e, _, _, _ = get_enthalpy(
-                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
+                        pe[:, 0:1], Te[:, 0:1], Te_flow[:, 0:1], fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
                     rhof_e, _, _ = get_density(
-                        Te_flow[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
+                        Te_flow[:, 0:1], pe[:, 0:1], fluid
                     )  # fluid density, nq x 1 x 1
                     grad_rhof = B_q @ rhof_e
                     RTh = (
@@ -1671,8 +1671,8 @@ def integrate_tangent_matrices(  # noqa
             T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
             P_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
-            gradT = B_q @ Te[:, 0].reshape(-1, 1)  # qudarature point temperature gradient, nq x nsd x 1
-            gradP = B_q @ pe[:, 0].reshape(-1, 1)  # quadrature point pressure gradient, nq x nsd x 1
+            gradT = B_q @ Te[:, 0:1]  # qudarature point temperature gradient, nq x nsd x 1
+            gradP = B_q @ pe[:, 0:1]  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
             kf, dkf_dT, dkf_dp = get_effective_permeability(
@@ -1688,9 +1688,9 @@ def integrate_tangent_matrices(  # noqa
             dmu_dp = dmu_dp.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
             rho_f, drho_dT, drho_dp = get_density(T_flow_q, P_q, fluid, T_flow_lagged)
-            rho_f_n = rho_f[:, :, 0].reshape(-1, 1, 1)
-            drho_dT = drho_dT[:, :, 0].reshape(-1, 1, 1)
-            drho_dp = drho_dp[:, :, 0].reshape(-1, 1, 1)
+            rho_f_n = rho_f[:, :, 0:1]
+            drho_dT = drho_dT[:, :, 0:1]
+            drho_dp = drho_dp[:, :, 0:1]
 
             gradP_mod = gradP - rho_f_n * g_r
 
@@ -1717,9 +1717,9 @@ def integrate_tangent_matrices(  # noqa
                     T_flow_lagged,
                     volumetric_strain_on,
                 )
-                dphi_L_dT = dphi_L_dT[:, :, 0].reshape(-1, 1, 1)
-                dphi_L_dp = dphi_L_dp[:, :, 0].reshape(-1, 1, 1)
-            phi_L_n = phi_L[:, :, 0].reshape(-1, 1, 1)
+                dphi_L_dT = dphi_L_dT[:, :, 0:1]
+                dphi_L_dp = dphi_L_dp[:, :, 0:1]
+            phi_L_n = phi_L[:, :, 0:1]
 
             # Nodal evaluation for self-consistent lumping of the storage terms: density,
             # porosity, and internal energy are evaluated at each node's own (T, p) rather
@@ -1898,11 +1898,11 @@ def integrate_tangent_matrices(  # noqa
 
                     # Discretized strong form residual at quadrature points
                     hf_e, _, _, _ = get_enthalpy(
-                        pe[:, 0].reshape(-1, 1), Te[:, 0].reshape(-1, 1), Te_flow[:, 0].reshape(-1, 1), fluid
+                        pe[:, 0:1], Te[:, 0:1], Te_flow[:, 0:1], fluid
                     )  # fluid enthalpy, nq x 1 x 1
                     grad_hf = B_q @ hf_e
                     rhof_e, _, _ = get_density(
-                        Te_flow[:, 0].reshape(-1, 1), pe[:, 0].reshape(-1, 1), fluid
+                        Te_flow[:, 0:1], pe[:, 0:1], fluid
                     )  # fluid density, nq x 1 x 1
                     grad_rhof = B_q @ rhof_e
                     RTh = (
