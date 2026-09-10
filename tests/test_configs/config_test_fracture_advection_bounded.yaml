@@ -1,0 +1,77 @@
+mesh:
+  file: square2D_fracture_patch.msh
+  dimensions: 2
+  fractures:
+      - values: [[20.0, 20.0, 0.0], [15.0], [30]]
+
+material:
+  solid:
+      bulk_mod: 20.0e+9        # Pa
+      density: 2600.0          # kg/m^3
+      therm_cond: 3.0          # W/mK
+      specific_heat: 800.0     # J/kgK
+      therm_expansion: 12.0e-6 # 1/K
+      porosity: 0.01            # -
+      biot_coeff: 0.5          # -
+      permeability: 1.0e-14    # m^2
+
+  fluid:
+      bulk_mod: 2.0e+9         # Pa
+      density: 1000.0          # kg/m^3
+      therm_cond: 0.6          # W/mK
+      therm_expansion: 200.0e-6 # 1/K
+      specific_heat: 4180.0    # J/kgK
+      viscosity: 1.0e-3        # Pa-s
+
+  # Fracture parameters
+  fracture:
+    aperture: [1.0e-3]
+    nusselt: [5.0]
+
+initial_conditions:
+  assignment: "constant"
+  T_ini: 300
+  p_ini: 1.5e+5
+
+boundary_conditions:
+  - faces: [x_min]
+    hydraulics:
+      values: [200000.0]
+      type: pressure
+  - faces: [x_max]
+    hydraulics:
+      values: [100000.0]
+      type: pressure
+  - faces: [x_min]
+    thermal:
+      values: [350]
+      type: temperature
+  - faces: [x_max]
+    thermal:
+      values: [300]
+      type: temperature
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+  solver_type: "linearized"
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0
+
+  # Physical controls
+  rate_order: 1
+  advection_on: 1
+  pressurization_on: 0
+  gravity: 0.0
+  steady_pressure: 1
+  steady_temperature: 1
+  axisymmetric_on: 0
+
+  # Numerical controls
+  rel_error_T: 1.0e-2

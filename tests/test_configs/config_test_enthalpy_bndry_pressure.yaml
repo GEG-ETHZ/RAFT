@@ -1,0 +1,78 @@
+mesh:
+  file: square2D_fracture_patch.msh
+  dimensions: 2
+
+material:
+  solid:
+      bulk_mod: 20.0e+9        # Pa
+      density: 2600.0          # kg/m^3
+      therm_cond: 3.0          # W/mK
+      specific_heat: 800.0     # J/kgK
+      therm_expansion: 12.0e-6 # 1/K
+      porosity: 0.1            # -
+      biot_coeff: 0.5          # -
+      permeability: 1.0e-14    # m^2
+
+  fluid:
+      bulk_mod: 2.0e+9         # Pa
+      density: 1000.0          # kg/m^3
+      therm_cond: 0.6          # W/mK
+      therm_expansion: 200.0e-6 # 1/K
+      specific_heat: 4180.0    # J/kgK
+      viscosity: 1.0e-3        # Pa-s
+
+initial_conditions:
+  assignment: "constant"
+  T_ini: 300
+  p_ini: 1.5e+5
+
+# Inlet (x_min) is a fully specified Dirichlet node: pressure + temperature are
+# separate BC groups, so this face still injects fluid at a known enthalpy.
+# Outlet (x_max) prescribes pressure only - no thermal BC anywhere on that face -
+# so its temperature is free, advected out of the domain by
+# `integrate_enthlpy_bndry_residual`/`integrate_enthlpy_bndry_tangent`
+# (matrixassembly.py) rather than fixed by a Dirichlet condition. Under
+# `fully_coupled`, this is also a pressure-type node, so it exercises the
+# Kpp/KpT cross-term branch in the boundary tangent.
+boundary_conditions:
+  - faces: [x_min]
+    hydraulics:
+      values: [200000.0]
+      type: pressure
+  - faces: [x_min]
+    thermal:
+      values: [350]
+      type: temperature
+  - faces: [x_max]
+    hydraulics:
+      values: [100000.0]
+      type: pressure
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+  solver_type: "fully_coupled"
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0
+
+  # Physical controls
+  rate_order: 1
+  advection_on: 1
+  pressurization_on: 0
+  gravity: 0.0
+  steady_pressure: 1
+  steady_temperature: 1
+  axisymmetric_on: 0
+
+  # Numerical controls
+  rel_error_T: 1.0e-2
+  iterative_controls:
+      NR_tol: 1.0e-6
+      iter_max: 50
+      aitken_relaxation: 1

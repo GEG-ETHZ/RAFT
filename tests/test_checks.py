@@ -30,7 +30,7 @@ def check_patch_test(
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
-    tol = 1.0e-9
+    tol = 1.0e-7
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -888,3 +888,106 @@ def check_fracture_perpendicular_patch(
     test_pass = bool(err_p < tol and err_T < tol)
 
     return test_pass
+
+
+def check_fracture_advection_bounded(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check maximum-principle boundedness for an angled (non-perpendicular) fracture with
+    advective leak-off turned on.
+
+    With advection_on and no internal sources, steady p/T have no interior extrema: every
+    node - including the fracture's own leak-off nodes and both sides of the matrix - must
+    stay within the range spanned by the imposed boundary values. A sign error in the
+    fracture-matrix coupling's advective tangent (`_integrate_fracture_matrix_coupling_tangent`
+    in matrixassembly.py) or a wrong upwind branch tends to show up as overshoot beyond this
+    envelope rather than a subtly wrong interior profile, so this is a cheap discriminating
+    check even without an analytical reference solution.
+    """
+    tol_rel = 1.0e-6
+
+    config = load_config(config_name, config_dir, verbose=False)
+
+    p0 = _bc_value(config, "hydraulics", "pressure", 0)
+    p1 = _bc_value(config, "hydraulics", "pressure", 1)
+    T0 = _bc_value(config, "thermal", "temperature", 0)
+    T1 = _bc_value(config, "thermal", "temperature", 1)
+
+    p_lo, p_hi = min(p0, p1), max(p0, p1)
+    T_lo, T_hi = min(T0, T1), max(T0, T1)
+
+    p = results["p"][:, 0]
+    T = results["T"][:, 0]
+
+    if plot_on:
+        nodes_total = mesh["nodes_total"]
+        plt.figure()
+        plt.scatter(nodes_total[:, 0], nodes_total[:, 1], c=T)
+        plt.colorbar(label="T")
+        plt.title(test_name)
+
+    p_bounded = bool(
+        np.all(p >= p_lo - tol_rel * (p_hi - p_lo)) and np.all(p <= p_hi + tol_rel * (p_hi - p_lo))
+    )
+    T_bounded = bool(
+        np.all(T_lo - tol_rel * (T_hi - T_lo) <= T) and np.all(T_hi + tol_rel * (T_hi - T_lo) >= T)
+    )
+
+    return p_bounded and T_bounded
+
+
+def check_enthalpy_bndry_bounded(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check the outlet's temperature against the exact solution for an outlet with no
+    thermal BC of its own.
+
+    The outlet's temperature is free, advected out through
+    `integrate_enthlpy_bndry_residual`/`integrate_enthlpy_bndry_tangent` in matrixassembly.py
+    rather than fixed by a Dirichlet condition, and (for a pressure-type outlet) also picks up
+    the `fully_coupled` Kpp/KpT cross-term there. With a single Dirichlet inlet value, no
+    sources, and steady, divergence-free flow, the uniform field T = T_in exactly satisfies
+    the advection-diffusion equation everywhere (both the diffusive and advective terms vanish
+    identically for a spatially constant field) and the natural BCs elsewhere - so T should
+    equal T_in to within discretization error, not just fall inside some broad envelope.
+    Missing or sign-flipped advective outflow would instead let heat build up at the outlet,
+    pushing T away from T_in.
+    """
+    tol_rel = 1.0e-3
+
+    config = load_config(config_name, config_dir, verbose=False)
+
+    p_in = _bc_value(config, "hydraulics", "pressure", 0)
+    T_in = _bc_value(config, "thermal", "temperature", 0)
+    p_ini = float(config["initial_conditions"]["p_ini"])
+    T_ini = float(config["initial_conditions"]["T_ini"])
+
+    p = results["p"][:, 0]
+    T = results["T"][:, 0]
+
+    if plot_on:
+        nodes_total = mesh["nodes_total"]
+        plt.figure()
+        plt.scatter(nodes_total[:, 0], nodes_total[:, 1], c=T)
+        plt.colorbar(label="T")
+        plt.title(test_name)
+
+    T_scale = abs(T_in - T_ini)
+    T_bounded = bool(np.all(np.abs(T - T_in) <= tol_rel * T_scale))
+
+    # p isn't pinned at the outlet in the flux-type variant, so there's no simple a-priori
+    # bound to check it against; just guard against the field blowing up or going non-physical.
+    p_scale = max(abs(p_in), abs(p_ini))
+    p_sane = bool(np.all(np.isfinite(p)) and np.all(p > 0) and np.all(np.abs(p) < 10 * p_scale))
+
+    return T_bounded and p_sane

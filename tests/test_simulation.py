@@ -15,6 +15,67 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_fracture_advection_bounded() -> None:
+    """Check p/T stay within the boundary-value envelope for a fracture angled into the
+    pressure/temperature gradient, with advective leak-off turned on."""
+    case_dir = _test_data_dir()
+    test_name = "Fracture Advection - Boundedness"
+    config_filename = "config_test_fracture_advection_bounded.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_fracture_advection_bounded(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_enthalpy_bndry_pressure() -> None:
+    """Check the advective enthalpy boundary vector/tangent at a pressure-type outlet with
+    no thermal BC of its own (also exercises the fully_coupled Kpp/KpT cross-term)."""
+    case_dir = _test_data_dir()
+    test_name = "Enthalpy Boundary Flux - Pressure Outlet"
+    config_filename = "config_test_enthalpy_bndry_pressure.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_enthalpy_bndry_bounded(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_enthalpy_bndry_flux() -> None:
+    """Same as test_enthalpy_bndry_pressure, but with a flux-type outlet, which should not
+    pick up the fully_coupled Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
+    never a function of p/T)."""
+    case_dir = _test_data_dir()
+    test_name = "Enthalpy Boundary Flux - Flux Outlet"
+    config_filename = "config_test_enthalpy_bndry_flux.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_enthalpy_bndry_bounded(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_anisotropy() -> None:
+    """Check exact linear approximation in anisotropy."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Anisotropy"
+    config_filename = "config_test_anisotropic.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    plot_on = False
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_buoyancy() -> None:
     """Test buoyancy against analytical solutions."""
     case_dir = _test_data_dir()
@@ -216,21 +277,6 @@ def test_regions() -> None:
     assert test_pass
 
 
-def test_patch_anisotropy() -> None:
-    """Check exact linear approximation in anisotropy."""
-    case_dir = _test_data_dir()
-    test_name = "Patch Test - Anisotropy"
-    config_filename = "config_test_anisotropic.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
-    plot_on = False
-    test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
 def test_patch_y() -> None:
     """Check exact linear approximation in Y."""
     case_dir = _test_data_dir()
@@ -301,18 +347,18 @@ def test_fracture_single() -> None:
     assert test_pass
 
 
-# def test_fracture_perpendicular_patch() -> None:
-#     """Patch test: a fracture perpendicular to the gradient should recover the exact linear solution."""
-#     case_dir = _test_data_dir()
-#     test_name = "Fracture Patch Test - Perpendicular"
-#     config_filename = "config_test_fracture_perpendicular.yaml"
-#     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+def test_fracture_perpendicular_patch() -> None:
+    """Patch test: a fracture perpendicular to the gradient should recover the exact linear solution."""
+    case_dir = _test_data_dir()
+    test_name = "Fracture Patch Test - Perpendicular"
+    config_filename = "config_test_fracture_perpendicular.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
-#     plot_on = False
-#     test_pass = test_checks.check_fracture_perpendicular_patch(
-#         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-#     )
-#     assert test_pass
+    plot_on = False
+    test_pass = test_checks.check_fracture_perpendicular_patch(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
 
 
 if __name__ == "__main__":
