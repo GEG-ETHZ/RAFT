@@ -1116,8 +1116,8 @@ def integrate_residuals(  # noqa
             T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             T_flow_q = N_q @ Te_flow  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
             p_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
-            T_flow_q_n = T_flow_q[:, :, 0]  # current-iterate, for matprops calls (nq x 1)
-            p_q_n = p_q[:, :, 0]  # current-iterate, for matprops calls (nq x 1)
+            T_flow_q_n = T_flow_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
+            p_q_n = p_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
             gradT = B_q @ Te_n  # qudarature point temperature gradient, nq x nsd x 1
             gradP = B_q @ pe_n  # quadrature point pressure gradient, nq x nsd x 1
 
@@ -1125,7 +1125,6 @@ def integrate_residuals(  # noqa
             kf, _, _ = get_effective_permeability(kf_0, T_flow_q_n, p_q_n, fluid)
             # quadrature point viscosities, nq x 1 x 1
             mu_q, _, _ = get_viscosity(T_flow_q_n, p_q_n, fluid)
-            mu_q = mu_q.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
             rho_f_q, _, _ = get_density(T_flow_q, p_q, fluid)
             rho_f_qn = rho_f_q[:, :, 0:1]
@@ -1677,21 +1676,16 @@ def integrate_tangent_matrices(  # noqa
             T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
             p_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
             T_q_n = T_q[:, :, 0:1]  # current-iterate quadrature-point temperature
-            T_flow_q_n = T_flow_q[:, :, 0]  # current-iterate, for matprops calls (nq x 1)
-            p_q_n = p_q[:, :, 0]  # current-iterate, for matprops calls (nq x 1)
+            T_flow_q_n = T_flow_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
+            p_q_n = p_q[:, :, 0:1]  # current-iterate, for matprops calls (nq x 1 x 1)
             gradT = B_q @ Te_n  # qudarature point temperature gradient, nq x nsd x 1
             gradP = B_q @ pe_n  # quadrature point pressure gradient, nq x nsd x 1
 
             # quadrature point permeabilities
             kf, dkf_dT, dkf_dp = get_effective_permeability(kf_0, T_flow_q_n, p_q_n, fluid, T_flow_lagged)
-            dkf_dT = dkf_dT.reshape(-1, 1, 1)
-            dkf_dp = dkf_dp.reshape(-1, 1, 1)
 
             # quadrature point viscosities, nq x 1 x 1
             mu_q, dmu_dT, dmu_dp = get_viscosity(T_flow_q_n, p_q_n, fluid, T_flow_lagged)
-            mu_q = mu_q.reshape(-1, 1, 1)
-            dmu_dT = dmu_dT.reshape(-1, 1, 1)
-            dmu_dp = dmu_dp.reshape(-1, 1, 1)
             # quadrature point densities, nq x 1 x (n, n-1, n-2, n-3)
             rho_f, drho_dT, drho_dp = get_density(T_flow_q, p_q, fluid, T_flow_lagged)
             rho_f_n = rho_f[:, :, 0:1]
