@@ -21,16 +21,16 @@ def _update_time(  # noqa
     solver_type: str,
     t: float,
     dt: list[float],
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     critical_times: npt.NDArray[np.float64],
     converged: bool,
     timestep_error: float,
     verbose: bool,
 ) -> tuple[float, list[float], bool]:
     """Update the current time and timestep."""
-    dt_max = sim_control["timestep_max"]
-    dt_min = sim_control["timestep_min"]
-    rel_tol_T = sim_control["rel_error_T"]
+    dt_max = controls["timestep_max"]
+    dt_min = controls["timestep_min"]
+    rel_tol_T = controls["rel_error_T"]
 
     if not converged:  # Decrease the timestep
         if dt[0] == dt_min:
@@ -81,13 +81,13 @@ def _update_time(  # noqa
     return t, dt, True
 
 
-def get_critical_times(bc_config: list[dict[str, Any]], t_end: float) -> npt.NDArray[np.float64]:
+def get_critical_times(BC_config: list[dict[str, Any]], t_end: float) -> npt.NDArray[np.float64]:
     """Collect all times from BC groups using the 'table' function."""
     times: set[float] = set()
     # add end times
     times.add(t_end)
     # search for any boundary condition change times
-    for group in bc_config:
+    for group in BC_config:
         for field in ("hydraulics", "thermal"):
             spec = group.get(field)
             if spec is None:
@@ -135,19 +135,19 @@ def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return np.tile(values.reshape(-1, 1), (1, 4))
 
 
-def _build_steady_state_controls(sim_control: dict[str, Any]) -> dict[str, Any]:
+def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
     Pressurization is neglected since it is time-dependent. Volumetric strain is also
     neglected, since initial conditions are by definition unstrained relative to themselves.
     """
-    sim_control_SS = sim_control.copy()
-    sim_control_SS["pressurization_on"] = 0
-    sim_control_SS["steady_pressure"] = 1
-    sim_control_SS["steady_temperature"] = 1
-    sim_control_SS["fully_coupled"] = False
-    sim_control_SS["volumetric_strain_on"] = 0
-    return sim_control_SS
+    controls_SS = controls.copy()
+    controls_SS["pressurization_on"] = 0
+    controls_SS["steady_pressure"] = 1
+    controls_SS["steady_temperature"] = 1
+    controls_SS["fully_coupled"] = False
+    controls_SS["volumetric_strain_on"] = 0
+    return controls_SS
 
 
 def _assign_ic_constant(config_ini: dict[str, Any], primary_variables: dict[str, Any]) -> dict[str, Any]:
@@ -174,7 +174,7 @@ def _assign_ic_gradient(
 
 
 def _assign_ic_bc_compatible(  # noqa
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -199,13 +199,13 @@ def _assign_ic_bc_compatible(  # noqa
             _fit_affine_from_dirichlet(mesh["nodes_total"], p_dirichlet)
         )
 
-    sim_control_SS = _build_steady_state_controls(sim_control)
+    controls_SS = _build_steady_state_controls(controls)
     # Initialized reference values -> set as current values and neglect
     # strains when establishing initial conditions
     material["T_0"] = primary_variables["T"][:, 0]
     material["p_0"] = primary_variables["p"][:, 0]
 
-    if sim_control_SS["viscosity_nonconstant"]:
+    if controls_SS["viscosity_nonconstant"]:
         # viscosity is a function of temperature, fully coupled steady-state
         # solution is required.
         if verbose:
@@ -218,7 +218,7 @@ def _assign_ic_bc_compatible(  # noqa
             primary_variables = copy.deepcopy(primary_variables_ini)
             for i in range(num_passes):
                 primary_variables, _, _, _ = lin_extrap_time_integration(
-                    sim_control_SS,
+                    controls_SS,
                     mesh,
                     material,
                     primary_variables,
@@ -230,14 +230,14 @@ def _assign_ic_bc_compatible(  # noqa
                 )
                 primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
                 # For debugging
-                postprocessing(n + i, mesh, sim_control, material, BC_config, primary_variables, 0, verbose)  # noqa
+                postprocessing(n + i, mesh, controls, material, BC_config, primary_variables, 0, verbose)  # noqa
             # Perform fully coupled solution
             if verbose:
                 print("   Solving for fully-coupled steady-state condition...")
 
-            sim_control_SS["fully_coupled"] = True
+            controls_SS["fully_coupled"] = True
             primary_variables, _, converged, _ = fully_coupled_time_integration(
-                sim_control_SS,
+                controls_SS,
                 mesh,
                 material,
                 primary_variables,
@@ -260,7 +260,7 @@ def _assign_ic_bc_compatible(  # noqa
         # This reduces the problem to a one-way p -> T, just like in
         # our linearized extrapolation.
         primary_variables, _, _, _ = lin_extrap_time_integration(
-            sim_control_SS,
+            controls_SS,
             mesh,
             material,
             primary_variables,
@@ -281,7 +281,7 @@ def _assign_ic_bc_compatible(  # noqa
 # ------------------ Solve for initial conditions
 def _assign_initial_conditions(
     config_ini: dict[str, Any],
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -303,7 +303,7 @@ def _assign_initial_conditions(
         primary_variables = _assign_ic_gradient(config_ini, mesh, primary_variables)
     elif assign_type == "BC_compatible":
         primary_variables = _assign_ic_bc_compatible(
-            sim_control,
+            controls,
             mesh,
             material,
             primary_variables,
@@ -325,7 +325,7 @@ def _assign_initial_conditions(
 
 # ------------------------------------ Time integration decider
 def _perform_time_integration(
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -336,13 +336,13 @@ def _perform_time_integration(
     verbose: bool,
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Choose between time integration types."""
-    solver_type = sim_control["solver_type"]
+    solver_type = controls["solver_type"]
     supported_types = ["linearized", "fully_coupled"]
 
     if solver_type == "linearized":
-        sim_control["fully_coupled"] = False
+        controls["fully_coupled"] = False
         primary_variables, dt, converged, timestep_error = lin_extrap_time_integration(
-            sim_control,
+            controls,
             mesh,
             material,
             primary_variables,
@@ -353,9 +353,9 @@ def _perform_time_integration(
             verbose,
         )
     elif solver_type == "fully_coupled":
-        sim_control["fully_coupled"] = True
+        controls["fully_coupled"] = True
         primary_variables, dt, converged, timestep_error = fully_coupled_time_integration(
-            sim_control,
+            controls,
             mesh,
             material,
             primary_variables,

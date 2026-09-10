@@ -125,7 +125,7 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
 
 def compute_fluid_flux(  # noqa
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     isfracture: bool,
@@ -157,13 +157,13 @@ def compute_fluid_flux(  # noqa
     count = np.zeros(nn)
 
     # Material properties - fluid
-    fluid = mat["fluid"]
+    fluid = material["fluid"]
     mu = fluid["viscosity"]
     mu_nonlinear = mu == 0
 
     for r in range(num_regions):
         if isfracture:
-            w = mat["fracture"]["aperture"][r]
+            w = material["fracture"]["aperture"][r]
             u = mesh["fracture_tangent"][r]
             kf = w**3 / 12 * u  # longitudinal permeability
             isotropic = True
@@ -171,7 +171,7 @@ def compute_fluid_flux(  # noqa
             nodes = (nodes_global @ u).reshape(-1, 1)
         else:
             # solid properties - by region
-            kf = mat["solid"]["permeability_eff"][r]
+            kf = material["solid"]["permeability_eff"][r]
             # Check for region isotropy
             isotropic = bool(isinstance(kf, (float, int)))
 
@@ -329,7 +329,7 @@ def prepare_output_directory(controls: dict[str, Any]) -> str:
 def _build_point_scalars(
     controls: dict[str, Any],
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
 ) -> list[dict[str, Any]]:
@@ -339,7 +339,7 @@ def _build_point_scalars(
         {"name": "p", "data": _sanitize(p.copy())},
     ]
 
-    fluid = mat["fluid"]
+    fluid = material["fluid"]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
             mu, _, _ = get_viscosity(T, p, fluid)
@@ -357,7 +357,7 @@ def _build_point_scalars(
 def _build_cell_scalars(
     controls: dict[str, Any],
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],  # noqa
 ) -> list[dict[str, Any]]:
@@ -367,9 +367,9 @@ def _build_cell_scalars(
     if controls["output_porosity"]:
         ne = mesh["ne"]
         conn = mesh["conn"]
-        solid = mat["solid"]
+        solid = material["solid"]
         porosity = np.empty(mesh["ne"])
-        p_0 = mat["p_0"]
+        p_0 = material["p_0"]
         for e in range(ne):
             enodes = conn[e]
             region = mesh["regions"][e]

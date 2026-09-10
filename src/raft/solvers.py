@@ -49,12 +49,12 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
 def _check_convergence_extrap(
     T: npt.NDArray[np.float64],
     T_extrap: npt.NDArray[np.float64],
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     n: int,
 ) -> tuple[bool, float]:
     """Check convergence for the linear extrapolation."""
-    rate_order = sim_control["rate_order"]
-    rel_tol_T = sim_control["rel_error_T"]
+    rate_order = controls["rate_order"]
+    rel_tol_T = controls["rel_error_T"]
 
     converged = True  # default to converged, and only break if not converged
 
@@ -157,7 +157,7 @@ def _check_convergence_fullycoupled(
     NR: dict[str, Any],
     mesh: dict[str, Any],
     iteration: int,
-    tolerance: float,
+    NR_tol: float,
 ) -> tuple[bool, float]:
     """Normalize each key's free-dof residual norm against the norm of that same key's
     reaction flux at its own Dirichlet dofs - a physical flux scale for the system (how
@@ -178,7 +178,7 @@ def _check_convergence_fullycoupled(
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
 
-    converged = bool(NR["all"][iteration] < tolerance)
+    converged = bool(NR["all"][iteration] < NR_tol)
 
     return converged, NR["all"][iteration]
 
@@ -296,7 +296,7 @@ def _aitken_relax(
 
 # ------------------------ Primary time integration function with linearized extrapoloation --------
 def lin_extrap_time_integration(  # noqa
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -322,13 +322,13 @@ def lin_extrap_time_integration(  # noqa
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
     # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    iter_max = sim_control["iterative_controls"]["iter_max"]
-    NR_tol = sim_control["iterative_controls"]["NR_tol"]
-    aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
+    rate_order = controls["rate_order"]
+    iter_max = controls["iterative_controls"]["iter_max"]
+    NR_tol = controls["iterative_controls"]["NR_tol"]
+    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
 
-    # steady_temp = sim_control["steady_temperature"]
-    # mu_nonlinear = sim_control["viscosity_nonconstant"]
+    # steady_temp = controls["steady_temperature"]
+    # mu_nonlinear = controls["viscosity_nonconstant"]
     # extract mesh characteristics
     nn = mesh["nn_total"]
 
@@ -391,7 +391,7 @@ def lin_extrap_time_integration(  # noqa
         # Compute residual vectors
         p_n = p[:, 0:1]
         F_vec = integrate_residuals(
-            mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
+            mesh, material, primary_variables, controls, cv, T_flow, pressure_only=True
         )
         R = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)
 
@@ -406,7 +406,7 @@ def lin_extrap_time_integration(  # noqa
             break
         else:  # Update iteration
             jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, sim_control, cv, T_flow, pressure_only=True
+                mesh, material, primary_variables, controls, cv, T_flow, pressure_only=True
             )
             if iteration == 0:
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
@@ -493,10 +493,10 @@ def lin_extrap_time_integration(  # noqa
 
         T_n = T[:, 0:1]
         F_vec = integrate_residuals(
-            mesh, material, primary_variables, sim_control, cv, T_flow, temperature_only=True
+            mesh, material, primary_variables, controls, cv, T_flow, temperature_only=True
         )
         F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, sim_control, T_flow, BC_config
+            mesh, material, primary_variables, controls, T_flow, BC_config
         )
         F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
@@ -515,14 +515,14 @@ def lin_extrap_time_integration(  # noqa
                 mesh,
                 material,
                 primary_variables,
-                sim_control,
+                controls,
                 cv,
                 T_flow,
                 temperature_only=True,
                 T_flow_lagged=True,
             )
             K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                mesh, material, primary_variables, sim_control, T_flow, BC_config, T_flow_lagged=True
+                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
             )
             A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
             b = R["T"]
@@ -572,7 +572,7 @@ def lin_extrap_time_integration(  # noqa
             _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["T"])
 
     # ---- Check for extrapolation error
-    converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)
+    converged, timestep_error = _check_convergence_extrap(T, T_extrap, controls, n)
 
     primary_variables["p"] = p
     primary_variables["T"] = T
@@ -582,7 +582,7 @@ def lin_extrap_time_integration(  # noqa
 
 # --------------- Fully coupled time integration with Newton-Raphson iterations.
 def fully_coupled_time_integration(  # noqa
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
@@ -605,10 +605,10 @@ def fully_coupled_time_integration(  # noqa
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    iter_max = sim_control["iterative_controls"]["iter_max"]
-    NR_tol = sim_control["iterative_controls"]["NR_tol"]
-    aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
+    rate_order = controls["rate_order"]
+    iter_max = controls["iterative_controls"]["iter_max"]
+    NR_tol = controls["iterative_controls"]["NR_tol"]
+    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
 
     # extract mesh characteristics
     nn = mesh["nn_total"]  # noqa
@@ -662,7 +662,7 @@ def fully_coupled_time_integration(  # noqa
             print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Compute residual vectors
-        F_vec = integrate_residuals(mesh, material, primary_variables, sim_control, cv, T)
+        F_vec = integrate_residuals(mesh, material, primary_variables, controls, cv, T)
 
         # Reaction flow rates at prescribed pressure dofs
         q = np.zeros((nn, 1))
@@ -671,7 +671,7 @@ def fully_coupled_time_integration(  # noqa
         primary_variables["q"] = q
 
         F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, sim_control, T, BC_config
+            mesh, material, primary_variables, controls, T, BC_config
         )
         F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
         R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=True)
@@ -687,7 +687,7 @@ def fully_coupled_time_integration(  # noqa
             break
         else:  # Update iteration
             jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, sim_control, cv, T, fully_coupled=True
+                mesh, material, primary_variables, controls, cv, T, fully_coupled=True
             )
             if iteration == 0:
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
@@ -695,7 +695,7 @@ def fully_coupled_time_integration(  # noqa
                 mesh,
                 material,
                 primary_variables,
-                sim_control,
+                controls,
                 T,
                 BC_config,
                 fully_coupled=True,

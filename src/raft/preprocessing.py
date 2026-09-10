@@ -191,12 +191,12 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
-def _check_region_properties(max_region: int, mat: dict[str, Any]) -> None:
+def _check_region_properties(max_region: int, material: dict[str, Any]) -> None:
     """Check that the correct number of properties are included."""
     missing_props = []
-    for mat_prop in mat:
-        if isinstance(mat[mat_prop], list):  # noqa
-            if len(mat[mat_prop]) < (max_region + 1):
+    for mat_prop in material:
+        if isinstance(material[mat_prop], list):  # noqa
+            if len(material[mat_prop]) < (max_region + 1):
                 missing_props.append(mat_prop)
 
     if len(missing_props) > 0:
@@ -231,42 +231,42 @@ def rotation_matrices(
     return Rx, Ry, Rz
 
 
-def _get_region_value(val: Any, region_idx: int) -> Any:
+def _get_region_value(val: Any, r: int) -> Any:
     """Return value for region, handling both scalar and list cases.
 
     Fallback for homogeneous cases defined as scalars instead of lists.
     """
-    return val[region_idx] if isinstance(val, list) else val
+    return val[r] if isinstance(val, list) else val
 
 
-def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> dict[str, Any]:
+def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]) -> dict[str, Any]:
     """Calculate properties derived from other primary properties."""
     nsd = mesh["nsd"]
     num_regions = max(mesh["regions"]) + 1
 
     # Initialize derived properties storage
-    mat["solid"]["storage_mod"] = [None] * num_regions
-    mat["solid"]["therm_cond_eff"] = [None] * num_regions
-    mat["solid"]["therm_expansion_eff"] = [None] * num_regions
-    mat["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
-    mat["solid"]["permeability_eff"] = [None] * num_regions
-    mat["solid"]["drained_bulk_mod"] = [None] * num_regions
+    material["solid"]["storage_mod"] = [None] * num_regions
+    material["solid"]["therm_cond_eff"] = [None] * num_regions
+    material["solid"]["therm_expansion_eff"] = [None] * num_regions
+    material["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
+    material["solid"]["permeability_eff"] = [None] * num_regions
+    material["solid"]["drained_bulk_mod"] = [None] * num_regions
 
     for r in range(num_regions):
         # ----- material properties
-        alpha_s = _get_region_value(mat["solid"]["therm_expansion"], r)
-        alpha_f = mat["fluid"]["therm_expansion"]
-        phi = _get_region_value(mat["solid"]["porosity"], r)
-        biot = _get_region_value(mat["solid"]["biot_coeff"], r)
-        Kf = mat["fluid"]["bulk_mod"]
-        Ks = _get_region_value(mat["solid"]["bulk_mod"], r)
-        lambda_s = _get_region_value(mat["solid"]["therm_cond"], r)
-        kf = _get_region_value(mat["solid"]["permeability"], r)
+        alpha_s = _get_region_value(material["solid"]["therm_expansion"], r)
+        alpha_f = material["fluid"]["therm_expansion"]
+        phi = _get_region_value(material["solid"]["porosity"], r)
+        biot = _get_region_value(material["solid"]["biot_coeff"], r)
+        Kf = material["fluid"]["bulk_mod"]
+        Ks = _get_region_value(material["solid"]["bulk_mod"], r)
+        lambda_s = _get_region_value(material["solid"]["therm_cond"], r)
+        kf = _get_region_value(material["solid"]["permeability"], r)
 
         # physical properties
-        angle_x = _get_region_value(mat["solid"]["rotation_x"], r)
-        angle_y = _get_region_value(mat["solid"]["rotation_y"], r)
-        angle_z = _get_region_value(mat["solid"]["rotation_z"], r)
+        angle_x = _get_region_value(material["solid"]["rotation_x"], r)
+        angle_y = _get_region_value(material["solid"]["rotation_y"], r)
+        angle_z = _get_region_value(material["solid"]["rotation_z"], r)
 
         Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z)
         R = Rx @ Ry @ Rz  # general 3D rotation matrix (always orthogonal)
@@ -288,28 +288,30 @@ def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> 
             lambda_s.append(0.0) if len(lambda_s) < 3 else lambda_s
             # anisotropic case
             lambda_e = (
-                phi * mat["fluid"]["therm_cond"] * np.eye(nsd)
+                phi * material["fluid"]["therm_cond"] * np.eye(nsd)
                 + (1 - phi) * (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
             )
-            mat["solid"]["therm_cond"][r] = (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
+            material["solid"]["therm_cond"][r] = (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
         else:
             # isotropic case
-            lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * lambda_s
+            lambda_e = phi * material["fluid"]["therm_cond"] + (1 - phi) * lambda_s
 
         # effective volumetric heat capacity
-        cp_s = _get_region_value(mat["solid"]["specific_heat"], r)
-        rho_s = _get_region_value(mat["solid"]["density"], r)
-        m_e = phi * mat["fluid"]["specific_heat"] * mat["fluid"]["density"] + (1 - phi) * cp_s * rho_s
+        cp_s = _get_region_value(material["solid"]["specific_heat"], r)
+        rho_s = _get_region_value(material["solid"]["density"], r)
+        m_e = (
+            phi * material["fluid"]["specific_heat"] * material["fluid"]["density"] + (1 - phi) * cp_s * rho_s
+        )
 
         # store derived properties for future use
-        mat["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
-        mat["solid"]["storage_mod"][r] = M
-        mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
-        mat["solid"]["therm_expansion_eff"][r] = alpha_e
-        mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
-        mat["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
+        material["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
+        material["solid"]["storage_mod"][r] = M
+        material["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
+        material["solid"]["therm_expansion_eff"][r] = alpha_e
+        material["solid"]["volumetric_heat_capacity_eff"][r] = m_e
+        material["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
 
-    return mat
+    return material
 
 
 def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:

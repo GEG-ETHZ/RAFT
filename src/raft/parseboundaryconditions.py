@@ -77,7 +77,7 @@ def _stack_unique(rows: list[npt.NDArray[np.float64]]) -> npt.NDArray[np.float64
 
 
 def parsebcs(
-    bc_config: list[dict[str, Any]],
+    BC_config: list[dict[str, Any]],
     mesh: dict[str, Any],
     primary_variables: dict[str, Any],  # noqa
     t: float,
@@ -99,7 +99,7 @@ def parsebcs(
     T_dirichlet_rows: list[npt.NDArray[np.float64]] = []
     T_neumann_rows: list[npt.NDArray[np.float64]] = []
 
-    for group in bc_config:
+    for group in BC_config:
         nodes = group["nodes"]
         if not nodes:
             continue
