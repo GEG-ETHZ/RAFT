@@ -548,9 +548,9 @@ def _integrate_fracture_matrix_coupling_tangent(
                     dqadv_dTf = dhf_dT * flux_p_q + h_fq / mu_q * (
                         drho_dT * kf_perp + rhof_q * dkfperp_dT - rhof_q * kf_perp / mu_q * dmu_dT
                     ) * (p_f_q - p_m_q)
-                    dqadv_dTm = 0
+                    dqadv_dTm = np.zeros_like(dqadv_dTf)
                     dqadv_dpf = dhf_dp * flux_p_q + h_fq * dfluxp_dpf
-                    dqadv_dpm = 0 + h_fq * dfluxp_dpm
+                    dqadv_dpm = h_fq * dfluxp_dpm
 
                 else:
                     # use matrix props
@@ -1117,21 +1117,21 @@ def integrate_linear_matrices(  # noqa
                     mat["fluid"],
                     np.zeros((nne, 1)),  # pe_f: needs matmul-compatible shape; unread otherwise
                     np.zeros((nne, 1)),  # pe_f_lag: unread, pressure_coupling is always off here
-                    float("nan"),  # Te_f: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # Te_flow_f: unread, pressure_coupling is always off here
-                    float("nan"),  # p: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # p_lag: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # T: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # T_flow: unread, pressure_coupling is always off here, see above
-                    kf_p,
-                    0.0,  # dkfperp_dp: unread, pressure_coupling is always off here, see above
-                    0.0,  # dkfperp_dT: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # mu_q: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # dmu_dp: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # dmu_dT: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # rhof_q: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # drho_dp: unread, pressure_coupling is always off here, see above
-                    float("nan"),  # drho_dT: unread, pressure_coupling is always off here, see above
+                    np.zeros((nne, 1)),  # Te_f: unread, pressure_coupling is always off here
+                    np.zeros((nne, 1)),  # Te_flow_f: unread, pressure_coupling is always off here
+                    np.zeros((nne, 1)),  # p: unread, pressure_coupling is always off here
+                    np.zeros((nne, 1)),  # p_lag: unread, pressure_coupling is always off here
+                    np.zeros((nne, 1)),  # T: unread, pressure_coupling is always off here
+                    np.zeros((nne, 1)),  # T_flow: unread, pressure_coupling is always off here
+                    np.asarray(kf_p),
+                    np.zeros((1, 1)),  # dkfperp_dp: unread, pressure_coupling is always off here
+                    np.zeros((1, 1)),  # dkfperp_dT: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # mu_q: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # dmu_dp: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # dmu_dT: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # rhof_q: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # drho_dp: unread, pressure_coupling is always off here
+                    np.full((1, 1), np.nan),  # drho_dT: unread, pressure_coupling is always off here
                     h,
                     pressure_coupling=False,
                     thermal_coupling=False,
@@ -2255,9 +2255,9 @@ def integrate_tangent_matrices(  # noqa
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    kf_p,
-                    0.0,  # dkfperp_dp
-                    0.0,  # dkfperp_dT
+                    np.asarray(kf_p),
+                    np.zeros((1, 1)),  # dkfperp_dp
+                    np.zeros((1, 1)),  # dkfperp_dT
                     mu_q,
                     dmu_dp,
                     dmu_dT,
@@ -2373,9 +2373,10 @@ def integrate_nonlinear_matrices(  # noqa
     mu_q = mu
     cp_f = fluid["specific_heat"]
     rho_f0 = fluid["density"]
-    rho_f_q = rho_f0
-    drho_f_dp_q = 0.0  # exact when density_nonlinear is False; overwritten below otherwise
-    drho_f_dT_q = 0.0
+    rho_f_q = np.array([[rho_f0]])
+    # exact when density_nonlinear is False; overwritten below otherwise
+    drho_f_dp_q = np.zeros((1, 1))
+    drho_f_dT_q = np.zeros((1, 1))
     if mu_nonlinear:
         alpha_f = fluid["therm_expansion"]
 
@@ -2660,9 +2661,9 @@ def integrate_nonlinear_matrices(  # noqa
                     p,  # p_lag: unread, thermal_coupling is always off here
                     T,
                     T,  # T_flow: this legacy path has no distinct flow-temperature field
-                    kf_p,
-                    0.0,  # dkfperp_dp
-                    0.0,  # dkfperp_dT
+                    np.asarray(kf_p),
+                    np.zeros((1, 1)),  # dkfperp_dp
+                    np.zeros((1, 1)),  # dkfperp_dT
                     mu_q,
                     dmu_dp_q,
                     dmu_dT_q,
