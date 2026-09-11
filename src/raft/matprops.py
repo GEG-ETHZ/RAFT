@@ -1,10 +1,40 @@
 """All material property correlations are stored here."""
 
+from dataclasses import dataclass
 from typing import Any
 
 import CoolProp.CoolProp as CP  # noqa: N817
 import numpy as np
 import numpy.typing as npt
+
+Number = npt.NDArray[np.float64] | float
+
+
+@dataclass(frozen=True, slots=True)
+class PropertyResult:
+    """A material property value together with its partial derivatives w.r.t. p and T.
+
+    Plain data container — no arithmetic operators. Callers that need to combine two
+    `PropertyResult`s (e.g. via the product rule) do so explicitly and build a new one.
+    """
+
+    value: Number  # Value of the property
+    dp: Number  # Derivative wrt pressure
+    dT: Number  # Derivative wrt temperature # noqa
+
+
+@dataclass(frozen=True, slots=True)
+class EnthalpyResult:
+    """Fluid enthalpy, its partial derivatives, and the constant-pressure specific heat.
+
+    Kept separate from `PropertyResult` since `cp` is not a partial derivative of `value` —
+    it's an independent quantity (see `get_enthalpy` docstring).
+    """
+
+    value: Number  # Value of the property
+    dp: Number  # Derivative wrt pressure
+    dT: Number  # Derivative wrt temperature # noqa
+    cp: Number  # specific heat for SUPG calcs
 
 
 def create_abstract_state(fluid_type: str) -> CP.AbstractState:
@@ -17,7 +47,7 @@ def get_viscosity(
     p: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get viscosity and its temperature derivative, at temperature T [K] and pressure p [Pa].
 
     `fluid["viscosity"]` of 0 selects a non-constant, real-fluid viscosity looked up from
@@ -35,7 +65,9 @@ def get_viscosity(
         mu = np.full(T_arr.shape, viscosity_coefficients)
         dmu_dT = np.zeros(T_arr.shape)
         dmu_dp = np.zeros(T_arr.shape)
-        return mu.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T))
+        return PropertyResult(
+            mu.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T))
+        )
 
     # Cap limits, to keep (T, p) within CoolProp's valid range even for transient/
     # intermediate solver states (e.g. under-relaxed Newton iterates).
@@ -71,7 +103,7 @@ def get_viscosity(
     if T_flow_lagged:
         dmu_dT = np.zeros(T_arr.shape)
 
-    return mu.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T))
+    return PropertyResult(mu.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T)))
 
 
 def get_density(
@@ -79,7 +111,7 @@ def get_density(
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get density and its temperature derivative, at temperature T [K] and pressure p [Pa].
 
     `T_flow_lagged` says whether this T is independent of the primary unknown T being solved
@@ -96,7 +128,7 @@ def get_density(
     drho_dT = np.zeros(np.shape(T)) if T_flow_lagged else -rho_0 * alpha * np.ones(np.shape(T))
     drho_dp = rho_0 * 1 / Kf * np.ones(np.shape(p))
 
-    return density, drho_dT, drho_dp
+    return PropertyResult(density, drho_dp, drho_dT)
 
 
 def get_porosity(
@@ -104,7 +136,7 @@ def get_porosity(
     p_0: npt.NDArray[np.float64],
     phi_0: float,
     K_d: float,
-) -> tuple[npt.NDArray[np.float64], float, npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get the current porosity based on the undeformed reference state.
 
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
@@ -113,7 +145,7 @@ def get_porosity(
     dphi_dT = 0.0
     dphi_dp = -(phi - 1) / K_d
 
-    return phi, dphi_dT, dphi_dp
+    return PropertyResult(phi, dphi_dp, dphi_dT)
 
 
 def get_volumetricstrain(
@@ -126,7 +158,7 @@ def get_volumetricstrain(
     therm_expansion: float,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
-) -> tuple[npt.NDArray[np.float64], float, float]:
+) -> PropertyResult:
     """Get the volumetric strain of the solid skeleton relative to the undeformed reference state.
 
     Non-volumetric sources are neglected.
@@ -141,13 +173,13 @@ def get_volumetricstrain(
     """
     if not volumetric_strain_on:
         zeros = np.zeros(np.shape(p))
-        return zeros, 0.0, 0.0
+        return PropertyResult(zeros, 0.0, 0.0)
 
     strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
     dstrain_dT = 0.0 if T_flow_lagged else therm_expansion
     dstrain_dp = biot / K_d
 
-    return strain, dstrain_dT, dstrain_dp
+    return PropertyResult(strain, dstrain_dp, dstrain_dT)
 
 
 def get_porosity_lagrangian(
@@ -161,18 +193,19 @@ def get_porosity_lagrangian(
     therm_expansion: float,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get the Lagrangian porosity which includes the volumetric strain in the deformed state."""
-    phi, dphi_dT, dphi_dp = get_porosity(p, p_0, phi_0, K_d)
-    strain, dstrain_dT, dstrain_dp = get_volumetricstrain(
+    phi = get_porosity(p, p_0, phi_0, K_d)
+    strain = get_volumetricstrain(
         p, p_0, T, T_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on
     )
 
-    phi_L = phi * (1 + strain)
-    dphi_L_dT = dphi_dT * (1 + strain) + phi * dstrain_dT
-    dphi_L_dp = dphi_dp * (1 + strain) + phi * dstrain_dp
+    # phi_L = phi * (1 + strain), by the product rule:
+    phi_L = phi.value * (1 + strain.value)
+    dphi_L_dT = phi.dT * (1 + strain.value) + phi.value * strain.dT
+    dphi_L_dp = phi.dp * (1 + strain.value) + phi.value * strain.dp
 
-    return phi_L, dphi_L_dT, dphi_L_dp
+    return PropertyResult(phi_L, dphi_L_dp, dphi_L_dT)
 
 
 def get_enthalpy(
@@ -181,9 +214,7 @@ def get_enthalpy(
     T_flow: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
-) -> tuple[
-    npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
-]:
+) -> EnthalpyResult:
     """Get the fluid enthalpy at a specified pressure and temperature.
 
     Built as hf = u_f + p / rho_f, using the same closed-form u_f as
@@ -228,14 +259,14 @@ def get_enthalpy(
         dhf_dT = 0 * np.ones(np.shape(T))
         dhf_dp = 0 * np.ones(np.shape(T))
         cp = 0 * np.ones(np.shape(T))
-    return hf, dhf_dT, dhf_dp, cp
+    return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
 
 def get_internal_energy(
     T: npt.NDArray[np.float64],
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get the fluid internal energy at a specified pressure and temperature.
 
     Integrated from du_f = (cp_f - alpha_f/rho_0 * p) dT + (p/(K_f*rho_0) - alpha_f/rho_0 * T) dp
@@ -257,7 +288,7 @@ def get_internal_energy(
         u_f = 0 * np.ones(np.shape(T))
         duf_dT = 0 * np.ones(np.shape(T))
         duf_dp = 0 * np.ones(np.shape(T))
-    return u_f, duf_dT, duf_dp
+    return PropertyResult(u_f, duf_dp, duf_dT)
 
 
 def get_effective_permeability(
@@ -266,10 +297,10 @@ def get_effective_permeability(
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],  # noqa
     T_flow_lagged: bool = False,  # noqa
-) -> tuple[npt.NDArray[np.float64] | float, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+) -> PropertyResult:
     """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
     kf_eff = kf
     dkf_dT = np.zeros(np.shape(T))
     dkf_dp = np.zeros(np.shape(T))
 
-    return kf_eff, dkf_dT, dkf_dp
+    return PropertyResult(kf_eff, dkf_dp, dkf_dT)
