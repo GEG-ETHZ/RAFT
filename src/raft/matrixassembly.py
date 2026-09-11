@@ -759,15 +759,17 @@ def _get_region_flow_data(
     if is_fracture:
         w = material["fracture"]["aperture"][r]
         kf = w**3 / 12  # longitudinal permeability, cubic law
-        kf_perp = w / 12  # transverse permeability, coupling only; constant, so zero derivatives
+        kf_perp = np.asarray(w / 12)  # transverse permeability, coupling only; constant, so zero derivatives
         u = fmesh["fracture_tangent"][r].reshape(-1, 1)
         nodes_r = nodes_f @ u  # project mesh nodes into local coordinates
-        return kf, True, nodes_r, w, u, PropertyResult(kf_perp, 0.0, 0.0)
+        zeros = np.zeros_like(kf_perp)
+        return kf, True, nodes_r, w, u, PropertyResult(kf_perp, zeros, zeros)
 
     # Bulk case
     kf = material["solid"]["permeability_eff"][r]
     isotropic_perm = bool(isinstance(kf, (float, int)))
-    kf_perp_sentinel = PropertyResult(float("nan"), float("nan"), float("nan"))
+    nan = np.asarray(np.nan)
+    kf_perp_sentinel = PropertyResult(nan, nan, nan)
     return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), kf_perp_sentinel
 
 
@@ -1105,7 +1107,7 @@ def _evaluate_quad_porosity(
         phi_L = w0 * np.ones_like(T_flow_q)
         return PropertyResult(phi_L, np.zeros((nq, 1, 1)), np.zeros((nq, 1, 1)))
 
-    phi_L = get_porosity_lagrangian(
+    phi_L_result = get_porosity_lagrangian(
         p_q,
         N_q @ p_0e,
         T_flow_q,
@@ -1117,7 +1119,7 @@ def _evaluate_quad_porosity(
         T_flow_lagged,
         volumetric_strain_on,
     )
-    return PropertyResult(phi_L.value, phi_L.dp[:, :, 0:1], phi_L.dT[:, :, 0:1])
+    return PropertyResult(phi_L_result.value, phi_L_result.dp[:, :, 0:1], phi_L_result.dT[:, :, 0:1])
 
 
 def _evaluate_nodal_state(

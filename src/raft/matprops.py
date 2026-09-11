@@ -14,13 +14,16 @@ Number = npt.NDArray[np.float64] | float
 class PropertyResult:
     """A material property value together with its partial derivatives w.r.t. p and T.
 
+    Always array-valued, even where the underlying formula is a constant, so that callers
+    can slice/index freely without checking for a bare scalar.
+
     Plain data container — no arithmetic operators. Callers that need to combine two
     `PropertyResult`s (e.g. via the product rule) do so explicitly and build a new one.
     """
 
-    value: Number  # Value of the property
-    dp: Number  # Derivative wrt pressure
-    dT: Number  # Derivative wrt temperature # noqa
+    value: npt.NDArray[np.float64]  # Value of the property
+    dp: npt.NDArray[np.float64]  # Derivative wrt pressure
+    dT: npt.NDArray[np.float64]  # Derivative wrt temperature # noqa
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +34,10 @@ class EnthalpyResult:
     it's an independent quantity (see `get_enthalpy` docstring).
     """
 
-    value: Number  # Value of the property
-    dp: Number  # Derivative wrt pressure
-    dT: Number  # Derivative wrt temperature # noqa
-    cp: Number  # specific heat for SUPG calcs
+    value: npt.NDArray[np.float64]  # Value of the property
+    dp: npt.NDArray[np.float64]  # Derivative wrt pressure
+    dT: npt.NDArray[np.float64]  # Derivative wrt temperature # noqa
+    cp: npt.NDArray[np.float64]  # specific heat for SUPG calcs
 
 
 def create_abstract_state(fluid_type: str) -> CP.AbstractState:
@@ -142,7 +145,7 @@ def get_porosity(
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
     """
     phi = 1 - (1 - phi_0) * np.exp(-(p - p_0) / K_d)
-    dphi_dT = 0.0
+    dphi_dT = np.zeros(np.shape(phi))
     dphi_dp = -(phi - 1) / K_d
 
     return PropertyResult(phi, dphi_dp, dphi_dT)
@@ -173,11 +176,11 @@ def get_volumetricstrain(
     """
     if not volumetric_strain_on:
         zeros = np.zeros(np.shape(p))
-        return PropertyResult(zeros, 0.0, 0.0)
+        return PropertyResult(zeros, zeros, zeros)
 
     strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
-    dstrain_dT = 0.0 if T_flow_lagged else therm_expansion
-    dstrain_dp = biot / K_d
+    dstrain_dT = np.full(np.shape(strain), 0.0 if T_flow_lagged else therm_expansion)
+    dstrain_dp = np.full(np.shape(strain), biot / K_d)
 
     return PropertyResult(strain, dstrain_dp, dstrain_dT)
 
@@ -299,7 +302,7 @@ def get_effective_permeability(
     T_flow_lagged: bool = False,  # noqa
 ) -> PropertyResult:
     """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
-    kf_eff = kf
+    kf_eff = np.asarray(kf, dtype=np.float64)
     dkf_dT = np.zeros(np.shape(T))
     dkf_dp = np.zeros(np.shape(T))
 
