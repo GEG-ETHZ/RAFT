@@ -690,25 +690,28 @@ def _stack_fracture_vectors(
     return body_vectors
 
 
-def _get_region_mesh_data(
-    mesh: dict[str, Any], is_fracture: bool
-) -> tuple[
-    int,  # nn
-    int,  # nsd
-    list[list[int]],  # conn
-    list[int],  # nne_list
-    list[str],  # etype_list
-    list[int],  # elem_indx
-    list[int],  # nq_list
-    list[list[int]],  # region_lists
-    int,  # num_regions
-    dict[str, Any],  # fmesh; {} sentinel when not is_fracture
-    npt.NDArray[np.float64],  # nodes_f; empty sentinel when not is_fracture
-]:
+@dataclass(frozen=True, slots=True)
+class RegionMeshData:
+    """Mesh/region data resolved from the bulk mesh, or the fracture mesh when `is_fracture`."""
+
+    nn: int
+    nsd: int
+    conn: list[list[int]]
+    nne_list: list[int]
+    etype_list: list[str]
+    elem_indx: list[int]
+    nq_list: list[int]
+    region_lists: list[list[int]]
+    num_regions: int
+    fmesh: dict[str, Any]  # {} sentinel when not is_fracture
+    nodes_f: npt.NDArray[np.float64]  # empty sentinel when not is_fracture
+
+
+def _get_region_mesh_data(mesh: dict[str, Any], is_fracture: bool) -> RegionMeshData:
     """Resolve mesh/region data from the bulk mesh, or the fracture mesh when `is_fracture`."""
     if is_fracture:
         fmesh = mesh["fracture_mesh"]
-        return (
+        return RegionMeshData(
             fmesh["nn"],
             mesh["nsd"] - 1,
             fmesh["conn"],
@@ -721,7 +724,7 @@ def _get_region_mesh_data(
             fmesh,
             fmesh["nodes"],
         )
-    return (
+    return RegionMeshData(
         mesh["nn"],
         mesh["nsd"],
         mesh["conn"],
@@ -739,8 +742,7 @@ def _get_region_mesh_data(
 def _get_region_flow_data(
     mesh: dict[str, Any],
     material: dict[str, Any],
-    fmesh: dict[str, Any],
-    nodes_f: npt.NDArray[np.float64],
+    mesh_data: RegionMeshData,
     is_fracture: bool,
     r: int,
 ) -> tuple[
@@ -757,8 +759,8 @@ def _get_region_flow_data(
         w = material["fracture"]["aperture"][r]
         kf = w**3 / 12  # longitudinal permeability, cubic law
         kf_perp = np.asarray(w / 12)  # transverse permeability, coupling only; constant, so zero derivatives
-        u = fmesh["fracture_tangent"][r].reshape(-1, 1)
-        nodes_r = nodes_f @ u  # project mesh nodes into local coordinates
+        u = mesh_data.fmesh["fracture_tangent"][r].reshape(-1, 1)
+        nodes_r = mesh_data.nodes_f @ u  # project mesh nodes into local coordinates
         zeros = np.zeros_like(kf_perp)
         return kf, True, nodes_r, w, u, PropertyResult(kf_perp, zeros, zeros)
 
@@ -789,27 +791,30 @@ def _get_region_thermal_data(material: dict[str, Any], is_fracture: bool, r: int
     return isotropic_cond, float("nan")
 
 
-def _get_region_solid_data(
-    material: dict[str, Any], r: int
-) -> tuple[
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-    float,
-]:
-    """Resolve per-region solid properties."""
-    K_d = _get_region_value(material["solid"]["drained_bulk_mod"], r)
-    phi_0 = _get_region_value(material["solid"]["porosity"], r)
-    biot = _get_region_value(material["solid"]["biot_coeff"], r)
-    rho_s = _get_region_value(material["solid"]["density"], r)
-    cp_s = _get_region_value(material["solid"]["specific_heat"], r)
-    alpha_s = _get_region_value(material["solid"]["therm_expansion"], r)
-    lambda_s = _get_region_value(material["solid"]["therm_cond"], r)
+@dataclass(frozen=True, slots=True)
+class RegionSolidData:
+    """Per-region solid properties."""
 
-    return K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s
+    K_d: float
+    phi_0: float
+    biot: float
+    rho_s: float
+    cp_s: float
+    alpha_s: float
+    lambda_s: npt.NDArray[np.float64] | float  # anisotropic case is a conductivity tensor
+
+
+def _get_region_solid_data(material: dict[str, Any], r: int) -> RegionSolidData:
+    """Resolve per-region solid properties."""
+    return RegionSolidData(
+        K_d=_get_region_value(material["solid"]["drained_bulk_mod"], r),
+        phi_0=_get_region_value(material["solid"]["porosity"], r),
+        biot=_get_region_value(material["solid"]["biot_coeff"], r),
+        rho_s=_get_region_value(material["solid"]["density"], r),
+        cp_s=_get_region_value(material["solid"]["specific_heat"], r),
+        alpha_s=_get_region_value(material["solid"]["therm_expansion"], r),
+        lambda_s=_get_region_value(material["solid"]["therm_cond"], r),
+    )
 
 
 _YELLOW = "\033[93m"
@@ -1114,10 +1119,7 @@ def _evaluate_darcy_flux(
 def _evaluate_quad_porosity(
     kin: ElementKinematics,
     N_q: npt.NDArray[np.float64],
-    phi_0: float,
-    K_d: float,
-    biot: float,
-    alpha_s: float,
+    solid: RegionSolidData,
     is_fracture: bool,
     w0: float,
     nq: int,
@@ -1139,10 +1141,10 @@ def _evaluate_quad_porosity(
         N_q @ kin.p_0e,
         kin.T_flow_q,
         N_q @ kin.T_0e,
-        phi_0,
-        K_d,
-        biot,
-        alpha_s,
+        solid.phi_0,
+        solid.K_d,
+        solid.biot,
+        solid.alpha_s,
         T_flow_lagged,
         volumetric_strain_on,
     )
@@ -1151,10 +1153,7 @@ def _evaluate_quad_porosity(
 
 def _evaluate_nodal_state(
     kin: ElementKinematics,  # this element's own kinematics; pass `.n` for the tangent's current-iterate
-    phi_0: float,
-    K_d: float,
-    biot: float,
-    alpha_s: float,
+    solid: RegionSolidData,
     is_fracture: bool,
     w0: float,
     fluid: dict[str, Any],
@@ -1175,10 +1174,10 @@ def _evaluate_nodal_state(
             kin.p_0e,
             kin.Te_flow,
             kin.T_0e,
-            phi_0,
-            K_d,
-            biot,
-            alpha_s,
+            solid.phi_0,
+            solid.K_d,
+            solid.biot,
+            solid.alpha_s,
             T_flow_lagged,
             volumetric_strain_on,
         )
@@ -1194,10 +1193,10 @@ def _evaluate_total_energy(
     rho_f: PropertyResult,
     u_f: PropertyResult,
     is_fracture: bool,
-    rho_s: float,
-    cp_s: float,
+    solid: RegionSolidData,
 ) -> npt.NDArray[np.float64]:
     """Evaluate the total (solid + fluid) stored energy."""
+    rho_s, cp_s = solid.rho_s, solid.cp_s
     return (1 - phi_L.value) * rho_s * cp_s * T * (1 - is_fracture) + phi_L.value * rho_f.value * u_f.value
 
 
@@ -1248,8 +1247,7 @@ def _evaluate_energy_storage_integrands(
     rho_f_e: PropertyResult,
     u_f_e: PropertyResult,
     is_fracture: bool,
-    rho_s: float,
-    cp_s: float,
+    solid: RegionSolidData,
     cv: npt.NDArray[np.float64],
     steady_temp: float,
     kin_n: ElementKinematics = _EMPTY_KINEMATICS,
@@ -1271,7 +1269,8 @@ def _evaluate_energy_storage_integrands(
     lumped discretization); `phi_L_n`/`rho_f_n`/`u_f_n` are quadrature current-iterate (their
     `.dp` feeds the dp-tangent, matching KTp's consistent discretization).
     """
-    E_e = _evaluate_total_energy(kin.Te, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s)
+    rho_s, cp_s = solid.rho_s, solid.cp_s
+    E_e = _evaluate_total_energy(kin.Te, phi_L_e, rho_f_e, u_f_e, is_fracture, solid)
     energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
 
     integrand_dFCdT_e = _EMPTY
@@ -1307,7 +1306,7 @@ def _evaluate_energy_properties(
     is_fracture: bool,
     w0: float,
     lambda_f: float,
-    lambda_s: npt.NDArray[np.float64] | float,
+    solid: RegionSolidData,
     isotropic_cond: bool,
     nsd: int,
     fluid: dict[str, Any],
@@ -1325,6 +1324,7 @@ def _evaluate_energy_properties(
         kin_n.p_q, kin_n.T_q, kin_n.T_flow_q, fluid, T_flow_lagged
     )  # fluid enthalpy, nq x 1 x 1
 
+    lambda_s = solid.lambda_s
     lambda_e: npt.NDArray[np.float64] | float
     if is_fracture:
         lambda_e = w0 * lambda_f
@@ -1349,8 +1349,7 @@ def _evaluate_advection_terms(
     phi_L: PropertyResult,
     u_f: PropertyResult,
     is_fracture: bool,
-    rho_s: float,
-    cp_s: float,
+    solid: RegionSolidData,
     cv: npt.NDArray[np.float64],
     steady_temp: float,
     rho_f_e_n: npt.NDArray[np.float64],
@@ -1376,8 +1375,9 @@ def _evaluate_advection_terms(
     npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
 ]:
     """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
+    rho_s, cp_s = solid.rho_s, solid.cp_s
     darcy_flux = q_D / rho_f_n.value
-    E_q = _evaluate_total_energy(kin.T_q, phi_L, rho_f, u_f, is_fracture, rho_s, cp_s)
+    E_q = _evaluate_total_energy(kin.T_q, phi_L, rho_f, u_f, is_fracture, solid)
     energy_dot = (1 - steady_temp) * (
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
     )
@@ -1520,21 +1520,10 @@ def integrate_residuals(  # noqa
         list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection", "F_Tstab"] + list_of_matrices
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    (
-        nn,
-        nsd,
-        conn,
-        nne_list,
-        etype_list,
-        elem_indx,
-        nq_list,
-        region_lists,
-        num_regions,
-        fmesh,
-        nodes_f,
-    ) = _get_region_mesh_data(mesh, is_fracture)
+    mesh_data = _get_region_mesh_data(mesh, is_fracture)
 
     if is_fracture:
+        fmesh = mesh_data.fmesh
         conn_global = fmesh["conn_global"]
         nn_m = mesh["nn"]
 
@@ -1555,7 +1544,7 @@ def integrate_residuals(  # noqa
                 col_vec_mm,
                 _vec_count_flux_m,
                 row_vec_flux_m,
-            ) = _create_fracture_coupling_vectors(conn, fmesh["matrix_conn"], mesh["conn"])
+            ) = _create_fracture_coupling_vectors(mesh_data.conn, fmesh["matrix_conn"], mesh["conn"])
             fmesh["vec_mat_asmbl"] = {
                 "row_vec_ff": row_vec_ff,
                 "col_vec_ff": col_vec_ff,
@@ -1580,38 +1569,38 @@ def integrate_residuals(  # noqa
     # ----- gravity vector
     g = _get_gravity(mesh["nsd"], controls["gravity"])
 
-    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx, ismatrix=False)
+    vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx, ismatrix=False)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
-    for r in range(num_regions):
+    for r in range(mesh_data.num_regions):
         kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, fmesh, nodes_f, is_fracture, r
+            mesh, material, mesh_data, is_fracture, r
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
         isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
-        K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(material, r)
+        solid = _get_region_solid_data(material, r)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
 
-        for e in region_lists[r]:
-            new_type_idx = bisect.bisect_left(elem_indx, e)
+        for e in mesh_data.region_lists[r]:
+            new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
             if new_type_idx != elem_type_counter:
                 # Update for different element type
                 # Evaluate quadrature points and get weights and shape functions.
                 W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
-                    nq_list[new_type_idx], nsd, etype_list[new_type_idx]
+                    mesh_data.nq_list[new_type_idx], mesh_data.nsd, mesh_data.etype_list[new_type_idx]
                 )
-                nne = nne_list[new_type_idx]
+                nne = mesh_data.nne_list[new_type_idx]
                 elem_type_counter = new_type_idx
 
-            enodes = conn[e]  # local element nodes
+            enodes = mesh_data.conn[e]  # local element nodes
             enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T/p
             xI = nodes_r[enodes, :]
-            B_q, detJe_q = getB(GN_q, xI, nsd)
+            B_q, detJe_q = getB(GN_q, xI, mesh_data.nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
                 # Add radial component to integrand for axisymmetry
@@ -1631,10 +1620,7 @@ def integrate_residuals(  # noqa
             phi_L = _evaluate_quad_porosity(
                 kin,
                 N_q,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
+                solid,
                 is_fracture,
                 w0,
                 nq,
@@ -1645,10 +1631,7 @@ def integrate_residuals(  # noqa
             # Nodal evaluation for self-consistent lumping of the storage terms.
             phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
                 kin,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
+                solid,
                 is_fracture,
                 w0,
                 fluid,
@@ -1673,13 +1656,13 @@ def integrate_residuals(  # noqa
                     is_fracture,
                     w0,
                     lambda_f,
-                    lambda_s,
+                    solid,
                     isotropic_cond,
-                    nsd,
+                    mesh_data.nsd,
                     fluid,
                 )
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
-                    kin, phi_L_e, rho_f_e, u_f_e, is_fracture, rho_s, cp_s, cv, steady_temp
+                    kin, phi_L_e, rho_f_e, u_f_e, is_fracture, solid, cv, steady_temp
                 )
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_e
 
@@ -1701,12 +1684,11 @@ def integrate_residuals(  # noqa
                         phi_L,
                         u_f,
                         is_fracture,
-                        rho_s,
-                        cp_s,
+                        solid,
                         cv,
                         steady_temp,
                         rho_f_e.value[:, 0:1],
-                        nsd,
+                        mesh_data.nsd,
                         nq,
                         lambda_e,
                         isotropic_cond,
@@ -1725,7 +1707,7 @@ def integrate_residuals(  # noqa
                 fracture_flux_vectors, matches = _integrate_fracture_matrix_coupling_residual(
                     e,
                     enodes,
-                    nodes_f,
+                    mesh_data.nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
@@ -1758,7 +1740,13 @@ def integrate_residuals(  # noqa
 
     # ----- Return and convert to sparse matrix
     integrated_vectors = _assemble_global_matrices(
-        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists), isvector=True
+        vec,
+        mesh_data.conn,
+        mesh_data.nn,
+        mesh_data.nne_list,
+        mesh_data.elem_indx,
+        np.concatenate(mesh_data.region_lists),
+        isvector=True,
     )
 
     if is_fracture:  # Fracture residuals to be updated
@@ -1955,21 +1943,10 @@ def integrate_tangent_matrices(  # noqa
     if not pressure_only:
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    (
-        nn,
-        nsd,
-        conn,
-        nne_list,
-        etype_list,
-        elem_indx,
-        nq_list,
-        region_lists,
-        num_regions,
-        fmesh,
-        nodes_f,
-    ) = _get_region_mesh_data(mesh, is_fracture)
+    mesh_data = _get_region_mesh_data(mesh, is_fracture)
 
     if is_fracture:
+        fmesh = mesh_data.fmesh
         conn_global = fmesh["conn_global"]
 
         # Connectivity-only index vectors, cached by integrate_residuals.
@@ -2013,38 +1990,38 @@ def integrate_tangent_matrices(  # noqa
     # ----- gravity vector
     g = _get_gravity(mesh["nsd"], controls["gravity"])
 
-    vec = _initiate_vectors(list_of_matrices, nne_list, elem_indx)
+    vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
     # ----- Matrix integration element loop
-    for r in range(num_regions):
+    for r in range(mesh_data.num_regions):
         kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, fmesh, nodes_f, is_fracture, r
+            mesh, material, mesh_data, is_fracture, r
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
         isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
-        K_d, phi_0, biot, rho_s, cp_s, alpha_s, lambda_s = _get_region_solid_data(material, r)
+        solid = _get_region_solid_data(material, r)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
 
-        for e in region_lists[r]:
-            new_type_idx = bisect.bisect_left(elem_indx, e)
+        for e in mesh_data.region_lists[r]:
+            new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
             if new_type_idx != elem_type_counter:
                 # Update for different element type
                 # Evaluate quadrature points and get weights and shape functions.
                 W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
-                    nq_list[new_type_idx], nsd, etype_list[new_type_idx]
+                    mesh_data.nq_list[new_type_idx], mesh_data.nsd, mesh_data.etype_list[new_type_idx]
                 )
-                nne = nne_list[new_type_idx]
+                nne = mesh_data.nne_list[new_type_idx]
                 elem_type_counter = new_type_idx
 
-            enodes = conn[e]  # local element nodes
+            enodes = mesh_data.conn[e]  # local element nodes
             enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T/p
             xI = nodes_r[enodes, :]
-            B_q, detJe_q = getB(GN_q, xI, nsd)
+            B_q, detJe_q = getB(GN_q, xI, mesh_data.nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
                 # Add radial component to integrand for axisymmetry
@@ -2075,10 +2052,7 @@ def integrate_tangent_matrices(  # noqa
             phi_L = _evaluate_quad_porosity(
                 kin,
                 N_q,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
+                solid,
                 is_fracture,
                 w0,
                 nq,
@@ -2090,10 +2064,7 @@ def integrate_tangent_matrices(  # noqa
             # Nodal evaluation for self-consistent lumping of the storage terms.
             phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
                 kin_n,
-                phi_0,
-                K_d,
-                biot,
-                alpha_s,
+                solid,
                 is_fracture,
                 w0,
                 fluid,
@@ -2131,9 +2102,9 @@ def integrate_tangent_matrices(  # noqa
                     is_fracture,
                     w0,
                     lambda_f,
-                    lambda_s,
+                    solid,
                     isotropic_cond,
-                    nsd,
+                    mesh_data.nsd,
                     fluid,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -2146,8 +2117,7 @@ def integrate_tangent_matrices(  # noqa
                     rho_f_e,
                     u_f_e,
                     is_fracture,
-                    rho_s,
-                    cp_s,
+                    solid,
                     cv,
                     steady_temp,
                     kin_n,
@@ -2160,7 +2130,9 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTT"] = np.diag(m_lump * integrand_dFCdT_e.ravel())
 
                 # Themal diffusion vector
-                integrand_dFlambdadT = lambda_e * B_q + phi_L_n.dT * (lambda_f - lambda_s) * kin.gradT * N_q
+                integrand_dFlambdadT = (
+                    lambda_e * B_q + phi_L_n.dT * (lambda_f - solid.lambda_s) * kin.gradT * N_q
+                )
                 element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 # Advection and SUPG stabilization
@@ -2184,12 +2156,11 @@ def integrate_tangent_matrices(  # noqa
                         phi_L,
                         u_f,
                         is_fracture,
-                        rho_s,
-                        cp_s,
+                        solid,
                         cv,
                         steady_temp,
                         rho_f_e.value,
-                        nsd,
+                        mesh_data.nsd,
                         nq,
                         lambda_e,
                         isotropic_cond,
@@ -2226,7 +2197,7 @@ def integrate_tangent_matrices(  # noqa
                 )
 
                 # Themal diffusion vector
-                integrand_dFlambdadT = phi_L_n.dp * (lambda_f - lambda_s) * kin.gradT * N_q
+                integrand_dFlambdadT = phi_L_n.dp * (lambda_f - solid.lambda_s) * kin.gradT * N_q
                 element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 if advection_on:
@@ -2240,7 +2211,7 @@ def integrate_tangent_matrices(  # noqa
                 coupling_entries = _integrate_fracture_matrix_coupling_tangent(
                     e,
                     enodes,
-                    nodes_f,
+                    mesh_data.nodes_f,
                     N_q,
                     wJe_q,
                     mesh,
@@ -2283,11 +2254,16 @@ def integrate_tangent_matrices(  # noqa
 
     # ----- Return and convert to sparse matrix
     integrated_matrices = _assemble_global_matrices(
-        vec, conn, nn, nne_list, elem_indx, np.concatenate(region_lists)
+        vec,
+        mesh_data.conn,
+        mesh_data.nn,
+        mesh_data.nne_list,
+        mesh_data.elem_indx,
+        np.concatenate(mesh_data.region_lists),
     )
 
     if is_fracture:
-        nn_m = mesh["nn"]
+        nn, nn_m = mesh_data.nn, mesh["nn"]
         for name in vec_ff:
             integrated_matrices[name] = _make_sparse(vec_ff[name], row_vec_ff, col_vec_ff, nn, nn)
         for name in vec_fm:
@@ -2315,7 +2291,7 @@ def integrate_tangent_matrices(  # noqa
         )
         # Combine fracture and matrix matrices into one
         integrated_matrices = _stack_fracture_matrices(
-            integrated_matrices, integrated_fracture_matrices, nn, mesh["fracture_mesh"]["nn"]
+            integrated_matrices, integrated_fracture_matrices, mesh_data.nn, mesh["fracture_mesh"]["nn"]
         )
 
     return integrated_matrices
