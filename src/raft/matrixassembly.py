@@ -27,6 +27,80 @@ from .matprops import (
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
+# ---- Data classes
+@dataclass(frozen=True, slots=True)
+class ElementKinematics:
+    """This element's nodal primary variables, sliced out and interpolated to quadrature points.
+
+    `Te`/`Te_flow`/`pe`/`T_q`/`T_flow_q`/`p_q` carry the full time history (one column per
+    stored iterate/timestep, current iterate first); the rest are already current-iterate-only
+    (`T_0e`/`p_0e` are reference-state constants, `L_vec` is geometric, and `gradT`/`gradP` are
+    built from column 0 alone). Use `.n` to slice down to a current-iterate-only view.
+    """
+
+    Te: npt.NDArray[np.float64]
+    Te_flow: npt.NDArray[np.float64]
+    pe: npt.NDArray[np.float64]
+    T_0e: npt.NDArray[np.float64]
+    p_0e: npt.NDArray[np.float64]
+    L_vec: npt.NDArray[np.float64]
+    T_q: npt.NDArray[np.float64]
+    T_flow_q: npt.NDArray[np.float64]
+    p_q: npt.NDArray[np.float64]
+    gradT: npt.NDArray[np.float64]  # noqa: N815
+    gradP: npt.NDArray[np.float64]  # noqa: N815
+
+    @property
+    def n(self) -> ElementKinematics:
+        """Current-iterate (column 0) slice of every history-carrying field."""
+        return ElementKinematics(
+            self.Te[:, 0:1],
+            self.Te_flow[:, 0:1],
+            self.pe[:, 0:1],
+            self.T_0e,
+            self.p_0e,
+            self.L_vec,
+            self.T_q[:, :, 0:1],
+            self.T_flow_q[:, :, 0:1],
+            self.p_q[:, :, 0:1],
+            self.gradT,
+            self.gradP,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RegionMeshData:
+    """Mesh/region data resolved from the bulk mesh, or the fracture mesh when `is_fracture`."""
+
+    nn: int
+    nsd: int
+    conn: list[list[int]]
+    nne_list: list[int]
+    etype_list: list[str]
+    elem_indx: list[int]
+    nq_list: list[int]
+    region_lists: list[list[int]]
+    num_regions: int
+    fmesh: dict[str, Any]  # {} sentinel when not is_fracture
+    nodes_f: npt.NDArray[np.float64]  # empty sentinel when not is_fracture
+
+
+@dataclass(frozen=True, slots=True)
+class RegionSolidData:
+    """Per-region solid properties."""
+
+    K_d: float
+    phi_0: float
+    biot: float
+    rho_s: float
+    cp_s: float
+    alpha_s: float
+    lambda_s: npt.NDArray[np.float64] | float  # anisotropic case is a conductivity tensor
+
+
+# ---- General helpers
+
+
 def _get_gravity(nsd: int, magnitude: float) -> npt.NDArray[np.float64]:
     ng = np.zeros((nsd, 1))
     ng[nsd - 1] = 1.0  # gravity normal
@@ -434,211 +508,6 @@ def _iter_fracture_matrix_matches(
         yield e_m, enodes_m, nne_m, N_qm
 
 
-def _integrate_fracture_matrix_coupling_tangent(
-    e: int,
-    enodes_f: list[int],
-    nodes_f: npt.NDArray[np.float64],
-    N_q: npt.NDArray[np.float64],
-    wJe_q: npt.NDArray[np.float64],
-    mesh: dict[str, Any],
-    fluid: dict[str, Any],
-    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
-    kin_n: ElementKinematics,  # current-iterate slice
-    p: npt.NDArray[np.float64],  # Full pressure vector
-    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
-    T: npt.NDArray[np.float64],  # Full temperature vector
-    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
-    kf_perp: PropertyResult,
-    mu_q: PropertyResult,  # viscosity at quad points
-    rhof_q: PropertyResult,  # density at quad points
-    hc: float,
-    *,
-    pressure_coupling: bool,
-    thermal_coupling: bool,
-    fully_coupled: bool,
-    advection_on: bool,
-    T_flow_lagged: bool,
-) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
-    """Integrate one fracture element's coupling tangent contribution to its neighboring matrix elements."""
-    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
-
-    p_f_q = N_q @ kin_n.pe  # fracture pressure
-    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
-
-    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
-        ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
-        fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
-        mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
-        mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
-
-        if pressure_coupling or advection_on:
-            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
-            flux_p_q, dfluxp_dpf, dfluxp_dpm = _evaluate_fracture_leakoff_flux(
-                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, want_tangent_dp=True
-            )
-
-        if pressure_coupling:
-            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
-            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
-            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
-
-        if thermal_coupling:
-            T_f_q = N_q @ kin_n.Te
-            T_m_q = N_qm @ T[enodes_m]
-            _, dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
-                hc, T_f_q, T_m_q, want_tangent_dT=True
-            )
-
-            ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
-            fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxc_dTm, N_q, wJe_q, True)
-            mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxc_dTf, N_qm, wJe_q, True)
-            mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxc_dTm, N_qm, wJe_q, True)
-
-            if advection_on:
-                T_flow_fq = N_q @ kin_n.Te_flow
-                T_flow_mq = N_qm @ T_flow[enodes_m]
-                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
-
-                _, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm = _evaluate_fracture_advection_flux(
-                    p_f_q,
-                    p_m_q,
-                    p_f_q_lag,
-                    p_m_q_lag,
-                    T_f_q,
-                    T_m_q,
-                    T_flow_fq,
-                    T_flow_mq,
-                    flux_p_q,
-                    fluid,
-                    kf_perp,
-                    mu_q,
-                    rhof_q,
-                    dfluxp_dpf=dfluxp_dpf,
-                    dfluxp_dpm=dfluxp_dpm,
-                    want_tangent=True,
-                    T_flow_lagged=T_flow_lagged,
-                )
-
-                # fm/mf coefficients use the derivative wrt the column's temperature (Tf for
-                # fm, Tm for mf), not the row's own.
-                ff_matrices["KTT_ff"] = ff_matrices["KTT_ff"] + _vctrzd_quad_point_integration(
-                    N_q, -dqadv_dTf, N_q, wJe_q, True
-                )
-                fm_matrices["KTT_fm"] = fm_matrices["KTT_fm"] + _vctrzd_quad_point_integration(
-                    N_qm, dqadv_dTf, N_q, wJe_q, True
-                )
-                mf_matrices["KTT_mf"] = mf_matrices["KTT_mf"] + _vctrzd_quad_point_integration(
-                    N_q, -dqadv_dTm, N_qm, wJe_q, True
-                )
-                mm_matrices["KTT_mm"] = mm_matrices["KTT_mm"] + _vctrzd_quad_point_integration(
-                    N_qm, dqadv_dTm, N_qm, wJe_q, True
-                )
-
-                if fully_coupled:
-                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
-                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_qm, wJe_q, True)
-
-        entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
-
-    return entries
-
-
-def _integrate_fracture_matrix_coupling_residual(  # noqa
-    e: int,  # fracture element
-    enodes_f: list[int],  # fracture element connectivity
-    nodes_f: npt.NDArray[np.float64],  # fracture element nodes
-    N_q: npt.NDArray[np.float64],  # fracture shape function
-    wJe_q: npt.NDArray[np.float64],
-    mesh: dict[str, Any],
-    fluid: dict[str, Any],
-    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
-    kin_n: ElementKinematics,  # current-iterate slice
-    p: npt.NDArray[np.float64],  # Full pressure vector
-    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
-    T: npt.NDArray[np.float64],  # Full temperature vector
-    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
-    kf_perp: PropertyResult,  # fracture transverse permeability at quad points
-    mu_q: PropertyResult,  # viscosity at quad points
-    rhof_q: PropertyResult,  # density at quadrature points
-    hc: float,  # convective heat transfer coefficient
-    *,
-    pressure_coupling: bool,
-    thermal_coupling: bool,
-    advection_on: bool,
-) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
-    """Integrate the fracture-matrix leak-off/convective-exchange flux at the current state into
-    nodal residual vectors.
-
-    Returns `(fracture_vectors, matches)`: `fracture_vectors` accumulates onto this fracture
-    element's own residual, and `matches` is a list of `(nne_m, matrix_vectors)`, one entry per
-    matched matrix element.
-    """
-    fracture_vectors: dict[str, npt.NDArray[np.float64]] = {}
-    matches: list[tuple[int, dict[str, npt.NDArray[np.float64]]]] = []
-    if not pressure_coupling and not thermal_coupling:
-        return fracture_vectors, matches
-
-    p_f_q = N_q @ kin_n.pe
-    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
-    T_f_q = N_q @ kin_n.Te
-    Rf_p = np.zeros((len(enodes_f), 1))
-    Rf_T = np.zeros((len(enodes_f), 1))
-    Rf_Tadv = np.zeros((len(enodes_f), 1))
-
-    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
-        matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
-        if pressure_coupling or advection_on:
-            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
-            flux_p_q, _, _ = _evaluate_fracture_leakoff_flux(rhof_q, kf_perp, mu_q, p_f_q, p_m_q)
-
-        if pressure_coupling:
-            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
-            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
-        if thermal_coupling:
-            T_m_q = N_qm @ T[enodes_m]  # matrix temperature
-            flux_hc_T_q, _, _ = _evaluate_fracture_conduction_flux(hc, T_f_q, T_m_q)
-            Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
-            matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
-
-            if advection_on:
-                T_flow_fq = N_q @ kin_n.Te_flow
-                T_flow_mq = N_qm @ T_flow[enodes_m]
-                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
-
-                flux_adv_T_q, _, _, _, _ = _evaluate_fracture_advection_flux(
-                    p_f_q,
-                    p_m_q,
-                    p_f_q_lag,
-                    p_m_q_lag,
-                    T_f_q,
-                    T_m_q,
-                    T_flow_fq,
-                    T_flow_mq,
-                    flux_p_q,
-                    fluid,
-                    kf_perp,
-                    mu_q,
-                    rhof_q,
-                )
-                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
-                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
-                    N_qm, -flux_adv_T_q, wJe_q, True
-                )
-
-        matches.append((nne_m, matrix_vectors))
-
-    if pressure_coupling:
-        fracture_vectors["F_Pdiffusion"] = Rf_p
-    if thermal_coupling:
-        fracture_vectors["F_Tdiffusion"] = Rf_T
-        if advection_on:
-            fracture_vectors["F_Tadvection"] = Rf_Tadv
-    return fracture_vectors, matches
-
-
 def _stack_fracture_matrices(
     body_matrices: dict[str, csc_matrix[Any]],
     fracture_matrices: dict[str, csc_matrix[Any]],
@@ -688,23 +557,6 @@ def _stack_fracture_vectors(
     for name in body_vectors:
         body_vectors[name] = vstack([body_vectors[name], fracture_vectors[name]]).tocsc()
     return body_vectors
-
-
-@dataclass(frozen=True, slots=True)
-class RegionMeshData:
-    """Mesh/region data resolved from the bulk mesh, or the fracture mesh when `is_fracture`."""
-
-    nn: int
-    nsd: int
-    conn: list[list[int]]
-    nne_list: list[int]
-    etype_list: list[str]
-    elem_indx: list[int]
-    nq_list: list[int]
-    region_lists: list[list[int]]
-    num_regions: int
-    fmesh: dict[str, Any]  # {} sentinel when not is_fracture
-    nodes_f: npt.NDArray[np.float64]  # empty sentinel when not is_fracture
 
 
 def _get_region_mesh_data(mesh: dict[str, Any], *, is_fracture: bool) -> RegionMeshData:
@@ -792,19 +644,6 @@ def _get_region_thermal_data(material: dict[str, Any], r: int, *, is_fracture: b
     return isotropic_cond, float("nan")
 
 
-@dataclass(frozen=True, slots=True)
-class RegionSolidData:
-    """Per-region solid properties."""
-
-    K_d: float
-    phi_0: float
-    biot: float
-    rho_s: float
-    cp_s: float
-    alpha_s: float
-    lambda_s: npt.NDArray[np.float64] | float  # anisotropic case is a conductivity tensor
-
-
 def _get_region_solid_data(material: dict[str, Any], r: int) -> RegionSolidData:
     """Resolve per-region solid properties."""
     return RegionSolidData(
@@ -856,11 +695,7 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
     )
 
 
-# ----------------------------------------------------------------------------------------
-# Per-element physics evaluators shared between integrate_residuals and
-# integrate_tangent_matrices. Each one is called identically by both - the tangent function
-# just also keeps the derivative outputs the residual discards - except where noted.
-# ----------------------------------------------------------------------------------------
+# ---- Physics helpers: called by both residual and tangent integrations
 
 # Sentinel for a tangent-only input/output not needed when want_tangent_*=False.
 _EMPTY = np.empty((0, 0))
@@ -968,46 +803,6 @@ def _evaluate_fracture_advection_flux(
             dqadv_dpm = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpm
 
     return flux_adv_T_q, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm
-
-
-@dataclass(frozen=True, slots=True)
-class ElementKinematics:
-    """This element's nodal primary variables, sliced out and interpolated to quadrature points.
-
-    `Te`/`Te_flow`/`pe`/`T_q`/`T_flow_q`/`p_q` carry the full time history (one column per
-    stored iterate/timestep, current iterate first); the rest are already current-iterate-only
-    (`T_0e`/`p_0e` are reference-state constants, `L_vec` is geometric, and `gradT`/`gradP` are
-    built from column 0 alone). Use `.n` to slice down to a current-iterate-only view.
-    """
-
-    Te: npt.NDArray[np.float64]
-    Te_flow: npt.NDArray[np.float64]
-    pe: npt.NDArray[np.float64]
-    T_0e: npt.NDArray[np.float64]
-    p_0e: npt.NDArray[np.float64]
-    L_vec: npt.NDArray[np.float64]
-    T_q: npt.NDArray[np.float64]
-    T_flow_q: npt.NDArray[np.float64]
-    p_q: npt.NDArray[np.float64]
-    gradT: npt.NDArray[np.float64]  # noqa: N815
-    gradP: npt.NDArray[np.float64]  # noqa: N815
-
-    @property
-    def n(self) -> ElementKinematics:
-        """Current-iterate (column 0) slice of every history-carrying field."""
-        return ElementKinematics(
-            self.Te[:, 0:1],
-            self.Te_flow[:, 0:1],
-            self.pe[:, 0:1],
-            self.T_0e,
-            self.p_0e,
-            self.L_vec,
-            self.T_q[:, :, 0:1],
-            self.T_flow_q[:, :, 0:1],
-            self.p_q[:, :, 0:1],
-            self.gradT,
-            self.gradP,
-        )
 
 
 # Sentinel default for an optional `ElementKinematics` parameter (mirrors `_EMPTY` for arrays
@@ -1485,6 +1280,214 @@ def _evaluate_advection_terms(
         integrand_advection_dp,
         integrand_SUPG_dp,
     )
+
+
+# ---- Integration functions
+
+
+def _integrate_fracture_matrix_coupling_residual(  # noqa
+    e: int,  # fracture element
+    enodes_f: list[int],  # fracture element connectivity
+    nodes_f: npt.NDArray[np.float64],  # fracture element nodes
+    N_q: npt.NDArray[np.float64],  # fracture shape function
+    wJe_q: npt.NDArray[np.float64],
+    mesh: dict[str, Any],
+    fluid: dict[str, Any],
+    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
+    kin_n: ElementKinematics,  # current-iterate slice
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
+    kf_perp: PropertyResult,  # fracture transverse permeability at quad points
+    mu_q: PropertyResult,  # viscosity at quad points
+    rhof_q: PropertyResult,  # density at quadrature points
+    hc: float,  # convective heat transfer coefficient
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+    advection_on: bool,
+) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
+    """Integrate the fracture-matrix leak-off/convective-exchange flux at the current state into
+    nodal residual vectors.
+
+    Returns `(fracture_vectors, matches)`: `fracture_vectors` accumulates onto this fracture
+    element's own residual, and `matches` is a list of `(nne_m, matrix_vectors)`, one entry per
+    matched matrix element.
+    """
+    fracture_vectors: dict[str, npt.NDArray[np.float64]] = {}
+    matches: list[tuple[int, dict[str, npt.NDArray[np.float64]]]] = []
+    if not pressure_coupling and not thermal_coupling:
+        return fracture_vectors, matches
+
+    p_f_q = N_q @ kin_n.pe
+    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
+    T_f_q = N_q @ kin_n.Te
+    Rf_p = np.zeros((len(enodes_f), 1))
+    Rf_T = np.zeros((len(enodes_f), 1))
+    Rf_Tadv = np.zeros((len(enodes_f), 1))
+
+    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
+        matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
+        if pressure_coupling or advection_on:
+            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
+            flux_p_q, _, _ = _evaluate_fracture_leakoff_flux(rhof_q, kf_perp, mu_q, p_f_q, p_m_q)
+
+        if pressure_coupling:
+            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
+            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
+        if thermal_coupling:
+            T_m_q = N_qm @ T[enodes_m]  # matrix temperature
+            flux_hc_T_q, _, _ = _evaluate_fracture_conduction_flux(hc, T_f_q, T_m_q)
+            Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
+            matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
+
+            if advection_on:
+                T_flow_fq = N_q @ kin_n.Te_flow
+                T_flow_mq = N_qm @ T_flow[enodes_m]
+                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
+
+                flux_adv_T_q, _, _, _, _ = _evaluate_fracture_advection_flux(
+                    p_f_q,
+                    p_m_q,
+                    p_f_q_lag,
+                    p_m_q_lag,
+                    T_f_q,
+                    T_m_q,
+                    T_flow_fq,
+                    T_flow_mq,
+                    flux_p_q,
+                    fluid,
+                    kf_perp,
+                    mu_q,
+                    rhof_q,
+                )
+                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
+                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
+                    N_qm, -flux_adv_T_q, wJe_q, True
+                )
+
+        matches.append((nne_m, matrix_vectors))
+
+    if pressure_coupling:
+        fracture_vectors["F_Pdiffusion"] = Rf_p
+    if thermal_coupling:
+        fracture_vectors["F_Tdiffusion"] = Rf_T
+        if advection_on:
+            fracture_vectors["F_Tadvection"] = Rf_Tadv
+    return fracture_vectors, matches
+
+
+def _integrate_fracture_matrix_coupling_tangent(
+    e: int,
+    enodes_f: list[int],
+    nodes_f: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
+    wJe_q: npt.NDArray[np.float64],
+    mesh: dict[str, Any],
+    fluid: dict[str, Any],
+    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
+    kin_n: ElementKinematics,  # current-iterate slice
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
+    kf_perp: PropertyResult,
+    mu_q: PropertyResult,  # viscosity at quad points
+    rhof_q: PropertyResult,  # density at quad points
+    hc: float,
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+    fully_coupled: bool,
+    advection_on: bool,
+    T_flow_lagged: bool,
+) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """Integrate one fracture element's coupling tangent contribution to its neighboring matrix elements."""
+    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+
+    p_f_q = N_q @ kin_n.pe  # fracture pressure
+    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
+
+    for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
+        ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+
+        if pressure_coupling or advection_on:
+            p_m_q = N_qm @ p[enodes_m]  # matrix pressure
+            flux_p_q, dfluxp_dpf, dfluxp_dpm = _evaluate_fracture_leakoff_flux(
+                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, want_tangent_dp=True
+            )
+
+        if pressure_coupling:
+            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
+            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
+
+        if thermal_coupling:
+            T_f_q = N_q @ kin_n.Te
+            T_m_q = N_qm @ T[enodes_m]
+            _, dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
+                hc, T_f_q, T_m_q, want_tangent_dT=True
+            )
+
+            ff_matrices["KTT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
+            fm_matrices["KTT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxc_dTm, N_q, wJe_q, True)
+            mf_matrices["KTT_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxc_dTf, N_qm, wJe_q, True)
+            mm_matrices["KTT_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxc_dTm, N_qm, wJe_q, True)
+
+            if advection_on:
+                T_flow_fq = N_q @ kin_n.Te_flow
+                T_flow_mq = N_qm @ T_flow[enodes_m]
+                p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
+
+                _, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm = _evaluate_fracture_advection_flux(
+                    p_f_q,
+                    p_m_q,
+                    p_f_q_lag,
+                    p_m_q_lag,
+                    T_f_q,
+                    T_m_q,
+                    T_flow_fq,
+                    T_flow_mq,
+                    flux_p_q,
+                    fluid,
+                    kf_perp,
+                    mu_q,
+                    rhof_q,
+                    dfluxp_dpf=dfluxp_dpf,
+                    dfluxp_dpm=dfluxp_dpm,
+                    want_tangent=True,
+                    T_flow_lagged=T_flow_lagged,
+                )
+
+                # fm/mf coefficients use the derivative wrt the column's temperature (Tf for
+                # fm, Tm for mf), not the row's own.
+                ff_matrices["KTT_ff"] = ff_matrices["KTT_ff"] + _vctrzd_quad_point_integration(
+                    N_q, -dqadv_dTf, N_q, wJe_q, True
+                )
+                fm_matrices["KTT_fm"] = fm_matrices["KTT_fm"] + _vctrzd_quad_point_integration(
+                    N_qm, dqadv_dTf, N_q, wJe_q, True
+                )
+                mf_matrices["KTT_mf"] = mf_matrices["KTT_mf"] + _vctrzd_quad_point_integration(
+                    N_q, -dqadv_dTm, N_qm, wJe_q, True
+                )
+                mm_matrices["KTT_mm"] = mm_matrices["KTT_mm"] + _vctrzd_quad_point_integration(
+                    N_qm, dqadv_dTm, N_qm, wJe_q, True
+                )
+
+                if fully_coupled:
+                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_qm, wJe_q, True)
+
+        entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
+
+    return entries
 
 
 def integrate_residuals(  # noqa
@@ -1980,6 +1983,7 @@ def integrate_tangent_matrices(  # noqa
 
                 # Diffusion vector - Fk
                 # dFk/dp
+                # dqD_dp already contains the RHS matrices, integrate like a vector
                 element_matrices["Kpp"] += _vctrzd_qp_vctr_integrate(B_q, dqD_dp, wJe_q, False)
 
             if not pressure_only:
