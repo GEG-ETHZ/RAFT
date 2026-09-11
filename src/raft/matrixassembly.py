@@ -514,8 +514,8 @@ def _integrate_fracture_matrix_coupling_tangent(
                     kf_perp,
                     mu_q,
                     rhof_q,
-                    dfluxp_dpf,
-                    dfluxp_dpm,
+                    dfluxp_dpf=dfluxp_dpf,
+                    dfluxp_dpm=dfluxp_dpm,
                     want_tangent=True,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -707,7 +707,7 @@ class RegionMeshData:
     nodes_f: npt.NDArray[np.float64]  # empty sentinel when not is_fracture
 
 
-def _get_region_mesh_data(mesh: dict[str, Any], is_fracture: bool) -> RegionMeshData:
+def _get_region_mesh_data(mesh: dict[str, Any], *, is_fracture: bool) -> RegionMeshData:
     """Resolve mesh/region data from the bulk mesh, or the fracture mesh when `is_fracture`."""
     if is_fracture:
         fmesh = mesh["fracture_mesh"]
@@ -743,8 +743,9 @@ def _get_region_flow_data(
     mesh: dict[str, Any],
     material: dict[str, Any],
     mesh_data: RegionMeshData,
-    is_fracture: bool,
     r: int,
+    *,
+    is_fracture: bool,
 ) -> tuple[
     npt.NDArray[np.float64] | float,  # kf, permeability
     bool,  # isotropic_perm
@@ -772,7 +773,7 @@ def _get_region_flow_data(
     return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), kf_perp_sentinel
 
 
-def _get_region_thermal_data(material: dict[str, Any], is_fracture: bool, r: int) -> tuple[bool, float]:
+def _get_region_thermal_data(material: dict[str, Any], r: int, *, is_fracture: bool) -> tuple[bool, float]:
     """Resolve the region's isotropic-conductivity flag and interface heat transfer coefficient.
 
     `hc` is a NaN sentinel when not `is_fracture` (coupling-only quantity).
@@ -926,9 +927,9 @@ def _evaluate_fracture_advection_flux(
     kf_perp: PropertyResult,
     mu_q: PropertyResult,
     rhof_q: PropertyResult,
+    *,
     dfluxp_dpf: npt.NDArray[np.float64] = _EMPTY,
     dfluxp_dpm: npt.NDArray[np.float64] = _EMPTY,
-    *,
     want_tangent: bool = False,
     T_flow_lagged: bool = False,
 ) -> tuple[
@@ -1066,15 +1067,15 @@ def _evaluate_flow_properties(
 
 
 def _evaluate_darcy_flux(
-    kf: PropertyResult,
-    mu_q: PropertyResult,
-    gradP: npt.NDArray[np.float64],
-    rho_f_n: PropertyResult,
-    g_r: npt.NDArray[np.float64],
-    isotropic_perm: bool,
     N_q: npt.NDArray[np.float64],
     B_q: npt.NDArray[np.float64],
+    gradP: npt.NDArray[np.float64],
+    g_r: npt.NDArray[np.float64],
+    kf: PropertyResult,
+    mu_q: PropertyResult,
+    rho_f_n: PropertyResult,
     *,
+    isotropic_perm: bool,
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
@@ -1120,10 +1121,10 @@ def _evaluate_quad_porosity(
     kin: ElementKinematics,
     N_q: npt.NDArray[np.float64],
     solid: RegionSolidData,
-    is_fracture: bool,
     w0: float,
     nq: int,
     *,
+    is_fracture: bool,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
 ) -> PropertyResult:
@@ -1153,11 +1154,11 @@ def _evaluate_quad_porosity(
 
 def _evaluate_nodal_state(
     kin: ElementKinematics,  # this element's own kinematics; pass `.n` for the tangent's current-iterate
-    solid: RegionSolidData,
-    is_fracture: bool,
-    w0: float,
     fluid: dict[str, Any],
+    solid: RegionSolidData,
+    w0: float,
     *,
+    is_fracture: bool,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
 ) -> tuple[PropertyResult, PropertyResult, PropertyResult]:
@@ -1192,8 +1193,9 @@ def _evaluate_total_energy(
     phi_L: PropertyResult,
     rho_f: PropertyResult,
     u_f: PropertyResult,
-    is_fracture: bool,
     solid: RegionSolidData,
+    *,
+    is_fracture: bool,
 ) -> npt.NDArray[np.float64]:
     """Evaluate the total (solid + fluid) stored energy."""
     rho_s, cp_s = solid.rho_s, solid.cp_s
@@ -1205,9 +1207,9 @@ def _evaluate_mass_storage_integrands(
     rho_f_e: PropertyResult,
     cv: npt.NDArray[np.float64],
     steady_pres: float,
+    *,
     phi_L_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
     rho_f_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
-    *,
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
@@ -1246,15 +1248,15 @@ def _evaluate_energy_storage_integrands(
     phi_L_e: PropertyResult,
     rho_f_e: PropertyResult,
     u_f_e: PropertyResult,
-    is_fracture: bool,
     solid: RegionSolidData,
     cv: npt.NDArray[np.float64],
     steady_temp: float,
+    *,
+    is_fracture: bool,
     kin_n: ElementKinematics = _EMPTY_KINEMATICS,
     phi_L_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
     rho_f_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
     u_f_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
-    *,
     want_tangent_dT: bool = False,
     want_tangent_dp: bool = False,
 ) -> tuple[
@@ -1270,7 +1272,7 @@ def _evaluate_energy_storage_integrands(
     `.dp` feeds the dp-tangent, matching KTp's consistent discretization).
     """
     rho_s, cp_s = solid.rho_s, solid.cp_s
-    E_e = _evaluate_total_energy(kin.Te, phi_L_e, rho_f_e, u_f_e, is_fracture, solid)
+    E_e = _evaluate_total_energy(kin.Te, phi_L_e, rho_f_e, u_f_e, solid, is_fracture=is_fracture)
     energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
 
     integrand_dFCdT_e = _EMPTY
@@ -1302,15 +1304,15 @@ def _evaluate_energy_storage_integrands(
 def _evaluate_energy_properties(
     kin: ElementKinematics,
     kin_n: ElementKinematics,
+    fluid: dict[str, Any],
+    solid: RegionSolidData,
     phi_L_n: PropertyResult,
-    is_fracture: bool,
     w0: float,
     lambda_f: float,
-    solid: RegionSolidData,
-    isotropic_cond: bool,
     nsd: int,
-    fluid: dict[str, Any],
     *,
+    is_fracture: bool,
+    isotropic_cond: bool,
     T_flow_lagged: bool = False,
 ) -> tuple[PropertyResult, EnthalpyResult, npt.NDArray[np.float64] | float]:
     """Evaluate fluid internal energy and enthalpy at quadrature points: `(u_f, hf_q, lambda_e)`.
@@ -1339,31 +1341,31 @@ def _evaluate_energy_properties(
 
 
 def _evaluate_advection_terms(
-    B_q: npt.NDArray[np.float64],
     N_q: npt.NDArray[np.float64],
-    q_D: npt.NDArray[np.float64],  # mass flux
-    rho_f_n: PropertyResult,
-    rho_f: PropertyResult,
-    hf_q: EnthalpyResult,
-    kin: ElementKinematics,
-    phi_L: PropertyResult,
-    u_f: PropertyResult,
-    is_fracture: bool,
-    solid: RegionSolidData,
-    cv: npt.NDArray[np.float64],
-    steady_temp: float,
-    rho_f_e_n: npt.NDArray[np.float64],
+    B_q: npt.NDArray[np.float64],
     nsd: int,
     nq: int,
-    lambda_e: npt.NDArray[np.float64] | float,
-    isotropic_cond: bool,
+    kin: ElementKinematics,
+    kin_n: ElementKinematics,
     fluid: dict[str, Any],
+    solid: RegionSolidData,
+    q_D: npt.NDArray[np.float64],  # mass flux
+    rho_f: PropertyResult,
+    rho_f_n: PropertyResult,
+    rho_f_e: PropertyResult,
+    phi_L: PropertyResult,
+    u_f: PropertyResult,
+    hf_q: EnthalpyResult,
+    lambda_e: npt.NDArray[np.float64] | float,
+    cv: npt.NDArray[np.float64],
+    steady_temp: float,
+    *,
+    is_fracture: bool,
+    isotropic_cond: bool,
     dqD_dT: npt.NDArray[np.float64] = _EMPTY,
-    kin_n: ElementKinematics = _EMPTY_KINEMATICS,
+    dqD_dp: npt.NDArray[np.float64] = _EMPTY,
     phi_L_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
     u_f_n: PropertyResult = PropertyResult(_EMPTY, _EMPTY, _EMPTY),
-    dqD_dp: npt.NDArray[np.float64] = _EMPTY,
-    *,
     want_tangent_dT: bool = False,
     want_tangent_dp: bool = False,
 ) -> tuple[
@@ -1377,7 +1379,7 @@ def _evaluate_advection_terms(
     """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
     rho_s, cp_s = solid.rho_s, solid.cp_s
     darcy_flux = q_D / rho_f_n.value
-    E_q = _evaluate_total_energy(kin.T_q, phi_L, rho_f, u_f, is_fracture, solid)
+    E_q = _evaluate_total_energy(kin.T_q, phi_L, rho_f, u_f, solid, is_fracture=is_fracture)
     energy_dot = (1 - steady_temp) * (
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
     )
@@ -1427,7 +1429,7 @@ def _evaluate_advection_terms(
     # Discretized strong form residual at quadrature points
     hf_e = get_enthalpy(kin_n.pe, kin_n.Te, kin_n.Te_flow, fluid)  # fluid enthalpy, nq x 1 x 1
     grad_hf = B_q @ hf_e.value
-    grad_rhof = B_q @ rho_f_e_n
+    grad_rhof = B_q @ rho_f_e.value[:, 0:1]
     RTh = (
         energy_dot + (grad_hf * rho_f_n.value + hf_q.value * grad_rhof).transpose(0, 2, 1) @ darcy_flux
     )  # discretized residual
@@ -1520,7 +1522,7 @@ def integrate_residuals(  # noqa
         list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection", "F_Tstab"] + list_of_matrices
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    mesh_data = _get_region_mesh_data(mesh, is_fracture)
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture)
 
     if is_fracture:
         fmesh = mesh_data.fmesh
@@ -1575,12 +1577,12 @@ def integrate_residuals(  # noqa
     # ----- Matrix integration element loop
     for r in range(mesh_data.num_regions):
         kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, mesh_data, is_fracture, r
+            mesh, material, mesh_data, r, is_fracture=is_fracture
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
-        isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
+        isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
         solid = _get_region_solid_data(material, r)
 
         # find element type of first element in region
@@ -1615,15 +1617,17 @@ def integrate_residuals(  # noqa
 
             kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid)
             rho_f_n = PropertyResult(rho_f.value[:, :, 0:1], rho_f.dp, rho_f.dT)
-            _, q_D, _, _ = _evaluate_darcy_flux(kf, mu_q, kin.gradP, rho_f_n, g_r, isotropic_perm, N_q, B_q)
+            _, q_D, _, _ = _evaluate_darcy_flux(
+                N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f_n, isotropic_perm=isotropic_perm
+            )
 
             phi_L = _evaluate_quad_porosity(
                 kin,
                 N_q,
                 solid,
-                is_fracture,
                 w0,
                 nq,
+                is_fracture=is_fracture,
                 volumetric_strain_on=volumetric_strain_on,
             )
             phi_L_n = PropertyResult(phi_L.value[:, :, 0:1], phi_L.dp, phi_L.dT)
@@ -1631,10 +1635,10 @@ def integrate_residuals(  # noqa
             # Nodal evaluation for self-consistent lumping of the storage terms.
             phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
                 kin,
-                solid,
-                is_fracture,
-                w0,
                 fluid,
+                solid,
+                w0,
+                is_fracture=is_fracture,
                 volumetric_strain_on=volumetric_strain_on,
             )
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
@@ -1652,17 +1656,17 @@ def integrate_residuals(  # noqa
                 u_f, hf_q, lambda_e = _evaluate_energy_properties(
                     kin,
                     kin_n,
+                    fluid,
+                    solid,
                     phi_L_n,
-                    is_fracture,
                     w0,
                     lambda_f,
-                    solid,
-                    isotropic_cond,
                     mesh_data.nsd,
-                    fluid,
+                    is_fracture=is_fracture,
+                    isotropic_cond=isotropic_cond,
                 )
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
-                    kin, phi_L_e, rho_f_e, u_f_e, is_fracture, solid, cv, steady_temp
+                    kin, phi_L_e, rho_f_e, u_f_e, solid, cv, steady_temp, is_fracture=is_fracture
                 )
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_e
 
@@ -1674,26 +1678,26 @@ def integrate_residuals(  # noqa
                 # Advection and SUPG stabilization
                 if advection_on:
                     integrand_advection, integrand_SUPG, _, _, _, _ = _evaluate_advection_terms(
-                        B_q,
                         N_q,
-                        q_D,
-                        rho_f_n,
-                        rho_f,
-                        hf_q,
-                        kin,
-                        phi_L,
-                        u_f,
-                        is_fracture,
-                        solid,
-                        cv,
-                        steady_temp,
-                        rho_f_e.value[:, 0:1],
+                        B_q,
                         mesh_data.nsd,
                         nq,
-                        lambda_e,
-                        isotropic_cond,
+                        kin,
+                        kin_n,
                         fluid,
-                        kin_n=kin_n,
+                        solid,
+                        q_D,
+                        rho_f,
+                        rho_f_n,
+                        rho_f_e,
+                        phi_L,
+                        u_f,
+                        hf_q,
+                        lambda_e,
+                        cv,
+                        steady_temp,
+                        is_fracture=is_fracture,
+                        isotropic_cond=isotropic_cond,
                     )
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, isotropic_perm
@@ -1783,121 +1787,6 @@ def integrate_residuals(  # noqa
     return integrated_vectors
 
 
-def integrate_enthlpy_bndry_residual(
-    mesh: dict[str, Any],
-    material: dict[str, Any],
-    primary_variables: dict[str, Any],
-    controls: dict[str, Any],
-    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
-    BC_config: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Integrate the advective enthalpy flux boundary vector.
-
-    Only applies to fluid BC without an associated temperature BC.
-    """
-    advection_off = not bool(controls["advection_on"])
-    nn_total = mesh["nn_total"]
-
-    if advection_off:
-        return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
-
-    F_enth_bnd = np.zeros((nn_total, 1))
-    fluid = material["fluid"]
-    T = primary_variables["T"][:, 0:1]
-    p = primary_variables["p"][:, 0:1]
-    q = primary_variables["q"][:, 0:1]
-    node_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
-
-    for group in BC_config:
-        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
-            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
-            q_i = q[nodes_i, 0]
-            T_i = T[nodes_i, 0]
-            T_flow_i = T_flow[nodes_i, 0]
-            p_i = p[nodes_i, 0]
-            hf_i = get_enthalpy(p_i, T_i, T_flow_i, fluid).value
-            node_value.update(zip(nodes_i.tolist(), (q_i * hf_i).tolist()))
-
-    if node_value:
-        node_ids = np.fromiter(node_value.keys(), dtype=np.int32)
-        F_enth_bnd[node_ids, 0] = np.fromiter(node_value.values(), dtype=np.float64)
-
-    return {"F_enth_bnd": csc_matrix(F_enth_bnd)}
-
-
-def integrate_enthlpy_bndry_tangent(
-    mesh: dict[str, Any],
-    material: dict[str, Any],
-    primary_variables: dict[str, Any],
-    controls: dict[str, Any],
-    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
-    BC_config: list[dict[str, Any]],
-    *,
-    fully_coupled: bool = False,
-    T_flow_lagged: bool = False,
-    Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
-    KpT: csc_matrix[Any] = csc_matrix((0, 0)),
-) -> dict[str, Any]:
-    """Integrate the advective enthalpy flux boundary tangent.
-
-    Only applies to fluid BC without an associated temperature BC. d(F_enth_bnd)/dT is
-    q*dhf_dT (diagonal) plus hf_i*dq/dT; the latter is nonzero only for a Dirichlet-pressure
-    node under `fully_coupled`, via the Kpp/KpT cross-terms.
-    """
-    advection_off = not bool(controls["advection_on"])
-    nn_total = mesh["nn_total"]
-
-    if advection_off:
-        if fully_coupled:
-            return {
-                "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
-                "K_enth_bnd_Tp": csc_matrix((nn_total, nn_total), dtype=float),
-            }
-        else:
-            return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
-
-    K_enth_bnd = csc_matrix((nn_total, nn_total), dtype=float)
-    K_enth_bnd_Tp = csc_matrix((nn_total, nn_total), dtype=float)
-    fluid = material["fluid"]
-    T = primary_variables["T"][:, 0:1]
-    p = primary_variables["p"][:, 0:1]
-    q = primary_variables["q"][:, 0:1]
-    node_diag_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
-
-    for group in BC_config:
-        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
-            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
-            q_i = q[nodes_i, 0]
-            T_i = T[nodes_i, 0]
-            T_flow_i = T_flow[nodes_i, 0]
-            p_i = p[nodes_i, 0]
-            hf_result = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged)
-            hf_i, dhf_dT_i = hf_result.value, hf_result.dT
-            node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
-
-            # A flux-type node's q is a prescribed BC value (never a function of
-            # p/T); only a pressure-type node's q (a mass-residual row) needs the
-            # Kpp/KpT cross-terms.
-            if fully_coupled and group["hydraulics"]["type"] == "pressure":
-                rows = KpT[nodes_i, :].tocoo()
-                K_enth_bnd = K_enth_bnd + csc_matrix(
-                    (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
-                    shape=(nn_total, nn_total),
-                )
-                rows = Kpp[nodes_i, :].tocoo()
-                K_enth_bnd_Tp = K_enth_bnd_Tp + csc_matrix(
-                    (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
-                    shape=(nn_total, nn_total),
-                )
-
-    if node_diag_value:
-        node_ids = np.fromiter(node_diag_value.keys(), dtype=np.int32)
-        diag_vals = np.fromiter(node_diag_value.values(), dtype=np.float64)
-        K_enth_bnd = K_enth_bnd + csc_matrix((diag_vals, (node_ids, node_ids)), shape=(nn_total, nn_total))
-
-    return {"K_enth_bnd": K_enth_bnd, "K_enth_bnd_Tp": K_enth_bnd_Tp}
-
-
 def integrate_tangent_matrices(  # noqa
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -1943,7 +1832,7 @@ def integrate_tangent_matrices(  # noqa
     if not pressure_only:
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
     # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    mesh_data = _get_region_mesh_data(mesh, is_fracture)
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture)
 
     if is_fracture:
         fmesh = mesh_data.fmesh
@@ -1996,12 +1885,12 @@ def integrate_tangent_matrices(  # noqa
     # ----- Matrix integration element loop
     for r in range(mesh_data.num_regions):
         kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, mesh_data, is_fracture, r
+            mesh, material, mesh_data, r, is_fracture=is_fracture
         )
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
-        isotropic_cond, hc = _get_region_thermal_data(material, is_fracture, r)
+        isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
         solid = _get_region_solid_data(material, r)
 
         # find element type of first element in region
@@ -2037,14 +1926,14 @@ def integrate_tangent_matrices(  # noqa
             kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid, T_flow_lagged=T_flow_lagged)
             rho_f_n = PropertyResult(rho_f.value[:, :, 0:1], rho_f.dp, rho_f.dT)
             _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
-                kf,
-                mu_q,
-                kin.gradP,
-                rho_f_n,
-                g_r,
-                isotropic_perm,
                 N_q,
                 B_q,
+                kin.gradP,
+                g_r,
+                kf,
+                mu_q,
+                rho_f_n,
+                isotropic_perm=isotropic_perm,
                 want_tangent_dp=not temperature_only,
                 want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
             )
@@ -2053,9 +1942,9 @@ def integrate_tangent_matrices(  # noqa
                 kin,
                 N_q,
                 solid,
-                is_fracture,
                 w0,
                 nq,
+                is_fracture=is_fracture,
                 T_flow_lagged=T_flow_lagged,
                 volumetric_strain_on=volumetric_strain_on,
             )
@@ -2064,10 +1953,10 @@ def integrate_tangent_matrices(  # noqa
             # Nodal evaluation for self-consistent lumping of the storage terms.
             phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
                 kin_n,
-                solid,
-                is_fracture,
-                w0,
                 fluid,
+                solid,
+                w0,
+                is_fracture=is_fracture,
                 T_flow_lagged=T_flow_lagged,
                 volumetric_strain_on=volumetric_strain_on,
             )
@@ -2078,8 +1967,8 @@ def integrate_tangent_matrices(  # noqa
                 rho_f_e,
                 cv,
                 steady_pres,
-                phi_L_n,
-                rho_f_n,
+                phi_L_n=phi_L_n,
+                rho_f_n=rho_f_n,
                 want_tangent_dp=not temperature_only,
                 want_tangent_dT=fully_coupled,
             )
@@ -2098,14 +1987,14 @@ def integrate_tangent_matrices(  # noqa
                 u_f, hf_q, lambda_e = _evaluate_energy_properties(
                     kin,
                     kin_n,
+                    fluid,
+                    solid,
                     phi_L_n,
-                    is_fracture,
                     w0,
                     lambda_f,
-                    solid,
-                    isotropic_cond,
                     mesh_data.nsd,
-                    fluid,
+                    is_fracture=is_fracture,
+                    isotropic_cond=isotropic_cond,
                     T_flow_lagged=T_flow_lagged,
                 )
                 u_f_n = PropertyResult(u_f.value[:, :, 0:1], u_f.dp[:, :, 0:1], u_f.dT[:, :, 0:1])
@@ -2116,14 +2005,14 @@ def integrate_tangent_matrices(  # noqa
                     phi_L_e,
                     rho_f_e,
                     u_f_e,
-                    is_fracture,
                     solid,
                     cv,
                     steady_temp,
-                    kin_n,
-                    phi_L_n,
-                    rho_f_n,
-                    u_f_n,
+                    is_fracture=is_fracture,
+                    kin_n=kin_n,
+                    phi_L_n=phi_L_n,
+                    rho_f_n=rho_f_n,
+                    u_f_n=u_f_n,
                     want_tangent_dT=True,
                     want_tangent_dp=fully_coupled,
                 )
@@ -2146,30 +2035,30 @@ def integrate_tangent_matrices(  # noqa
                         integrand_advection_dp,
                         integrand_SUPG_dp,
                     ) = _evaluate_advection_terms(
-                        B_q,
                         N_q,
-                        q_D,
-                        rho_f_n,
-                        rho_f,
-                        hf_q,
-                        kin,
-                        phi_L,
-                        u_f,
-                        is_fracture,
-                        solid,
-                        cv,
-                        steady_temp,
-                        rho_f_e.value,
+                        B_q,
                         mesh_data.nsd,
                         nq,
-                        lambda_e,
-                        isotropic_cond,
-                        fluid,
-                        dqD_dT,
+                        kin,
                         kin_n,
-                        phi_L_n,
-                        u_f_n,
-                        dqD_dp,
+                        fluid,
+                        solid,
+                        q_D,
+                        rho_f,
+                        rho_f_n,
+                        rho_f_e,
+                        phi_L,
+                        u_f,
+                        hf_q,
+                        lambda_e,
+                        cv,
+                        steady_temp,
+                        is_fracture=is_fracture,
+                        isotropic_cond=isotropic_cond,
+                        dqD_dT=dqD_dT,
+                        dqD_dp=dqD_dp,
+                        phi_L_n=phi_L_n,
+                        u_f_n=u_f_n,
                         want_tangent_dT=True,
                         want_tangent_dp=fully_coupled,
                     )
@@ -2295,6 +2184,121 @@ def integrate_tangent_matrices(  # noqa
         )
 
     return integrated_matrices
+
+
+def integrate_enthlpy_bndry_residual(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    controls: dict[str, Any],
+    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
+    BC_config: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Integrate the advective enthalpy flux boundary vector.
+
+    Only applies to fluid BC without an associated temperature BC.
+    """
+    advection_off = not bool(controls["advection_on"])
+    nn_total = mesh["nn_total"]
+
+    if advection_off:
+        return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
+
+    F_enth_bnd = np.zeros((nn_total, 1))
+    fluid = material["fluid"]
+    T = primary_variables["T"][:, 0:1]
+    p = primary_variables["p"][:, 0:1]
+    q = primary_variables["q"][:, 0:1]
+    node_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
+
+    for group in BC_config:
+        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
+            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            q_i = q[nodes_i, 0]
+            T_i = T[nodes_i, 0]
+            T_flow_i = T_flow[nodes_i, 0]
+            p_i = p[nodes_i, 0]
+            hf_i = get_enthalpy(p_i, T_i, T_flow_i, fluid).value
+            node_value.update(zip(nodes_i.tolist(), (q_i * hf_i).tolist()))
+
+    if node_value:
+        node_ids = np.fromiter(node_value.keys(), dtype=np.int32)
+        F_enth_bnd[node_ids, 0] = np.fromiter(node_value.values(), dtype=np.float64)
+
+    return {"F_enth_bnd": csc_matrix(F_enth_bnd)}
+
+
+def integrate_enthlpy_bndry_tangent(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    controls: dict[str, Any],
+    T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
+    BC_config: list[dict[str, Any]],
+    *,
+    fully_coupled: bool = False,
+    T_flow_lagged: bool = False,
+    Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
+    KpT: csc_matrix[Any] = csc_matrix((0, 0)),
+) -> dict[str, Any]:
+    """Integrate the advective enthalpy flux boundary tangent.
+
+    Only applies to fluid BC without an associated temperature BC. d(F_enth_bnd)/dT is
+    q*dhf_dT (diagonal) plus hf_i*dq/dT; the latter is nonzero only for a Dirichlet-pressure
+    node under `fully_coupled`, via the Kpp/KpT cross-terms.
+    """
+    advection_off = not bool(controls["advection_on"])
+    nn_total = mesh["nn_total"]
+
+    if advection_off:
+        if fully_coupled:
+            return {
+                "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
+                "K_enth_bnd_Tp": csc_matrix((nn_total, nn_total), dtype=float),
+            }
+        else:
+            return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
+
+    K_enth_bnd = csc_matrix((nn_total, nn_total), dtype=float)
+    K_enth_bnd_Tp = csc_matrix((nn_total, nn_total), dtype=float)
+    fluid = material["fluid"]
+    T = primary_variables["T"][:, 0:1]
+    p = primary_variables["p"][:, 0:1]
+    q = primary_variables["q"][:, 0:1]
+    node_diag_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
+
+    for group in BC_config:
+        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
+            nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            q_i = q[nodes_i, 0]
+            T_i = T[nodes_i, 0]
+            T_flow_i = T_flow[nodes_i, 0]
+            p_i = p[nodes_i, 0]
+            hf_result = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged)
+            hf_i, dhf_dT_i = hf_result.value, hf_result.dT
+            node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
+
+            # A flux-type node's q is a prescribed BC value (never a function of
+            # p/T); only a pressure-type node's q (a mass-residual row) needs the
+            # Kpp/KpT cross-terms.
+            if fully_coupled and group["hydraulics"]["type"] == "pressure":
+                rows = KpT[nodes_i, :].tocoo()
+                K_enth_bnd = K_enth_bnd + csc_matrix(
+                    (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
+                    shape=(nn_total, nn_total),
+                )
+                rows = Kpp[nodes_i, :].tocoo()
+                K_enth_bnd_Tp = K_enth_bnd_Tp + csc_matrix(
+                    (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
+                    shape=(nn_total, nn_total),
+                )
+
+    if node_diag_value:
+        node_ids = np.fromiter(node_diag_value.keys(), dtype=np.int32)
+        diag_vals = np.fromiter(node_diag_value.values(), dtype=np.float64)
+        K_enth_bnd = K_enth_bnd + csc_matrix((diag_vals, (node_ids, node_ids)), shape=(nn_total, nn_total))
+
+    return {"K_enth_bnd": K_enth_bnd, "K_enth_bnd_Tp": K_enth_bnd_Tp}
 
 
 def integrate_boundary_flux_matrices(
