@@ -198,7 +198,7 @@ def compute_fluid_flux(  # noqa
             pe = p[enodes]  # element nodal pressures
             if mu_nonlinear:
                 Te = T[enodes]
-                mu, _, _ = get_viscosity(Te, pe, fluid)
+                mu = get_viscosity(Te, pe, fluid).value
                 mu = mu[:, None]
 
             gradp_all = B_q @ pe
@@ -342,13 +342,13 @@ def _build_point_scalars(
     fluid = material["fluid"]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
-            mu, _, _ = get_viscosity(T, p, fluid)
+            mu = get_viscosity(T, p, fluid).value
         else:
             mu = fluid["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
     if controls["output_density"]:
-        rho, _, _ = get_density(T, p, fluid)
+        rho = get_density(T, p, fluid).value
         scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
 
     return scalardata_point
@@ -377,7 +377,7 @@ def _build_cell_scalars(
             K_d = solid["bulk_mod"][region]
             p_e = np.mean(p[enodes])
             p0_e = np.mean(p_0[enodes])
-            porosity[e], _, _ = get_porosity(p_e, p0_e, phi_0, K_d)
+            porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d).value
 
         scalardata_cell.append({"name": "porosity", "data": _sanitize(porosity.copy())})
 

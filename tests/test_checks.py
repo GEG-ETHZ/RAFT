@@ -626,7 +626,7 @@ def check_NL_viscosity(
     dx = x[1] * L
     p_exact = np.full(100, config["initial_conditions"]["p_ini"])
     for _ in range(3):
-        visc_exact, _, _ = get_viscosity(T_exact, p_exact, mat["fluid"])
+        visc_exact = get_viscosity(T_exact, p_exact, mat["fluid"]).value
         p_exact[0] = p0
         for i in range(1, 100):
             p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
@@ -634,7 +634,7 @@ def check_NL_viscosity(
     # extract results
     p = results["p"][:, 0]
     T = results["T"][:, 0]
-    visc_approx, _, _ = get_viscosity(T[line_1], p[line_1], mat["fluid"])
+    visc_approx = get_viscosity(T[line_1], p[line_1], mat["fluid"]).value
 
     if plot_on:
         plt.figure()
