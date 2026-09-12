@@ -180,7 +180,7 @@ def _partition_and_solve_matrix(
     return d.ravel()
 
 
-def _check_convergence_fullycoupled(
+def _check_convergence_NR(
     R: dict[str, Any],
     fixed_dofs: dict[str, Any],
     NR: dict[str, Any],
@@ -188,7 +188,9 @@ def _check_convergence_fullycoupled(
     iteration: int,
     NR_tol: float,
 ) -> tuple[bool, float]:
-    """Normalize each key's free-dof residual norm against the norm of that same key's
+    """Check residual norms against convergence tolerance.
+
+    Normalize each key's free-dof residual norm against the norm of that same key's
     reaction flux at its own Dirichlet dofs - a physical flux scale for the system (how
     much is actually flowing through the domain), rather than a raw per-element residual
     that can't tell a genuinely small residual from a tiny fraction of a much larger one.
@@ -328,7 +330,7 @@ def _newton_raphson_loop(  # noqa
     material: dict[str, Any],
     mesh: dict[str, Any],
     primary_variables: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     T_flow: npt.NDArray[np.float64],
     cv: npt.NDArray[np.float64],  # rate coefficients
     keys: list[str],
@@ -340,7 +342,7 @@ def _newton_raphson_loop(  # noqa
     pressure_only: bool = False,
     temperature_only: bool = False,
     fully_coupled: bool = False,
-) -> tuple[dict[str, Any], bool]:
+) -> tuple[dict[str, Any], bool, float]:
     """Perform non-linear Newton-Raphson iterations.
 
     `T_flow` must be the SAME array object as `primary_variables["T"]` when
@@ -354,33 +356,32 @@ def _newton_raphson_loop(  # noqa
     converged = False
 
     # Initaliaze
+    iteration = 0
     NR = {"all": np.zeros(iter_max + 1)}  # Store iteration residuals for debugging
     R = {}
     aitken_state = {}
     fixed_dofs_global = {}
     vars_orig = {}
-    offsets = {}  # start index of each key's block within the stacked dof vector
-
-    iteration = 0
+    key_dofs = {}  # key -> that key's global indices (in d_n/d_new) for its dofs
     nn_all = 0  # Running total of dof offset
     d_n = np.empty((0, 1))
     nE = np.empty((0, 1), dtype=int)
     aitken_state["variables_km1"] = np.empty((0, 1))
     aitken_state["relax_dofs"] = np.empty((0,), dtype=int)
     for key in keys:
+        # Initialize residuals
         NR[key] = np.zeros(iter_max + 1)
         d_n = np.vstack((d_n, primary_variables[key][:, 0:1]))
         vars_orig[key] = primary_variables[key].copy()
 
-        key_dofs = nn_all + primary_variables[key + "_dofs"]
-        offsets[key] = nn_all
+        local_dofs = primary_variables[key + "_dofs"]
+        key_dofs[key] = nn_all + np.arange(len(local_dofs))
         fixed_dofs_global[key] = fixed_dofs[key] + nn_all
-        nE = np.vstack((nE, (fixed_dofs[key] + nn_all).reshape(-1, 1)))
-        nn_all += len(key_dofs)
+        nE = np.vstack((nE, fixed_dofs_global[key].reshape(-1, 1)))
+        nn_all += len(local_dofs)
 
-        # Initialize relaxation (free dofs only - fixed dofs never move, so
-        # including them would only dilute the Aitken step-size estimate)
-        free_dofs_key = np.setdiff1d(key_dofs, fixed_dofs[key]).astype(int) + offsets[key]
+        # Initialize relaxation
+        free_dofs_key = np.setdiff1d(local_dofs, fixed_dofs[key]).astype(int) + key_dofs[key][0]
         aitken_state["variables_km1"] = np.vstack(
             (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
         )
@@ -390,13 +391,13 @@ def _newton_raphson_loop(  # noqa
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
     aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
 
+    # Run-type labels
     if fully_coupled:
         label = "FULLY COUPLED"
 
         # Indexing for updating reaction fluxes each iteration
         p_dofs_local = primary_variables["p_dofs"]
         nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
-        q = np.zeros((len(p_dofs_local), 1))
     elif pressure_only:
         label = "ITERATIVE PRESSURE"
     else:
@@ -422,6 +423,7 @@ def _newton_raphson_loop(  # noqa
 
         # Update reaction flow rates (fully-coupled only)
         if fully_coupled:
+            q = np.zeros((len(p_dofs_local), 1))
             R_p = compute_residuals(F_vec, F_ext, pressure_only=True)["p"]
             q[fixed_dofs["p"]] = R_p[fixed_dofs["p"]]
             q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
@@ -444,9 +446,7 @@ def _newton_raphson_loop(  # noqa
         )
 
         # Check convergence
-        converged, iteration_error = _check_convergence_fullycoupled(
-            R, fixed_dofs, NR, mesh, iteration, NR_tol
-        )
+        converged, iteration_error = _check_convergence_NR(R, fixed_dofs, NR, mesh, iteration, NR_tol)
 
         if converged and iteration > 0:
             if verbose:
@@ -464,13 +464,17 @@ def _newton_raphson_loop(  # noqa
                 pressure_only=pressure_only,
                 temperature_only=temperature_only,
                 fully_coupled=fully_coupled,
+                # T_flow is a frozen copy (not the unknown T) only in the
+                # temperature-only lin-extrap loop; for fully_coupled it is
+                # aliased to the actual unknown, so its derivative must flow through.
+                T_flow_lagged=temperature_only,
             )
 
             # Warnings for poor conditioning
             if iteration == 0 and (fully_coupled or pressure_only):
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
-            # Assemble Jacobian
+            # Assemble Jacobian - different by case
             if pressure_only:
                 A = jacobian["Kpp"]
                 b = R["p"]
@@ -553,10 +557,12 @@ def _newton_raphson_loop(  # noqa
         if iteration >= iter_max:
             if verbose:
                 print(" - CONVERGENCE FAILED")
-            for key in keys:
-                primary_variables[key] = vars_orig[key]
             break
 
+    # Revert the keys if not converged
+    if not converged:
+        for key in keys:
+            primary_variables[key] = vars_orig[key]
     # Caclulate reaction fluxes
     if pressure_only:
         # Reaction fluxes only need computing once. Fully_coupled is calculated in-loop.
@@ -567,12 +573,10 @@ def _newton_raphson_loop(  # noqa
         q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
         primary_variables["q"] = q
 
-    if verbose:
-        print()  # new line for that output doesn't get overwritten
     if debug_plot_on:
         _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
 
-    return primary_variables, converged
+    return primary_variables, converged, iteration_error
 
 
 # ------------------------ Primary time integration function with linearized extrapoloation --------
@@ -601,17 +605,7 @@ def lin_extrap_time_integration(  # noqa
     T_orig = primary_variables["T"].copy()
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
-    # extract controls and tolerances
     rate_order = controls["rate_order"]
-    iter_max = controls["iterative_controls"]["iter_max"]
-    NR_tol = controls["iterative_controls"]["NR_tol"]
-    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
-
-    # steady_temp = controls["steady_temperature"]
-    # mu_nonlinear = controls["viscosity_nonconstant"]
-    # extract mesh characteristics
-    nn = mesh["nn_total"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
@@ -620,244 +614,70 @@ def lin_extrap_time_integration(  # noqa
     T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
         boundary_conditions, p_dofs, T_dofs
     )
-    fixed_dofs = {}
-    fixed_dofs["p"] = p_fix
-    fixed_dofs["T"] = T_fix
+    fixed_dofs = {"p": p_fix, "T": T_fix}
+    F_ext = {"p": F_extp, "T": F_extT}
 
     # Apply fixed boundary conditions
     p[p_fix, :] = p_bar
     T[T_fix, :] = T_bar
-    nE_p = p_fix.astype(int)  # essential DoFs
-    nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free DoFs
-    nE_T = T_fix.astype(int)  # essential temperature DoFs
-    nF_T = np.setdiff1d(T_dofs, nE_T).astype(int)  # free temperature DoFs
+    nF_T = np.setdiff1d(T_dofs, T_fix).astype(int)  # free temperature DoFs
 
-    # Begin the one-pass extrapolated linearization by solving pressure
-    # first using an extrapolated pressure
-    # One-pass update: solve pressure iteratively, then temperature
-
-    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
+    # Extrapolate temperature for free Dofs
+    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
     T[nF_T, 0] = T_extrap[nF_T]
-    # Rate of temperature change, used only for the pressurization forcing term
-    # T_dot = (cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
 
     # Frozen snapshot for flow-property evaluations: column 0 is the extrapolated/fixed
     # guess (kept constant through the temperature Newton loop, unlike T itself), columns
     # 1-3 are the real time history, needed as-is by the mass-storage rate terms.
     T_flow = T.copy()
 
-    # Begin Newton-Raphson iterative solver
-    converged = False
-    iteration = 0  # noqa
-    # Store iteration residuals for debugging
-    NR = {}
-    R = {}
-    NR["all"] = np.zeros(iter_max + 1)
-    NR["p"] = np.zeros(iter_max + 1)
-    # Initialize relaxation
-    aitken_state = {}
-    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = p[:, 0:1]
-    aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
-    aitken_state["relax_dofs"] = p_dofs
+    # Update pressure with extrapolated temperature
+    primary_variables, p_converged, _ = _newton_raphson_loop(
+        controls,
+        material,
+        mesh,
+        primary_variables,
+        BC_config,
+        T_flow,  # Extrapolated tempearture
+        cv,
+        ["p"],
+        fixed_dofs,
+        F_ext,
+        verbose,
+        debug_pressure_plot_on,
+        pressure_only=True,
+    )
 
-    if verbose:
-        print("      ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION   ", end="")
-    while True:
-        if verbose:
-            print(
-                f"\r     ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True
-            )
-
-        # Compute residual vectors
-        p_n = p[:, 0:1]
-        F_vec = integrate_residuals(
-            mesh, material, primary_variables, controls, cv, T_flow, pressure_only=True
+    # Update temperature only if pressure converged
+    if p_converged:
+        # Update temperature. Use extrapolated temperature for property evaluation,
+        # for consistency with pressure.
+        primary_variables, T_converged, _ = _newton_raphson_loop(
+            controls,
+            material,
+            mesh,
+            primary_variables,
+            BC_config,
+            T_flow,
+            cv,
+            ["T"],
+            fixed_dofs,
+            F_ext,
+            verbose,
+            debug_temperature_plot_on,
+            temperature_only=True,
         )
-        R = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)
-
-        # Check convergence
-        converged, iteration_error = _check_convergence_fullycoupled(
-            R, fixed_dofs, NR, mesh, iteration, NR_tol
-        )
-
-        if converged and iteration > 0:
-            if verbose:
-                print(" - CONVERGED")
-            break
-        else:  # Update iteration
-            jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, controls, cv, T_flow, pressure_only=True
-            )
-            if iteration == 0:
-                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
-
-            A = jacobian["Kpp"]
-            b = R["p"]
-
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_p)
-
-            NR_step = 1.0
-            p_n += NR_step * delta_var.reshape(-1, 1)
-
-            # Check for nan or inf data and break
-            if np.any(np.isnan(p_n)) or np.any(np.isinf(p_n)):
-                if verbose:
-                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
-                break
-
-            # Apply relaxation
-            if aitken_on:
-                (
-                    d_new,
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration + 1],
-                    aitken_state["variables_km1"],
-                ) = _aitken_relax(
-                    iteration,
-                    p_n,
-                    aitken_state["variables_km1"],
-                    aitken_state["relax_dofs"],
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration],
-                )
-            else:
-                d_new = p_n
-
-            p[:, 0:1] = d_new
-            iteration += 1
-
-        if iteration >= iter_max:
-            if verbose:
-                print(" - CONVERGENCE FAILED")
-            primary_variables["p"] = p_orig
-            primary_variables["T"] = T_orig
-            break
-
-    if verbose:
-        print()  # new line for that output doesn't get overwritten
-        if debug_pressure_plot_on:
-            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["p"])
-    # ---- Calculate reaction flow rates at prescribed DoFs
-    q = np.zeros((nn, 1))
-    q[p_fix] = R["p"][p_fix]
-    q[nF_p] = q[nF_p] + F_extp[nF_p]
-
-    # ---- Update temperature matrices with new pressure
-    p[:, 0:1] = p_n
-    primary_variables["q"] = q  # outlet flow rates
-
-    # Begin Newton-Raphson iterative solver
-    converged = False
-    iteration = 0  # noqa
-    # Store iteration residuals for debugging
-    NR = {}
-    R = {}
-    NR["all"] = np.zeros(iter_max + 1)
-    NR["T"] = np.zeros(iter_max + 1)
-    # Initialize relaxation
-    aitken_state = {}
-    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = T[:, 0:1]
-    aitken_state["delta_variables_km1"] = np.zeros((nn, 1))
-    aitken_state["relax_dofs"] = T_dofs
-
-    if verbose:
-        print("      ITERATIVE TEMPERATURE NEWTON RAPHSON: ITERATION   ", end="")
-    while True:
-        if verbose:
-            print(
-                f"\r     ITERATIVE TEMPERATURE NEWTON RAPHSON: ITERATION {iteration + 1}   ",
-                end="",
-                flush=True,
-            )
-
-        T_n = T[:, 0:1]
-        F_vec = integrate_residuals(
-            mesh, material, primary_variables, controls, cv, T_flow, temperature_only=True
-        )
-        F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, controls, T_flow, BC_config
-        )
-        F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
-        R = compute_residuals_comp(F_vec, F_extp, F_extT, temperature_only=True)
-
-        # Check convergence
-        converged, iteration_error = _check_convergence_fullycoupled(
-            R, fixed_dofs, NR, mesh, iteration, NR_tol
-        )
-
-        if converged and iteration > 0:
-            if verbose:
-                print(" - CONVERGED")
-            break
-        else:  # Update iteration
-            jacobian = integrate_tangent_matrices(
-                mesh,
-                material,
-                primary_variables,
-                controls,
-                cv,
-                T_flow,
-                temperature_only=True,
-                T_flow_lagged=True,
-            )
-            K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
-            )
-            A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
-            b = R["T"]
-
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_T)
-
-            NR_step = 1.0
-            T_n += NR_step * delta_var.reshape(-1, 1)
-
-            # Check for nan or inf data and break
-            if np.any(np.isnan(p_n)) or np.any(np.isinf(p_n)):
-                if verbose:
-                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
-                break
-
-            # Apply relaxation
-            if aitken_on:
-                (
-                    d_new,
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration + 1],
-                    aitken_state["variables_km1"],
-                ) = _aitken_relax(
-                    iteration,
-                    T_n,
-                    aitken_state["variables_km1"],
-                    aitken_state["relax_dofs"],
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration],
-                )
-            else:
-                d_new = T_n
-
-            T[:, 0:1] = d_new
-            iteration += 1
-
-        if iteration >= iter_max:
-            if verbose:
-                print(" - CONVERGENCE FAILED")
-            primary_variables["p"] = p_orig
-            primary_variables["T"] = T_orig
-            break
-
-    if verbose:
-        print()  # new line for that output doesn't get overwritten
-        if debug_temperature_plot_on:
-            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["T"])
 
     # ---- Check for extrapolation error
-    converged, timestep_error = _check_convergence_extrap(T, T_extrap, controls, n)
+    if p_converged and T_converged:
+        # Check for extrapolation timestep error
+        converged, timestep_error = _check_convergence_extrap(primary_variables["T"], T_extrap, controls, n)
+    else:
+        primary_variables["p"] = p_orig.copy()
+        primary_variables["T"] = T_orig.copy()
+        converged = False
+        timestep_error = -1  # flag for Newton-Raphson failure
 
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q"] = q  # outlet flow rates
     return primary_variables, dt, converged, timestep_error
 
 
@@ -879,184 +699,38 @@ def fully_coupled_time_integration(  # noqa
     and pressure monolithically.
     """
     debug_plot_on = False
-    # extract vectors of nodal dofs
-    primary_variables_iteration = primary_variables.copy()
-    p = primary_variables_iteration["p"]
-    T = primary_variables_iteration["T"]
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
     rate_order = controls["rate_order"]
-    iter_max = controls["iterative_controls"]["iter_max"]
-    NR_tol = controls["iterative_controls"]["NR_tol"]
-    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
-
-    # extract mesh characteristics
-    nn = mesh["nn_total"]  # noqa
-    T_dofs = T_dofs + nn  # shift for combined p-T vector
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
 
-    # parse boundary conditions
     # unpack boundary conditions
     T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
         boundary_conditions, p_dofs, T_dofs
     )
-
-    # fixed dofs for error calculation
-    fixed_dofs = {}
-    fixed_dofs["p"] = p_fix
-    fixed_dofs["T"] = T_fix
-
-    # free and fixed dofs for partitioning with combined [p;T] vector
-    nE = np.hstack((p_fix, T_fix + nn))  # fixed DoFs
-    nF = np.setdiff1d(np.arange(0, 2 * nn), nE).astype(int)  # free DoFs
-    nE_p = p_fix.astype(int)  # essential pressure DoFs
-    nF_p = np.setdiff1d(p_dofs, nE_p).astype(int)  # free pressure DoFs
+    fixed_dofs = {"p": p_fix, "T": T_fix}
+    F_ext = {"p": F_extp, "T": F_extT}
 
     # Apply fixed boundary conditions
-    p[p_fix, :] = p_bar
-    T[T_fix, :] = T_bar
+    primary_variables["p"][p_fix, :] = p_bar
+    primary_variables["T"][T_fix, :] = T_bar
 
-    # Begin Newton-Raphson iterative solver
-    converged = False
-    iteration = 0  # noqa
-    # Store iteration residuals for debugging
-    NR = {}
-    R = {}
-    NR["all"] = np.zeros(iter_max + 1)
-    NR["T"] = np.zeros(iter_max + 1)
-    NR["p"] = np.zeros(iter_max + 1)
-    # Initialize relaxation
-    aitken_state = {}
-    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = np.vstack((p[:, 0:1], T[:, 0:1]))
-    aitken_state["delta_variables_km1"] = np.zeros((2 * nn, 1))
-    aitken_state["relax_dofs"] = nF
+    primary_variables, converged, iteration_error = _newton_raphson_loop(
+        controls,
+        material,
+        mesh,
+        primary_variables,
+        BC_config,
+        primary_variables["T"],  # T_flow must alias primary_variables["T"] for fully_coupled
+        cv,
+        ["p", "T"],
+        fixed_dofs,
+        F_ext,
+        verbose,
+        debug_plot_on,
+        fully_coupled=True,
+    )
 
-    if verbose:
-        print("      FULLY COUPLED NEWTON RAPHSON: ITERATION   ", end="")
-
-    while True:
-        if verbose:
-            print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
-
-        # Compute residual vectors
-        F_vec = integrate_residuals(mesh, material, primary_variables, controls, cv, T)
-
-        # Reaction flow rates at prescribed pressure dofs
-        q = np.zeros((nn, 1))
-        q[p_fix] = compute_residuals_comp(F_vec, F_extp, F_extT, pressure_only=True)["p"][p_fix]
-        q[nF_p] = q[nF_p] + F_extp[nF_p]
-        primary_variables["q"] = q
-
-        F_enth_bnd = integrate_enthlpy_bndry_residual(
-            mesh, material, primary_variables, controls, T, BC_config
-        )
-        F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
-        R = compute_residuals_comp(F_vec, F_extp, F_extT, fully_coupled=True)
-
-        # Check convergence
-        converged, iteration_error = _check_convergence_fullycoupled(
-            R, fixed_dofs, NR, mesh, iteration, NR_tol
-        )
-
-        if converged and iteration > 0:
-            if verbose:
-                print(" - CONVERGED")
-            break
-        else:  # Update iteration
-            jacobian = integrate_tangent_matrices(
-                mesh, material, primary_variables, controls, cv, T, fully_coupled=True
-            )
-            if iteration == 0:
-                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
-            K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                mesh,
-                material,
-                primary_variables,
-                controls,
-                T,
-                BC_config,
-                fully_coupled=True,
-                Kpp=jacobian["Kpp"],
-                KpT=jacobian["KpT"],
-            )
-
-            # Total combined matrix
-            d = np.vstack((p[:, 0:1], T[:, 0:1]))
-            A = cast(
-                sp.csc_matrix[Any],
-                sp.bmat(
-                    [
-                        # `KpT`/`KTp` are computed as literal +d(R_p)/dT and +d(R_T)/dp
-                        # respectively (same convention as the on-diagonal `Kpp`/`KTT`, which
-                        # this "A" already uses unnegated) - so they belong here unnegated too.
-                        # `Kpp`'s own dqD_dp-based terms look "flipped" only because `dqD_dp`
-                        # itself is computed as -d(q_D)/dp, a convention `Kpp`/`KpT` are built
-                        # around directly; it's not evidence that this off-diagonal block needs
-                        # negating too.
-                        [jacobian["Kpp"], jacobian["KpT"]],
-                        [
-                            jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
-                            jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
-                        ],
-                    ],
-                    format="csc",
-                ),
-            )
-
-            b = np.vstack((R["p"], R["T"]))
-
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, 2 * nn), nE)
-
-            NR_step = 1.0
-            d += NR_step * delta_var.reshape(-1, 1)
-
-            # Check for nan or inf data and break
-            if np.any(np.isnan(d)) or np.any(np.isinf(d)):
-                if verbose:
-                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
-                break
-
-            # Apply relaxation
-            if aitken_on:
-                (
-                    d_new,
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration + 1],
-                    aitken_state["variables_km1"],
-                ) = _aitken_relax(
-                    iteration,
-                    d,
-                    aitken_state["variables_km1"],
-                    aitken_state["relax_dofs"],
-                    aitken_state["delta_variables_km1"],
-                    aitken_state["aitken_coefficient"][iteration],
-                )
-            else:
-                d_new = d
-
-            p[:, 0] = d_new[p_dofs, 0]
-            T[:, 0] = d_new[T_dofs, 0]
-            iteration += 1
-
-        if iteration >= iter_max:
-            if verbose:
-                print(" - CONVERGENCE FAILED")
-            break
-
-    # save variables
-    if converged:
-        primary_variables["p"] = p
-        primary_variables["T"] = T
-        # q - already calculated in loop
-
-    if verbose:
-        print()  # new line for that output doesn't get overwritten
-        # Plot residuals
-        if debug_plot_on:
-            _plot_nr_residuals(NR, aitken_state, iteration, iter_max, ["T", "p"])
-
-    return primary_variables, dt, converged, NR["all"][iteration - 1]
+    return primary_variables, dt, converged, iteration_error

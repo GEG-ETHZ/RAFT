@@ -35,23 +35,24 @@ def _update_time(  # noqa
     if not converged:  # Decrease the timestep
         if dt[0] == dt_min:
             # minimum timestep reached, proceed with simulation
-            match solver_type:
-                case "linearized":
-                    if verbose:
-                        print(
-                            f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
-                        )
-                case "fully_coupled":
-                    if verbose:
-                        print(
-                            "     Minimum timestep reached, unable to converge to solution."  # noqa: E501
-                        )
-                    sys.exit()
+            if solver_type == "linearized" and timestep_error != -1:
+                if verbose:
+                    print(
+                        f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
+                    )
+            else:
+                # Fully coupled or Newton-Raphson failure at minmum timestep
+                if verbose:
+                    print(
+                        "     Minimum timestep reached, unable to converge to solution."  # noqa: E501
+                    )
+                sys.exit()
         else:
-            if solver_type == "linearized":
+            if solver_type == "linearized" and timestep_error != -1:
                 # Cut timestep in proportion with error
                 cut_factor = 0.85 * 4 / (1 + 3 * timestep_error / rel_tol_T)
             else:
+                # Newton-raphson failure
                 cut_factor = 0.5
             t = t - dt[0]
             dt[0] = max(cut_factor * dt[0], dt_min)
