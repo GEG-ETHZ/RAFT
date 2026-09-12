@@ -129,23 +129,52 @@ def compute_residuals_comp(
     return R
 
 
+def compute_residuals(
+    F_vec: dict[str, Any],
+    F_ext: dict[str, Any],
+    *,
+    fully_coupled: bool = False,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Assemble integrated residuals alongside external force vectors."""
+    if pressure_only or fully_coupled:
+        F_Pstorage = F_vec["F_Pstorage"]
+        F_Pdiffusion = F_vec["F_Pdiffusion"]
+
+        R = {"p": F_Pstorage - F_Pdiffusion - F_ext["p"]}
+
+    if temperature_only or fully_coupled:
+        F_Tstorage = F_vec["F_Tstorage"]
+        F_Tdiffusion = F_vec["F_Tdiffusion"]
+        F_Tadvection = F_vec["F_Tadvection"]
+        F_Tstab = F_vec["F_Tstab"]
+        F_enth_bnd = F_vec.get("F_enth_bnd", 0)
+        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_ext["T"] - F_enth_bnd
+
+        if fully_coupled:
+            R["T"] = RT
+        else:
+            R = {"T": RT}
+
+    return R
+
+
 def _partition_and_solve_matrix(
     A: sp.csc_matrix[Any],
     b: npt.NDArray[np.float64],
     dofs_all: npt.NDArray[np.float64],
     nE: npt.NDArray[np.float64],  # essential DoF indices
-    dE: npt.NDArray[np.float64],  # essential DoF values
 ) -> npt.NDArray[np.float64]:
     """Partitions and solves a matrix given a set of essential DoFs. Returns full vector of DoFs."""
     nF = np.setdiff1d(dofs_all, nE)  # free DoFs
 
     KFF = A[np.ix_(nF, nF)]  # type: ignore[index]
-    KFE = A[np.ix_(nF, nE)]  # type: ignore[index]
+    # KFE = A[np.ix_(nF, nE)]  # type: ignore[index]
 
-    dF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)))
+    dF = spsolve(KFF, (b[nF]))
 
-    d = np.empty((len(dofs_all), 1))
-    d[nE, 0] = dE
+    d = np.zeros((len(dofs_all), 1))
     d[nF, 0] = dF.ravel()
 
     return d.ravel()
@@ -294,6 +323,222 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+def _newton_raphson_loop(  # noqa
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    mesh: dict[str, Any],
+    primary_variables: dict[str, Any],
+    BC_config: dict[str, Any],
+    T_flow: npt.NDArray[np.float64],
+    cv: npt.NDArray[np.float64],  # rate coefficients
+    keys: list[str],
+    fixed_dofs: dict[str, Any],
+    F_ext: dict[str, Any],
+    verbose: bool,
+    debug_plot_on: bool,
+    *,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
+    fully_coupled: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Perform non-linear Newton-Raphson iterations."""
+    # Newton-Raphson controls
+    iter_max = controls["iterative_controls"]["iter_max"]
+    NR_tol = controls["iterative_controls"]["NR_tol"]
+    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
+    converged = False
+
+    # Initaliaze
+    NR = {}  # Store iteration residuals for debugging
+    R = {}
+    aitken_state = {}
+    fixed_dofs_global = {}
+    vars_orig = {}
+
+    NR["all"] = np.zeros(iter_max + 1)
+
+    iteration = 0
+    nn_all = 0  # Running total of dof offset
+    nn_p = np.len(primary_variables["p"][:, 0])
+    d_n = np.empty((0, 1))
+    nE = np.empty((0, 1))
+    aitken_state["variables_km1"] = np.empty((0, 1))
+    aitken_state["relax_dofs"] = np.empty((0, 1))
+    for key in keys:
+        NR[key] = np.zeros(iter_max + 1)
+        d_n = np.vstack((d_n, primary_variables[key][:, 0:1]))
+        vars_orig[key] = primary_variables[key].copy()
+
+        key_dofs = primary_variables[key + "_dofs"]
+        fixed_dofs_global[key] = fixed_dofs[key] + nn_all
+        nE = np.vstavk((nE, fixed_dofs[key] + nn_all))
+        nn_all += np.len(primary_variables[key + "_dofs"])
+        # Initialize relaxation
+        aitken_state["variables_km1"] = np.vstack((aitken_state["variables_km1"], primary_variables[key]))
+        aitken_state["relax_dofs"] = np.vstack((aitken_state["variables_km1"], key_dofs))
+
+    aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
+    aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
+
+    if verbose:
+        print("      ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION   ", end="")
+    while True:
+        if verbose:
+            print(
+                f"\r     ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True
+            )
+
+        # Compute residual vectors
+        F_vec = integrate_residuals(
+            mesh,
+            material,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
+        )
+
+        # Reaction flow rates at prescribed pressure dofs
+        if fully_coupled:
+            nF_p = 0  # placeholder, to be fixed
+            q = np.zeros((nn_p, 1))
+            q[fixed_dofs["p"]] = compute_residuals(F_vec, F_ext, pressure_only=True)["p"][fixed_dofs["p"]]
+            q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
+            primary_variables["q"] = q
+
+        if temperature_only or fully_coupled:
+            F_enth_bnd = integrate_enthlpy_bndry_residual(
+                mesh, material, primary_variables, controls, T_flow, BC_config
+            )
+            F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
+        R = compute_residuals(
+            F_vec,
+            F_ext,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
+            fully_coupled=fully_coupled,
+        )
+
+        # Check convergence
+        converged, iteration_error = _check_convergence_fullycoupled(
+            R, fixed_dofs, NR, mesh, iteration, NR_tol
+        )
+
+        if converged and iteration > 0:
+            if verbose:
+                print(" - CONVERGED")
+            break
+        else:  # Update iteration
+            jacobian = integrate_tangent_matrices(
+                mesh,
+                material,
+                primary_variables,
+                controls,
+                cv,
+                T_flow,
+                pressure_only=pressure_only,
+                temperature_only=temperature_only,
+                fully_coupled=fully_coupled,
+            )
+            if iteration == 0 and (fully_coupled or pressure_only):
+                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
+
+            if pressure_only:
+                A = jacobian["Kpp"]
+                b = R["p"]
+            if temperature_only:
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
+                )
+                A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
+                b = R["T"]
+            if fully_coupled:
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    T,  # noqa
+                    BC_config,
+                    fully_coupled=True,
+                    Kpp=jacobian["Kpp"],
+                    KpT=jacobian["KpT"],
+                )
+
+                # Total combined matrix
+                A = cast(
+                    sp.csc_matrix[Any],
+                    sp.bmat(
+                        [
+                            # `KpT`/`KTp` are computed as literal +d(R_p)/dT and +d(R_T)/dp
+                            # respectively (same convention as the on-diagonal `Kpp`/`KTT`, which
+                            # this "A" already uses unnegated) - so they belong here unnegated too.
+                            # `Kpp`'s own dqD_dp-based terms look "flipped" only because `dqD_dp`
+                            # itself is computed as -d(q_D)/dp, a convention `Kpp`/`KpT` are built
+                            # around directly; it's not evidence that this off-diagonal block needs
+                            # negating too.
+                            [jacobian["Kpp"], jacobian["KpT"]],
+                            [
+                                jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
+                                jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
+                            ],
+                        ],
+                        format="csc",
+                    ),
+                )
+
+                b = np.vstack((R["p"], R["T"]))
+
+            # Solve system of equations
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
+
+            NR_step = 1.0
+            d_n += NR_step * delta_var.reshape(-1, 1)
+
+            # Check for nan or inf data and break
+            if np.any(np.isnan(d_n)) or np.any(np.isinf(d_n)):
+                if verbose:
+                    print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
+                break
+
+            # Apply relaxation
+            if aitken_on:
+                (
+                    d_new,
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration + 1],
+                    aitken_state["variables_km1"],
+                ) = _aitken_relax(
+                    iteration,
+                    d_n,
+                    aitken_state["variables_km1"],
+                    aitken_state["relax_dofs"],
+                    aitken_state["delta_variables_km1"],
+                    aitken_state["aitken_coefficient"][iteration],
+                )
+            else:
+                d_new = d_n
+
+            d_n[:, 0:1] = d_new
+            iteration += 1
+
+        if iteration >= iter_max:
+            if verbose:
+                print(" - CONVERGENCE FAILED")
+            for key in keys:
+                primary_variables[key] = vars_orig[key]
+            break
+
+    if verbose:
+        print()  # new line for that output doesn't get overwritten
+    if debug_plot_on:
+        _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
+
+    return primary_variables, converged
+
+
 # ------------------------ Primary time integration function with linearized extrapoloation --------
 def lin_extrap_time_integration(  # noqa
     controls: dict[str, Any],
@@ -414,7 +659,7 @@ def lin_extrap_time_integration(  # noqa
             A = jacobian["Kpp"]
             b = R["p"]
 
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_p, np.zeros(np.size(nE_p, 0)))
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_p)
 
             NR_step = 1.0
             p_n += NR_step * delta_var.reshape(-1, 1)
@@ -527,7 +772,7 @@ def lin_extrap_time_integration(  # noqa
             A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
             b = R["T"]
 
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_T, np.zeros(np.size(nE_T, 0)))
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn), nE_T)
 
             NR_step = 1.0
             T_n += NR_step * delta_var.reshape(-1, 1)
@@ -728,7 +973,7 @@ def fully_coupled_time_integration(  # noqa
 
             b = np.vstack((R["p"], R["T"]))
 
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, 2 * nn), nE, np.zeros(np.size(nE, 0)))
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, 2 * nn), nE)
 
             NR_step = 1.0
             d += NR_step * delta_var.reshape(-1, 1)
