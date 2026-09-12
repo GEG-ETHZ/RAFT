@@ -13,8 +13,8 @@ mesh:
   dimensions: 2
   fractures:
          - values: [[25.5, 37.5], [30], [60]]
-  #        - values: [[18, 28, 0.0], [62.5], [35]]
-  #        - values: [[-10, 32, 0.0], [22.5], [100]]
+         - values: [[25.5, 37.5], [30], [130]]
+         - values: [[15, 32, 0.0], [22.5], [100]]
 
 
 material:
@@ -115,10 +115,10 @@ boundary_conditions:
               type: "temperature"
               values: [310]
 
-        - faces: [x_max]
+        - faces: [x_min]
           hydraulics:
               type: "flux"
-              values: [-0.001]
+              values: [0.001]
         # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
         #   thermal:
         #       type: "temperature"

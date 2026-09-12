@@ -677,8 +677,19 @@ def _get_region_thermal_data(material: dict[str, Any], r: int, *, is_fracture: b
     return isotropic_cond, float("nan")
 
 
-def _get_region_solid_data(material: dict[str, Any], r: int) -> RegionSolidData:
-    """Resolve per-region solid properties."""
+def _get_region_solid_data(material: dict[str, Any], r: int, *, is_fracture: bool) -> RegionSolidData:
+    """Resolve per-region solid properties.
+
+    Fractures are void space with no solid of their own; every use of these fields in the
+    fracture path is multiplied by an exact zero (porosity there is a constant aperture, so
+    its p/T derivatives vanish), so a `0.0` sentinel is used rather than indexing `material["solid"]`.
+    """
+    if is_fracture:
+        zero = 0.0
+        return RegionSolidData(
+            K_d=zero, phi_0=zero, biot=zero, rho_s=zero, cp_s=zero, alpha_s=zero, lambda_s=zero
+        )
+
     return RegionSolidData(
         K_d=_get_region_value(material["solid"]["drained_bulk_mod"], r),
         phi_0=_get_region_value(material["solid"]["porosity"], r),
@@ -1635,7 +1646,7 @@ def integrate_residuals(  # noqa
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
         isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
-        solid = _get_region_solid_data(material, r)
+        solid = _get_region_solid_data(material, r, is_fracture=is_fracture)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -1942,7 +1953,7 @@ def integrate_tangent_matrices(  # noqa
         # the reduced dimensionality of the fracture's own gradP/B_q.
         g_r = (u.T @ g) if is_fracture else g
         isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
-        solid = _get_region_solid_data(material, r)
+        solid = _get_region_solid_data(material, r, is_fracture=is_fracture)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
