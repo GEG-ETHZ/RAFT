@@ -284,8 +284,8 @@ def get_internal_energy(
         Kf = fluid["bulk_mod"]
 
         u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
-        duf_dT = cp_f - alpha_f * p / rho_0
-        duf_dp = p / (Kf * rho_0) - alpha_f * T / rho_0
+        duf_dT = cp_f - alpha_f * p[..., 0:1] / rho_0
+        duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha_f * T[..., 0:1] / rho_0
     else:
         # Nonlinear internal energy
         u_f = 0 * np.ones(np.shape(T))
