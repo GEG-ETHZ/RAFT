@@ -12,13 +12,10 @@ Number = npt.NDArray[np.float64] | float
 
 @dataclass(frozen=True, slots=True)
 class PropertyResult:
-    """A material property value together with its partial derivatives w.r.t. p and T.
+    """A material property value with its partial derivatives w.r.t. p and T.
 
-    Always array-valued, even where the underlying formula is a constant, so that callers
-    can slice/index freely without checking for a bare scalar.
-
-    Plain data container — no arithmetic operators. Callers that need to combine two
-    `PropertyResult`s (e.g. via the product rule) do so explicitly and build a new one.
+    Always array-valued, even for constant-formula properties, so callers can slice/index
+    freely without checking for a bare scalar. Plain data container, no arithmetic operators.
     """
 
     value: npt.NDArray[np.float64]  # Value of the property
@@ -28,10 +25,10 @@ class PropertyResult:
 
 @dataclass(frozen=True, slots=True)
 class EnthalpyResult:
-    """Fluid enthalpy, its partial derivatives, and the constant-pressure specific heat.
+    """Fluid enthalpy and its partial derivatives, plus `cp`.
 
-    Kept separate from `PropertyResult` since `cp` is not a partial derivative of `value` —
-    it's an independent quantity (see `get_enthalpy` docstring).
+    cp treated separately as enthalpy derivative minus pressure contribution.
+    cp needed for SUPG.
     """
 
     value: npt.NDArray[np.float64]  # Value of the property
@@ -51,15 +48,10 @@ def get_viscosity(
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
 ) -> PropertyResult:
-    """Get viscosity and its temperature derivative, at temperature T [K] and pressure p [Pa].
+    """Get viscosity and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
-    `fluid["viscosity"]` of 0 selects a non-constant, real-fluid viscosity looked up from
-    CoolProp via `fluid["abstract_state"]` at each (T, p); any other value is treated as a
-    constant viscosity, and p and the abstract state are ignored.
-
-    `T_flow_lagged` says whether this T is independent of the primary unknown T being solved
-    for (True, e.g. a frozen/extrapolated T_flow) or literally is it (False); when True,
-    dmu_dT is reported as zero since that coupling doesn't exist for the caller's Jacobian.
+    `fluid["viscosity"]` of 0 looks it up from CoolProp instead of treating it as a constant.
+    `T_flow_lagged` zeroes dmu_dT when T is not the primary unknown being solved for.
     """
     viscosity_coefficients = fluid["viscosity"]
     T_arr = np.atleast_1d(np.asarray(T, dtype=float))
@@ -115,15 +107,10 @@ def get_density(
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
 ) -> PropertyResult:
-    """Get density and its temperature derivative, at temperature T [K] and pressure p [Pa].
+    """Get density and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
-    `fluid["density"]` of 0 selects a non-constant, real-fluid density looked up from
-    CoolProp via `fluid["abstract_state"]` at each (T, p); any other value is treated as a
-    constant reference density, and the abstract state is ignored.
-
-    `T_flow_lagged` says whether this T is independent of the primary unknown T being solved
-    for (True, e.g. a frozen/extrapolated T_flow) or literally is it (False); when True,
-    drho_dT is reported as zero since that coupling doesn't exist for the caller's Jacobian.
+    `fluid["density"]` of 0 looks it up from CoolProp instead of treating it as a constant
+    reference density. `T_flow_lagged` zeroes drho_dT when T is not the primary unknown.
     """
     if fluid["density"] != 0:
         T0 = fluid["reference_temperature"]
@@ -193,15 +180,8 @@ def get_volumetricstrain(
 ) -> PropertyResult:
     """Get the volumetric strain of the solid skeleton relative to the undeformed reference state.
 
-    Non-volumetric sources are neglected.
-
-    `T_flow_lagged` says whether this T is independent of the primary unknown T being solved
-    for (True, e.g. a frozen/extrapolated T_flow) or literally is it (False); when True,
-    dstrain_dT is reported as zero since that coupling doesn't exist for the caller's Jacobian.
-
-    `volumetric_strain_on` turns strain off entirely (e.g. while establishing initial
-    conditions, which are by definition unstrained relative to themselves) - zero strain
-    regardless of T/T_0/p/p_0, avoiding any dependence on the reference state.
+    Non-volumetric sources are neglected. `T_flow_lagged` zeroes dstrain_dT when T is not the
+    primary unknown. `volumetric_strain_on=False` forces zero strain, e.g. for initial conditions.
     """
     if not volumetric_strain_on:
         zeros = np.zeros(np.shape(p))
@@ -249,21 +229,13 @@ def get_enthalpy(
 ) -> EnthalpyResult:
     """Get the fluid enthalpy at a specified pressure and temperature.
 
-    Built as hf = u_f + p / rho_f, using the same closed-form u_f as
-    get_internal_energy and the same density formula as get_density (with its constant,
-    reference-density derivatives, rather than get_density's exact ones), so the two stay
-    exactly consistent without either function calling the other at runtime.
+    hf = u_f(p,T) + p / rho_f(p, T_flow)
+    Build from components in both linearized and CoolProp branches. The CoolProp
+    branch follows the same split to allow for lagging, but using other CoolProp
+    function rather than call enthalpy directly.
 
-    `rho_f` is evaluated at `T_flow` rather than `T`. `T_flow_lagged` says whether T_flow is
-    independent of the unknown T (True, e.g. the linearized solver's frozen/extrapolated
-    T_flow) or literally tracks it (False, e.g. the fully-coupled solver's T_flow=T), which
-    determines whether rho_f's T-dependence propagates into dhf_dT.
-
-    Also returns `cp`, the constant-pressure specific heat (∂h/∂T)_p with the pressure-work
-    contribution stripped out, so callers needing a pure thermal-capacity scale (e.g. SUPG's
-    Peclet number) don't have to re-derive it from `dhf_dT`. For the nonlinear (CoolProp)
-    branch, `cp` is CoolProp's own (∂h/∂T)_p at (T, p), unaffected by `T_flow_lagged`, since
-    there is no separate rho_f/u_f split there for it to leak in from.
+    Also returns `cp`, (∂h/∂T)_p with the pressure-work term stripped out (e.g. for SUPG's
+    Peclet number).
     """
     if fluid["density"] != 0:
         rho_0 = fluid["density"]
@@ -286,27 +258,14 @@ def get_enthalpy(
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
         cp = cp_f * np.ones(np.shape(T))
     else:
-        # Nonlinear (CoolProp) enthalpy, evaluated directly at (T, p)
-        T_arr = np.atleast_1d(np.asarray(T, dtype=float))
-        T_arr = np.clip(T_arr, 274.0, 600.0)
-        p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
-        p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
-        AS = fluid["abstract_state"]
-        assert AS is not None
+        u = get_internal_energy(T, p, fluid)
+        rho_f_lagged = get_density(T_flow, p, fluid, T_flow_lagged)
+        rho_f_true = get_density(T, p, fluid)
 
-        hf = np.empty(T_arr.shape)
-        dhf_dT = np.empty(T_arr.shape)
-        dhf_dp = np.empty(T_arr.shape)
-        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
-            AS.update(CP.PT_INPUTS, p_i, T_i)
-            hf.flat[i] = AS.hmass()
-            dhf_dT.flat[i] = AS.first_partial_deriv(CP.iHmass, CP.iT, CP.iP)
-            dhf_dp.flat[i] = AS.first_partial_deriv(CP.iHmass, CP.iP, CP.iT)
-
-        hf = hf.reshape(np.shape(T))
-        dhf_dp = dhf_dp.reshape(np.shape(T))
-        cp = dhf_dT.reshape(np.shape(T)).copy()
-        dhf_dT = np.zeros(np.shape(T)) if T_flow_lagged else dhf_dT.reshape(np.shape(T))
+        hf = u.value + p / rho_f_lagged.value
+        dhf_dT = u.dT - p / rho_f_lagged.value**2 * rho_f_lagged.dT
+        dhf_dp = u.dp + 1 / rho_f_lagged.value - p / rho_f_lagged.value**2 * rho_f_lagged.dp
+        cp = u.dT - p / rho_f_true.value**2 * rho_f_true.dT
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
 
@@ -317,14 +276,9 @@ def get_internal_energy(
 ) -> PropertyResult:
     """Get the fluid internal energy at a specified pressure and temperature.
 
-    Integrated from du_f = (cp_f - alpha_f/rho_0 * p) dT + (p/(K_f*rho_0) - alpha_f/rho_0 * T) dp
-    (the standard du = cp*dT + [T*(dv/dT)_p - p]*(-dv) identity, linearized at the reference
-    density rho_0, matching get_density's own level of linearization). This is an exact
-    potential given that linearization, so both partials below are its literal derivatives.
-
-    `fluid["density"]` of 0 selects a non-constant, real-fluid internal energy looked up from
-    CoolProp via `fluid["abstract_state"]` at each (T, p), with its partials taken directly
-    from the EOS rather than from this linearized closed form.
+    Integrated from du_f = (cp_f - alpha_f/rho_0 * p) dT + (p/(K_f*rho_0) - alpha_f/rho_0 * T) dp,
+    linearized at the reference density rho_0 to match get_density.
+    Density is used as the sentinel evaluate u_f directly from CoolProp at (T, p).
     """
     if fluid["density"] != 0:
         rho_0 = fluid["density"]

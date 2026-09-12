@@ -36,7 +36,7 @@ material:
   fluid:
       fluid_type: "Water"         # "Water" or "CO2"
       bulk_mod: 2.10e+9         # Pa
-      density:      925         # kg/m^3
+      density:      0         # kg/m^3
       reference_temperature: 413 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
@@ -110,10 +110,10 @@ boundary_conditions:
         - faces: [y_max]
           hydraulics:
               type: "pressure"
-              values: [2.0e+6]
+              values: [2.0e+7]
           thermal:
               type: "temperature"
-              values: [310]
+              values: [410]
 
         - faces: [x_min]
           hydraulics:
@@ -148,7 +148,7 @@ simulation:
   timestep: 10.0
   timestep_min: 1.0
   timestep_max: 100000.0
-  solver_type: "fully_coupled"
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1
