@@ -139,11 +139,10 @@ def _broadcast_to_history(values: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
 def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
-    Pressurization is neglected since it is time-dependent. Volumetric strain is also
-    neglected, since initial conditions are by definition unstrained relative to themselves.
+    Volumetric strain is neglected, since initial conditions are by definition
+    unstrained relative to themselves.
     """
     controls_SS = controls.copy()
-    controls_SS["pressurization_on"] = 0
     controls_SS["steady_pressure"] = 1
     controls_SS["steady_temperature"] = 1
     controls_SS["fully_coupled"] = False

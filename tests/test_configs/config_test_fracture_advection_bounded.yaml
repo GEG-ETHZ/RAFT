@@ -67,7 +67,6 @@ simulation:
   # Physical controls
   rate_order: 1
   advection_on: 1
-  pressurization_on: 0
   gravity: 0.0
   steady_pressure: 1
   steady_temperature: 1

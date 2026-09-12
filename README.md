@@ -275,7 +275,6 @@ Physical controls
 
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change (typically `1`).
 * **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
-* **`pressurization_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable thermal pressurization coupling; `0` to disable.
 * **`gravity`** *(float, default: `0.0`)*: Set the magnitude of the acceleration due to gravity. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
 
 * **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
