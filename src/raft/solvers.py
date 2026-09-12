@@ -341,7 +341,12 @@ def _newton_raphson_loop(  # noqa
     temperature_only: bool = False,
     fully_coupled: bool = False,
 ) -> tuple[dict[str, Any], bool]:
-    """Perform non-linear Newton-Raphson iterations."""
+    """Perform non-linear Newton-Raphson iterations.
+
+    `T_flow` must be the SAME array object as `primary_variables["T"]` when
+    `fully_coupled=True` (so it tracks the in-loop updates below); for
+    `temperature_only`/`pressure_only` it should be a separate frozen/lagged copy.
+    """
     # Newton-Raphson controls
     iter_max = controls["iterative_controls"]["iter_max"]
     NR_tol = controls["iterative_controls"]["NR_tol"]
@@ -349,46 +354,61 @@ def _newton_raphson_loop(  # noqa
     converged = False
 
     # Initaliaze
-    NR = {}  # Store iteration residuals for debugging
+    NR = {"all": np.zeros(iter_max + 1)}  # Store iteration residuals for debugging
     R = {}
     aitken_state = {}
     fixed_dofs_global = {}
     vars_orig = {}
-
-    NR["all"] = np.zeros(iter_max + 1)
+    offsets = {}  # start index of each key's block within the stacked dof vector
 
     iteration = 0
     nn_all = 0  # Running total of dof offset
-    nn_p = np.len(primary_variables["p"][:, 0])
     d_n = np.empty((0, 1))
-    nE = np.empty((0, 1))
+    nE = np.empty((0, 1), dtype=int)
     aitken_state["variables_km1"] = np.empty((0, 1))
-    aitken_state["relax_dofs"] = np.empty((0, 1))
+    aitken_state["relax_dofs"] = np.empty((0,), dtype=int)
     for key in keys:
         NR[key] = np.zeros(iter_max + 1)
         d_n = np.vstack((d_n, primary_variables[key][:, 0:1]))
         vars_orig[key] = primary_variables[key].copy()
 
-        key_dofs = primary_variables[key + "_dofs"]
+        key_dofs = nn_all + primary_variables[key + "_dofs"]
+        offsets[key] = nn_all
         fixed_dofs_global[key] = fixed_dofs[key] + nn_all
-        nE = np.vstavk((nE, fixed_dofs[key] + nn_all))
-        nn_all += np.len(primary_variables[key + "_dofs"])
-        # Initialize relaxation
-        aitken_state["variables_km1"] = np.vstack((aitken_state["variables_km1"], primary_variables[key]))
-        aitken_state["relax_dofs"] = np.vstack((aitken_state["variables_km1"], key_dofs))
+        nE = np.vstack((nE, (fixed_dofs[key] + nn_all).reshape(-1, 1)))
+        nn_all += len(key_dofs)
 
+        # Initialize relaxation (free dofs only - fixed dofs never move, so
+        # including them would only dilute the Aitken step-size estimate)
+        free_dofs_key = np.setdiff1d(key_dofs, fixed_dofs[key]).astype(int) + offsets[key]
+        aitken_state["variables_km1"] = np.vstack(
+            (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
+        )
+        aitken_state["relax_dofs"] = np.concatenate((aitken_state["relax_dofs"], free_dofs_key))
+
+    nE = nE.ravel()
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
     aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
 
+    if fully_coupled:
+        label = "FULLY COUPLED"
+
+        # Indexing for updating reaction fluxes each iteration
+        p_dofs_local = primary_variables["p_dofs"]
+        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
+        q = np.zeros((len(p_dofs_local), 1))
+    elif pressure_only:
+        label = "ITERATIVE PRESSURE"
+    else:
+        label = "ITERATIVE TEMPERATURE"
+
     if verbose:
-        print("      ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION   ", end="")
+        print(f"      {label} NEWTON RAPHSON: ITERATION   ", end="")
     while True:
         if verbose:
-            print(
-                f"\r     ITERATIVE PRESSURE NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True
-            )
+            print(f"\r     {label} NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
-        # Compute residual vectors
+        # Integrate residual vectors
         F_vec = integrate_residuals(
             mesh,
             material,
@@ -400,19 +420,21 @@ def _newton_raphson_loop(  # noqa
             temperature_only=temperature_only,
         )
 
-        # Reaction flow rates at prescribed pressure dofs
+        # Update reaction flow rates (fully-coupled only)
         if fully_coupled:
-            nF_p = 0  # placeholder, to be fixed
-            q = np.zeros((nn_p, 1))
-            q[fixed_dofs["p"]] = compute_residuals(F_vec, F_ext, pressure_only=True)["p"][fixed_dofs["p"]]
+            R_p = compute_residuals(F_vec, F_ext, pressure_only=True)["p"]
+            q[fixed_dofs["p"]] = R_p[fixed_dofs["p"]]
             q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
             primary_variables["q"] = q
 
+        # Calculate enthalpy boundary fluxes using reaction flow rates
         if temperature_only or fully_coupled:
             F_enth_bnd = integrate_enthlpy_bndry_residual(
                 mesh, material, primary_variables, controls, T_flow, BC_config
             )
             F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
+
+        # Compuate residuals
         R = compute_residuals(
             F_vec,
             F_ext,
@@ -431,6 +453,7 @@ def _newton_raphson_loop(  # noqa
                 print(" - CONVERGED")
             break
         else:  # Update iteration
+            # Integrate Jacobian
             jacobian = integrate_tangent_matrices(
                 mesh,
                 material,
@@ -442,25 +465,28 @@ def _newton_raphson_loop(  # noqa
                 temperature_only=temperature_only,
                 fully_coupled=fully_coupled,
             )
+
+            # Warnings for poor conditioning
             if iteration == 0 and (fully_coupled or pressure_only):
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
+            # Assemble Jacobian
             if pressure_only:
                 A = jacobian["Kpp"]
                 b = R["p"]
-            if temperature_only:
+            elif temperature_only:
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
                     mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
                 )
                 A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
                 b = R["T"]
-            if fully_coupled:
+            else:  # fully_coupled
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
                     mesh,
                     material,
                     primary_variables,
                     controls,
-                    T,  # noqa
+                    T_flow,
                     BC_config,
                     fully_coupled=True,
                     Kpp=jacobian["Kpp"],
@@ -472,13 +498,6 @@ def _newton_raphson_loop(  # noqa
                     sp.csc_matrix[Any],
                     sp.bmat(
                         [
-                            # `KpT`/`KTp` are computed as literal +d(R_p)/dT and +d(R_T)/dp
-                            # respectively (same convention as the on-diagonal `Kpp`/`KTT`, which
-                            # this "A" already uses unnegated) - so they belong here unnegated too.
-                            # `Kpp`'s own dqD_dp-based terms look "flipped" only because `dqD_dp`
-                            # itself is computed as -d(q_D)/dp, a convention `Kpp`/`KpT` are built
-                            # around directly; it's not evidence that this off-diagonal block needs
-                            # negating too.
                             [jacobian["Kpp"], jacobian["KpT"]],
                             [
                                 jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
@@ -495,7 +514,7 @@ def _newton_raphson_loop(  # noqa
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
 
             NR_step = 1.0
-            d_n += NR_step * delta_var.reshape(-1, 1)
+            d_n = d_n + NR_step * delta_var.reshape(-1, 1)
 
             # Check for nan or inf data and break
             if np.any(np.isnan(d_n)) or np.any(np.isinf(d_n)):
@@ -521,7 +540,14 @@ def _newton_raphson_loop(  # noqa
             else:
                 d_new = d_n
 
-            d_n[:, 0:1] = d_new
+            d_n = d_new
+            # Write the updated global vector back into each key's primary variable.
+            # Uses in-place slice assignment (not a new array) so that a `T_flow`
+            # passed in as the SAME object as primary_variables["T"] (fully_coupled
+            # case) stays aliased and reflects this update automatically.
+            for key in keys:
+                primary_variables[key][:, 0:1] = d_n[key_dofs[key]]
+
             iteration += 1
 
         if iteration >= iter_max:
@@ -530,6 +556,16 @@ def _newton_raphson_loop(  # noqa
             for key in keys:
                 primary_variables[key] = vars_orig[key]
             break
+
+    # Caclulate reaction fluxes
+    if pressure_only:
+        # Reaction fluxes only need computing once. Fully_coupled is calculated in-loop.
+        p_dofs_local = primary_variables["p_dofs"]
+        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
+        q = np.zeros((len(p_dofs_local), 1))
+        q[fixed_dofs["p"]] = R["p"][fixed_dofs["p"]]
+        q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
+        primary_variables["q"] = q
 
     if verbose:
         print()  # new line for that output doesn't get overwritten
