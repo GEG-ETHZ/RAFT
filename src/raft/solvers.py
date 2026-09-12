@@ -163,8 +163,8 @@ def compute_residuals(
 def _partition_and_solve_matrix(
     A: sp.csc_matrix[Any],
     b: npt.NDArray[np.float64],
-    dofs_all: npt.NDArray[np.float64],
-    nE: npt.NDArray[np.float64],  # essential DoF indices
+    dofs_all: npt.NDArray[np.int_],
+    nE: npt.NDArray[np.int_],  # essential DoF indices
 ) -> npt.NDArray[np.float64]:
     """Partitions and solves a matrix given a set of essential DoFs. Returns full vector of DoFs."""
     nF = np.setdiff1d(dofs_all, nE)  # free DoFs
@@ -360,13 +360,13 @@ def _newton_raphson_loop(  # noqa
     iteration = 0
     NR = {"all": np.zeros(iter_max + 1)}  # Store iteration residuals for debugging
     R = {}
-    aitken_state = {}
+    aitken_state: dict[str, Any] = {}
     fixed_dofs_global = {}
     vars_orig = {}
     key_dofs = {}  # key -> that key's global indices (in d_n/d_new) for its dofs
     nn_all = 0  # Running total of dof offset
     d_n = np.empty((0, 1))
-    nE = np.empty((0, 1), dtype=int)
+    nE: npt.NDArray[np.int_] = np.empty((0, 1), dtype=int)
     aitken_state["variables_km1"] = np.empty((0, 1))
     aitken_state["relax_dofs"] = np.empty((0,), dtype=int)
     for key in keys:
