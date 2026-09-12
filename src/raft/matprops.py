@@ -117,21 +117,49 @@ def get_density(
 ) -> PropertyResult:
     """Get density and its temperature derivative, at temperature T [K] and pressure p [Pa].
 
+    `fluid["density"]` of 0 selects a non-constant, real-fluid density looked up from
+    CoolProp via `fluid["abstract_state"]` at each (T, p); any other value is treated as a
+    constant reference density, and the abstract state is ignored.
+
     `T_flow_lagged` says whether this T is independent of the primary unknown T being solved
     for (True, e.g. a frozen/extrapolated T_flow) or literally is it (False); when True,
     drho_dT is reported as zero since that coupling doesn't exist for the caller's Jacobian.
     """
-    T0 = fluid["reference_temperature"]
-    p0 = fluid["reference_pressure"]
-    alpha = fluid["therm_expansion"]
-    rho_0 = fluid["density"]
-    Kf = fluid["bulk_mod"]
-    density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
+    if fluid["density"] != 0:
+        T0 = fluid["reference_temperature"]
+        p0 = fluid["reference_pressure"]
+        alpha = fluid["therm_expansion"]
+        rho_0 = fluid["density"]
+        Kf = fluid["bulk_mod"]
+        density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
 
-    drho_dT = np.zeros(np.shape(T)) if T_flow_lagged else -rho_0 * alpha * np.ones(np.shape(T))
-    drho_dp = rho_0 * 1 / Kf * np.ones(np.shape(p))
+        drho_dT = np.zeros(np.shape(T)) if T_flow_lagged else -rho_0 * alpha * np.ones(np.shape(T))
+        drho_dp = rho_0 * 1 / Kf * np.ones(np.shape(p))
 
-    return PropertyResult(density, drho_dp, drho_dT)
+        return PropertyResult(density, drho_dp, drho_dT)
+
+    T_arr = np.atleast_1d(np.asarray(T, dtype=float))
+    T_arr = np.clip(T_arr, 274.0, 600.0)
+    p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
+    p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+    AS = fluid["abstract_state"]
+    assert AS is not None
+
+    rho = np.empty(T_arr.shape)
+    drho_dT = np.empty(T_arr.shape)
+    drho_dp = np.empty(T_arr.shape)
+    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+        AS.update(CP.PT_INPUTS, p_i, T_i)
+        rho.flat[i] = AS.rhomass()
+        drho_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
+        drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
+
+    if T_flow_lagged:
+        drho_dT = np.zeros(T_arr.shape)
+
+    return PropertyResult(
+        rho.reshape(np.shape(T)), drho_dp.reshape(np.shape(T)), drho_dT.reshape(np.shape(T))
+    )
 
 
 def get_porosity(
@@ -234,8 +262,8 @@ def get_enthalpy(
     Also returns `cp`, the constant-pressure specific heat (∂h/∂T)_p with the pressure-work
     contribution stripped out, so callers needing a pure thermal-capacity scale (e.g. SUPG's
     Peclet number) don't have to re-derive it from `dhf_dT`. For the nonlinear (CoolProp)
-    branch, this is where that will come from once implemented, rather than each caller
-    fetching `fluid["specific_heat"]` independently.
+    branch, `cp` is CoolProp's own (∂h/∂T)_p at (T, p), unaffected by `T_flow_lagged`, since
+    there is no separate rho_f/u_f split there for it to leak in from.
     """
     if fluid["density"] != 0:
         rho_0 = fluid["density"]
@@ -258,11 +286,27 @@ def get_enthalpy(
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
         cp = cp_f * np.ones(np.shape(T))
     else:
-        # Nonlinear internal energy
-        hf = 0 * np.ones(np.shape(T))
-        dhf_dT = 0 * np.ones(np.shape(T))
-        dhf_dp = 0 * np.ones(np.shape(T))
-        cp = 0 * np.ones(np.shape(T))
+        # Nonlinear (CoolProp) enthalpy, evaluated directly at (T, p)
+        T_arr = np.atleast_1d(np.asarray(T, dtype=float))
+        T_arr = np.clip(T_arr, 274.0, 600.0)
+        p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
+        p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+        AS = fluid["abstract_state"]
+        assert AS is not None
+
+        hf = np.empty(T_arr.shape)
+        dhf_dT = np.empty(T_arr.shape)
+        dhf_dp = np.empty(T_arr.shape)
+        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+            AS.update(CP.PT_INPUTS, p_i, T_i)
+            hf.flat[i] = AS.hmass()
+            dhf_dT.flat[i] = AS.first_partial_deriv(CP.iHmass, CP.iT, CP.iP)
+            dhf_dp.flat[i] = AS.first_partial_deriv(CP.iHmass, CP.iP, CP.iT)
+
+        hf = hf.reshape(np.shape(T))
+        dhf_dp = dhf_dp.reshape(np.shape(T))
+        cp = dhf_dT.reshape(np.shape(T)).copy()
+        dhf_dT = np.zeros(np.shape(T)) if T_flow_lagged else dhf_dT.reshape(np.shape(T))
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
 
@@ -277,6 +321,10 @@ def get_internal_energy(
     (the standard du = cp*dT + [T*(dv/dT)_p - p]*(-dv) identity, linearized at the reference
     density rho_0, matching get_density's own level of linearization). This is an exact
     potential given that linearization, so both partials below are its literal derivatives.
+
+    `fluid["density"]` of 0 selects a non-constant, real-fluid internal energy looked up from
+    CoolProp via `fluid["abstract_state"]` at each (T, p), with its partials taken directly
+    from the EOS rather than from this linearized closed form.
     """
     if fluid["density"] != 0:
         rho_0 = fluid["density"]
@@ -287,12 +335,25 @@ def get_internal_energy(
         u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
         duf_dT = cp_f - alpha_f * p[..., 0:1] / rho_0
         duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha_f * T[..., 0:1] / rho_0
-    else:
-        # Nonlinear internal energy
-        u_f = 0 * np.ones(np.shape(T))
-        duf_dT = 0 * np.ones(np.shape(T))
-        duf_dp = 0 * np.ones(np.shape(T))
-    return PropertyResult(u_f, duf_dp, duf_dT)
+        return PropertyResult(u_f, duf_dp, duf_dT)
+
+    T_arr = np.atleast_1d(np.asarray(T, dtype=float))
+    T_arr = np.clip(T_arr, 274.0, 600.0)
+    p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
+    p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+    AS = fluid["abstract_state"]
+    assert AS is not None
+
+    u_f = np.empty(T_arr.shape)
+    duf_dT = np.empty(T_arr.shape)
+    duf_dp = np.empty(T_arr.shape)
+    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+        AS.update(CP.PT_INPUTS, p_i, T_i)
+        u_f.flat[i] = AS.umass()
+        duf_dT.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iT, CP.iP)
+        duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
+
+    return PropertyResult(u_f.reshape(np.shape(T)), duf_dp.reshape(np.shape(T)), duf_dT.reshape(np.shape(T)))
 
 
 def get_effective_permeability(
