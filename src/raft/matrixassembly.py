@@ -1078,8 +1078,8 @@ def _evaluate_mass_storage_integrands(
 
     integrand_dFsdT = _EMPTY
     if want_tangent_dT:
-        phi_L_n = phi_L.q_n
-        rho_f_n = rho_f.q_n
+        phi_L_n = phi_L.e_n
+        rho_f_n = rho_f.e_n
         integrand_dFsdT = (
             (1 - steady_pres) * cv[0] * (phi_L_n.dT * rho_f_n.value + phi_L_n.value * rho_f_n.dT)
         )
@@ -2025,7 +2025,7 @@ def integrate_tangent_matrices(  # noqa
             phi_L_n = phi_L.q_n
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
 
-            _, integrand_dFsdp_e, integrand_dFsdT = _evaluate_mass_storage_integrands(
+            _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
                 phi_L,
                 rho_f,
                 cv,
@@ -2126,9 +2126,7 @@ def integrate_tangent_matrices(  # noqa
             if fully_coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                element_matrices["KpT"] = _vctrzd_quad_point_integration(
-                    N_q, integrand_dFsdT, N_q, wJe_q, scalar=True
-                )
+                element_matrices["KpT"] = np.diag(m_lump * integrand_dFsdT_e.ravel())
 
                 # Diffusion vector - Fk
                 integrand_dFkdT = dqD_dT
