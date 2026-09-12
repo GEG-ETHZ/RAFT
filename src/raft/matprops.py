@@ -144,7 +144,8 @@ def get_porosity(
 
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
     """
-    phi = 1 - (1 - phi_0) * np.exp(-(p - p_0) / K_d)
+    exponent = np.clip(-(p - p_0) / K_d, -700, 700)  # exp(709) ~ float64 max
+    phi = 1 - (1 - phi_0) * np.exp(exponent)
     dphi_dT = np.zeros(np.shape(phi))
     dphi_dp = -(phi - 1) / K_d
 

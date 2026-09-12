@@ -353,6 +353,7 @@ def _newton_raphson_loop(  # noqa
     iter_max = controls["iterative_controls"]["iter_max"]
     NR_tol = controls["iterative_controls"]["NR_tol"]
     aitken_on = controls["iterative_controls"]["aitken_relaxation"]
+    NR_step = controls["iterative_controls"]["NR_step"]
     converged = False
 
     # Initaliaze
@@ -517,7 +518,6 @@ def _newton_raphson_loop(  # noqa
             # Solve system of equations
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
 
-            NR_step = 1.0
             d_n = d_n + NR_step * delta_var.reshape(-1, 1)
 
             # Check for nan or inf data and break

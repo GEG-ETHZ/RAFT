@@ -22,8 +22,6 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
-
-# from .parseboundaryconditions import allocate_WB_BCs
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
 
 
@@ -753,23 +751,29 @@ def _evaluate_fracture_leakoff_flux(
     p_m_q: npt.NDArray[np.float64],
     *,
     want_tangent_dp: bool = False,
+    want_tangent_dT: bool = False,
 ) -> tuple[
     npt.NDArray[np.float64],  # flux_p_q
     npt.NDArray[np.float64],  # dfluxp_dpf, `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # dfluxp_dpm, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dTf, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxp_dTm, `_EMPTY` unless want_tangent_dT
 ]:
     """Evaluate the fracture-matrix leak-off mass flux and optionally its pressure tangent."""
     flux_coeff = rhof_q.value * kf_perp.value / mu_q.value  # leak-off conductance
     flux_p_q = flux_coeff * (p_f_q - p_m_q)  # leak-ff mass flux
 
-    dfluxp_dpf = dfluxp_dpm = _EMPTY
+    dfluxp_dpf = dfluxp_dpm = dfluxp_dTf = dfluxp_dTm = _EMPTY
     if want_tangent_dp:
         dcoeff_dp = rhof_q.dp * kf_perp.value + rhof_q.value * kf_perp.dp - flux_coeff * mu_q.dp
         dfluxp_dpf = flux_coeff + dcoeff_dp / mu_q.value * (p_f_q - p_m_q)
         dfluxp_dpm = -flux_coeff
-    # To do: This is missing d/dT for the fully-coupled case
+    if want_tangent_dT:
+        dcoeff_dT = rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT - flux_coeff * mu_q.dT
+        dfluxp_dTf = dcoeff_dT / mu_q.value * (p_f_q - p_m_q)
+        dfluxp_dTm = np.zeros_like(dfluxp_dTf)  # Flux properties are evaluated with fracture state
 
-    return flux_p_q, dfluxp_dpf, dfluxp_dpm
+    return flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm
 
 
 def _evaluate_fracture_conduction_flux(
@@ -1375,7 +1379,9 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
-            flux_p_q, _, _ = _evaluate_fracture_leakoff_flux(rhof_q, kf_perp, mu_q, p_f_q, p_m_q)  # mass flux
+            flux_p_q, _, _, _, _ = _evaluate_fracture_leakoff_flux(
+                rhof_q, kf_perp, mu_q, p_f_q, p_m_q
+            )  # mass flux
 
         if pressure_coupling:
             Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)  # Fracture
@@ -1463,8 +1469,8 @@ def _integrate_fracture_matrix_coupling_tangent(
 
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
-            flux_p_q, dfluxp_dpf, dfluxp_dpm = _evaluate_fracture_leakoff_flux(
-                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, want_tangent_dp=True
+            flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm = _evaluate_fracture_leakoff_flux(
+                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, want_tangent_dp=True, want_tangent_dT=thermal_coupling
             )  # Mass flux
 
         if pressure_coupling:
@@ -1517,6 +1523,15 @@ def _integrate_fracture_matrix_coupling_tangent(
                 RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, dqadv_dTm, N_qm, wJe_q, True)
 
                 if fully_coupled:
+                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTf, N_q, wJe_q, True)
+                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
+                        N_qm, -dfluxp_dTm, N_q, wJe_q, True
+                    )
+                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_qm, wJe_q, True)
+                    mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(
+                        N_qm, dfluxp_dTm, N_qm, wJe_q, True
+                    )
+
                     ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
                     fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
                     mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
@@ -1898,21 +1913,25 @@ def integrate_tangent_matrices(  # noqa
             (["Kpp_ff"] if not temperature_only else [])
             + (["KTT_ff"] if not pressure_only else [])
             + (["KTp_ff"] if ktp_on else [])
+            + (["KpT_ff"] if ktp_on else [])
         )
         coupling_fm_names = (
             (["Kpp_fm"] if not temperature_only else [])
             + (["KTT_fm"] if not pressure_only else [])
             + (["KTp_fm"] if ktp_on else [])
+            + (["KpT_fm"] if ktp_on else [])
         )
         coupling_mf_names = (
             (["Kpp_mf"] if not temperature_only else [])
             + (["KTT_mf"] if not pressure_only else [])
             + (["KTp_mf"] if ktp_on else [])
+            + (["KpT_mf"] if ktp_on else [])
         )
         coupling_mm_names = (
             (["Kpp_mm"] if not temperature_only else [])
             + (["KTT_mm"] if not pressure_only else [])
             + (["KTp_mm"] if ktp_on else [])
+            + (["KpT_mm"] if ktp_on else [])
         )
         vec_ff = {name: np.zeros(row_vec_ff.size) for name in coupling_ff_names}
         vec_fm = {name: np.zeros(row_vec_fm.size) for name in coupling_fm_names}

@@ -77,7 +77,6 @@ DEFAULTS: dict[str, Any] = {
         "output_porosity": 0,
         "rate_order": 1,
         "advection_on": 0,
-        "pressurization_on": 0,
         "volumetric_strain_on": 1,
         "gravity": 0.0,
         "steady_pressure": 0,
@@ -88,6 +87,7 @@ DEFAULTS: dict[str, Any] = {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
             "iter_max": 100,  # Maximum number of iterations
             "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
+            "NR_step": 1,  # Newton-Raphson line step size
         },
     },
 }

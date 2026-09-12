@@ -14,17 +14,17 @@ mesh:
   fractures:
          - values: [[25.5, 37.5], [30], [60]]
          - values: [[25.5, 37.5], [30], [130]]
-         - values: [[15, 32, 0.0], [22.5], [100]]
+         - values: [[15, 32, 0.0], [24], [100]]
 
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
-      bulk_mod:  [20.0e+19, 20.0e+9, 20.0e+9]        # Pa
+      bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
       density: [100, 2000, 2000]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
       specific_heat: [80, 80, 10]        # J/kgK
-      therm_expansion: [0.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
+      therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
       permeability: [[5.0e-14, 5.0e-14],   1.0e-14, 1.0e-17]       # m^2
@@ -42,7 +42,7 @@ material:
       therm_cond:   0.6         # W/mK
       therm_expansion: 300.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
-      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:
@@ -145,10 +145,10 @@ simulation:
   # Time
   t_start: 0.0
   t_end: 8000000.0
-  timestep: 100.0
+  timestep: 10.0
   timestep_min: 1.0
   timestep_max: 100000.0
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1
@@ -162,7 +162,6 @@ simulation:
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
-  pressurization_on: 0
   gravity: 0
   steady_pressure: 0
   steady_temperature: 0
@@ -171,6 +170,7 @@ simulation:
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 1.0e-6 # Newton-Raphson residual tolerance
+      NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
-      aitken_relaxation: 0 # Turn on/off Aitken's delta^2 relaxation
+      NR_step: 1
+      aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
