@@ -274,7 +274,7 @@ def get_enthalpy(
         hf = u.value + p / rho_f_lagged.value
         dhf_dT = np.zeros(hf.shape)
         dhf_dp = np.zeros(hf.shape)
-        if want_dT and not T_flow_lagged:
+        if want_dT:
             dhf_dT = u.dT - p / rho_f_lagged.value**2 * rho_f_lagged.dT
         if want_dp:
             dhf_dp = u.dp + 1 / rho_f_lagged.value - p / rho_f_lagged.value**2 * rho_f_lagged.dp
