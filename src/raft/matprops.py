@@ -56,53 +56,48 @@ def get_viscosity(
     `T_flow_lagged` zeroes dmu_dT when T is not the primary unknown being solved for.
     """
     viscosity_coefficients = fluid["viscosity"]
-    T_arr = np.atleast_1d(np.asarray(T, dtype=float))
 
     if viscosity_coefficients != 0:
-        mu = np.full(T_arr.shape, viscosity_coefficients)
-        dmu_dT = np.zeros(T_arr.shape)
-        dmu_dp = np.zeros(T_arr.shape)
-        return PropertyResult(
-            mu.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T))
-        )
+        mu = np.full(T.shape, viscosity_coefficients)
+        zeros = np.broadcast_to(0.0, T.shape)
+        return PropertyResult(mu, zeros, zeros)
 
     # Cap limits, to keep (T, p) within CoolProp's valid range even for transient/
     # intermediate solver states (e.g. under-relaxed Newton iterates).
-    T_arr = np.clip(T_arr, 274.0, 600.0)
-    p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
-    p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+    T_arr = np.clip(T, 274.0, 600.0)
+    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
-
-    # Value
-    mu = np.empty(T_arr.shape)
-    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
-        AS.update(CP.PT_INPUTS, p_i, T_i)
-        mu.flat[i] = AS.viscosity()
 
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a central difference.
     dT = 0.5  # K
     dp = 1  # Pa
+    want_dT_eff = want_dT and not T_flow_lagged
 
-    dmu_dT = np.zeros(T_arr.shape)
-    dmu_dp = np.zeros(T_arr.shape)
+    mu = np.empty(T_arr.shape)
+    dmu_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
+    dmu_dT = np.empty(T_arr.shape) if want_dT_eff else np.broadcast_to(0.0, T_arr.shape)
 
-    if want_dp:
-        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+    for i in range(T_arr.size):
+        T_i = T_arr.flat[i]
+        p_i = p_arr.flat[i]
+        AS.update(CP.PT_INPUTS, p_i, T_i)
+        mu.flat[i] = AS.viscosity()
+
+        if want_dp:
             AS.update(CP.PT_INPUTS, p_i + dp, T_i)
             mu_plus = AS.viscosity()
             AS.update(CP.PT_INPUTS, p_i - dp, T_i)
             mu_minus = AS.viscosity()
             dmu_dp.flat[i] = (mu_plus - mu_minus) / (2 * dp)
 
-    if want_dT and not T_flow_lagged:
-        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+        if want_dT_eff:
             AS.update(CP.PT_INPUTS, p_i, T_i + dT)
             mu_plus = AS.viscosity()
             AS.update(CP.PT_INPUTS, p_i, T_i - dT)
             mu_minus = AS.viscosity()
             dmu_dT.flat[i] = (mu_plus - mu_minus) / (2 * dT)
 
-    return PropertyResult(mu.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T)))
+    return PropertyResult(mu, dmu_dp, dmu_dT)
 
 
 def get_density(
@@ -126,31 +121,31 @@ def get_density(
         Kf = fluid["bulk_mod"]
         density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
 
-        drho_dT = np.zeros(np.shape(T)) if T_flow_lagged else -rho_0 * alpha * np.ones(np.shape(T))
-        drho_dp = rho_0 * 1 / Kf * np.ones(np.shape(p))
+        drho_dT = np.broadcast_to(0.0, T.shape) if T_flow_lagged else np.broadcast_to(-rho_0 * alpha, T.shape)
+        drho_dp = np.broadcast_to(rho_0 / Kf, p.shape)
 
         return PropertyResult(density, drho_dp, drho_dT)
 
-    T_arr = np.atleast_1d(np.asarray(T, dtype=float))
-    T_arr = np.clip(T_arr, 274.0, 600.0)
-    p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
-    p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+    T_arr = np.clip(T, 274.0, 600.0)
+    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
+    want_dT_eff = want_dT and not T_flow_lagged
 
     rho = np.empty(T_arr.shape)
-    drho_dT = np.zeros(T_arr.shape)
-    drho_dp = np.zeros(T_arr.shape)
-    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+    drho_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
+    drho_dT = np.empty(T_arr.shape) if want_dT_eff else np.broadcast_to(0.0, T_arr.shape)
+
+    for i in range(T_arr.size):
+        T_i = T_arr.flat[i]
+        p_i = p_arr.flat[i]
         AS.update(CP.PT_INPUTS, p_i, T_i)
         rho.flat[i] = AS.rhomass()
         if want_dp:
             drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
-        if want_dT and not T_flow_lagged:
+        if want_dT_eff:
             drho_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
 
-    return PropertyResult(
-        rho.reshape(np.shape(T)), drho_dp.reshape(np.shape(T)), drho_dT.reshape(np.shape(T))
-    )
+    return PropertyResult(rho, drho_dp, drho_dT)
 
 
 def get_porosity(
@@ -165,7 +160,7 @@ def get_porosity(
     """
     exponent = np.clip(-(p - p_0) / K_d, -700, 700)  # exp(709) ~ float64 max
     phi = 1 - (1 - phi_0) * np.exp(exponent)
-    dphi_dT = np.zeros(np.shape(phi))
+    dphi_dT = np.broadcast_to(0.0, phi.shape)
     dphi_dp = -(phi - 1) / K_d
 
     return PropertyResult(phi, dphi_dp, dphi_dT)
@@ -188,12 +183,12 @@ def get_volumetricstrain(
     primary unknown. `volumetric_strain_on=False` forces zero strain, e.g. for initial conditions.
     """
     if not volumetric_strain_on:
-        zeros = np.zeros(np.shape(p))
+        zeros = np.broadcast_to(0.0, np.shape(p))
         return PropertyResult(zeros, zeros, zeros)
 
     strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
-    dstrain_dT = np.full(np.shape(strain), 0.0 if T_flow_lagged else therm_expansion)
-    dstrain_dp = np.full(np.shape(strain), biot / K_d)
+    dstrain_dT = np.broadcast_to(0.0 if T_flow_lagged else therm_expansion, strain.shape)
+    dstrain_dp = np.broadcast_to(biot / K_d, strain.shape)
 
     return PropertyResult(strain, dstrain_dp, dstrain_dT)
 
@@ -252,8 +247,10 @@ def get_enthalpy(
         Kf = fluid["bulk_mod"]
 
         rho_f = rho_0 * (1 - alpha_f * (T_flow - T0)) * (1 + (p - p0) / Kf)
-        drho_dT = np.zeros(np.shape(T)) if T_flow_lagged else -rho_0 * alpha_f * np.ones(np.shape(T))
-        drho_dp = rho_0 / Kf * np.ones(np.shape(p))
+        drho_dT = (
+            np.broadcast_to(0.0, T.shape) if T_flow_lagged else np.broadcast_to(-rho_0 * alpha_f, T.shape)
+        )
+        drho_dp = np.broadcast_to(rho_0 / Kf, p.shape)
 
         u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
         duf_dT = cp_f - alpha_f * p / rho_0
@@ -262,7 +259,7 @@ def get_enthalpy(
         hf = u_f + p / rho_f
         dhf_dT = duf_dT - p / rho_f**2 * drho_dT
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
-        cp = cp_f * np.ones(np.shape(T))
+        cp = np.broadcast_to(cp_f, T.shape)
     else:
         u = get_internal_energy(T, p, fluid, want_dp, True)  # Always take dT for cp
         rho_f_true = get_density(T, p, fluid, want_dp, True)  # Always take dT for cp
@@ -307,16 +304,17 @@ def get_internal_energy(
         duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha_f * T[..., 0:1] / rho_0
         return PropertyResult(u_f, duf_dp, duf_dT)
 
-    T_arr = np.atleast_1d(np.asarray(T, dtype=float))
-    T_arr = np.clip(T_arr, 274.0, 600.0)
-    p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
-    p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
+    T_arr = np.clip(T, 274.0, 600.0)
+    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
 
     u_f = np.empty(T_arr.shape)
-    duf_dT = np.zeros(T_arr.shape)
-    duf_dp = np.zeros(T_arr.shape)
-    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+    duf_dT = np.empty(T_arr.shape) if want_dT else np.broadcast_to(0.0, T_arr.shape)
+    duf_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
+
+    for i in range(T_arr.size):
+        T_i = T_arr.flat[i]
+        p_i = p_arr.flat[i]
         AS.update(CP.PT_INPUTS, p_i, T_i)
         u_f.flat[i] = AS.umass()
         if want_dT:
@@ -324,7 +322,7 @@ def get_internal_energy(
         if want_dp:
             duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
 
-    return PropertyResult(u_f.reshape(np.shape(T)), duf_dp.reshape(np.shape(T)), duf_dT.reshape(np.shape(T)))
+    return PropertyResult(u_f, duf_dp, duf_dT)
 
 
 def get_effective_permeability(
@@ -336,7 +334,7 @@ def get_effective_permeability(
 ) -> PropertyResult:
     """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
     kf_eff = np.asarray(kf, dtype=np.float64)
-    dkf_dT = np.zeros(np.shape(T))
-    dkf_dp = np.zeros(np.shape(T))
+    dkf_dT = np.broadcast_to(0.0, T.shape)
+    dkf_dp = np.broadcast_to(0.0, T.shape)
 
     return PropertyResult(kf_eff, dkf_dp, dkf_dT)
