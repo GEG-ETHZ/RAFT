@@ -433,7 +433,7 @@ def _newton_raphson_loop(  # noqa
         # Calculate enthalpy boundary fluxes using reaction flow rates
         if temperature_only or fully_coupled:
             F_enth_bnd = integrate_enthlpy_bndry_residual(
-                mesh, material, primary_variables, controls, T_flow, BC_config
+                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=temperature_only
             )
             F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
 

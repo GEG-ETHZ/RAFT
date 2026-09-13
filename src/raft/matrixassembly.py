@@ -835,7 +835,9 @@ def _evaluate_fracture_advection_flux(
         # Use matrix properties
         T_eval, T_flow_eval, p_eval = T_m_q, T_flow_mq, p_m_q
 
-    hf_q = get_enthalpy(p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged)
+    hf_q = get_enthalpy(
+        p_eval, T_eval, T_flow_eval, fluid, T_flow_lagged, want_dp=want_tangent, want_dT=want_tangent
+    )
     flux_adv_T_q = hf_q.value * flux_p_q  # Advective heat flux
 
     dqadv_dTf = dqadv_dTm = dqadv_dpf = dqadv_dpm = _EMPTY
@@ -2296,6 +2298,8 @@ def integrate_enthlpy_bndry_residual(
     controls: dict[str, Any],
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
+    *,
+    T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
     """Integrate the advective enthalpy flux boundary vector.
 
@@ -2323,7 +2327,7 @@ def integrate_enthlpy_bndry_residual(
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
             p_i = p[nodes_i, 0]
-            hf_i = get_enthalpy(p_i, T_i, T_flow_i, fluid).value
+            hf_i = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged).value
             node_value.update(zip(nodes_i.tolist(), (q_i * hf_i).tolist()))
 
     if node_value:
@@ -2381,7 +2385,7 @@ def integrate_enthlpy_bndry_tangent(
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
             p_i = p[nodes_i, 0]
-            hf_result = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged)
+            hf_result = get_enthalpy(p_i, T_i, T_flow_i, fluid, T_flow_lagged, want_dT=True)
             hf_i, dhf_dT_i = hf_result.value, hf_result.dT
             node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
 
