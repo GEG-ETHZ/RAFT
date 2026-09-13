@@ -54,9 +54,10 @@ def _update_time(  # noqa
             else:
                 # Newton-raphson failure
                 cut_factor = 0.5
+            t0 = controls["t_start"]
             t = t - dt[0]
             dt[0] = max(cut_factor * dt[0], dt_min)
-            t = t + dt[0]
+            t = max(t + dt[0], t0)
             if verbose:
                 print(
                     f"     Timestep error = {timestep_error * 100:.2f} %, reducing timestep by {cut_factor:.2f} to dt = {dt[0]:.2e}"  # noqa: E501
