@@ -914,6 +914,7 @@ def _evaluate_flow_and_storage_state(
     PropertyResult,  # mu_q
     PropertyState,  # rho_f (quad points)
     PropertyState,  # phi_L (quad points)
+    PropertyState,  # u_f (quad points)
     PropertyResult,  # phi_L_e (nodal)
     PropertyResult,  # rho_f_e (nodal)
     PropertyResult,  # u_f_e (nodal)
@@ -924,8 +925,11 @@ def _evaluate_flow_and_storage_state(
     """
     want_dp = calc_derivatives and (pressure_only or fully_coupled)
     want_dT = calc_derivatives and (temperature_only or fully_coupled)
+    # ---- Quadrature-point flow properties
+    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
 
-    # ---- Nodal state
+    # ---- Porosity
     if is_fracture:
         # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
         phi_L_e = PropertyResult(
@@ -944,20 +948,28 @@ def _evaluate_flow_and_storage_state(
             T_flow_lagged,
             volumetric_strain_on,
         )
-    rho_f_e = get_density(nodal_kin.Te_flow, nodal_kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
-    u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT)
-
-    # ---- Quadrature-point flow properties
-    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-
-    rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
-    rho_f = PropertyState(q=rho_f_q)
 
     phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
     phi_L = PropertyState(q=phi_L_q)
 
-    return kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e
+    # ---- Density
+    rho_f_e = get_density(nodal_kin.Te_flow, nodal_kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
+
+    rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
+    rho_f = PropertyState(q=rho_f_q)
+
+    # ---- Internal energy
+    if not pressure_only:
+        # Internal energ
+        u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT)
+
+        u_f_q = PropertyResult(N_q @ u_f_e.value, N_q @ u_f_e.dp[:, 0:1], N_q @ u_f_e.dT[:, 0:1])
+        u_f = PropertyState(q=u_f_q)
+    else:
+        u_f_e = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
+        u_f = PropertyState(q=u_f_e)
+
+    return kf, mu_q, rho_f, phi_L, u_f, phi_L_e, rho_f_e, u_f_e
 
 
 def _evaluate_darcy_flux(
@@ -1124,7 +1136,6 @@ def _evaluate_energy_storage_integrands(
 
 
 def _evaluate_energy_properties(
-    kin: ElementKinematics,
     kin_n: ElementKinematics,
     fluid: dict[str, Any],
     solid: RegionSolidData,
@@ -1140,18 +1151,14 @@ def _evaluate_energy_properties(
     temperature_only: bool = False,
     pressure_only: bool = False,
     fully_coupled: bool = False,
-) -> tuple[PropertyState, EnthalpyResult, npt.NDArray[np.float64] | float]:
-    """Evaluate fluid internal energy and enthalpy at quadrature points: `(u_f, hf_q, lambda_e)`.
+) -> tuple[EnthalpyResult, npt.NDArray[np.float64] | float]:
+    """Evaluate fluid enthalpy at quadrature points and the region's effective thermal conductivity.
 
-    u_f.q.value carries the time history, the tangents are only evaluated at the current iterate.
-    Also calculates the region's effective thermal conductivity.
+    Internal energy is evaluated separately, in `_evaluate_flow_and_storage_state`.
     """
     want_dp = calc_derivatives and (pressure_only or fully_coupled)
     want_dT = calc_derivatives and (temperature_only or fully_coupled)
 
-    u_f = PropertyState(
-        q=get_internal_energy(kin.T_q, kin.p_q, fluid, want_dp, want_dT)
-    )  # fluid internal energy, nq x 1 x 4
     hf_q = get_enthalpy(
         kin_n.p_q, kin_n.T_q, kin_n.T_flow_q, fluid, T_flow_lagged, want_dp, want_dT
     )  # fluid enthalpy, nq x 1 x 1
@@ -1168,7 +1175,7 @@ def _evaluate_energy_properties(
             else (phi_L_n.value * lambda_f * np.eye(nsd) + (1 - phi_L_n.value) * lambda_s)
         )
 
-    return u_f, hf_q, lambda_e
+    return hf_q, lambda_e
 
 
 def _evaluate_advection_terms(
@@ -1674,7 +1681,7 @@ def integrate_residuals(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin,
@@ -1705,9 +1712,8 @@ def integrate_residuals(  # noqa
 
             # ------ Conservation of energy
             if not pressure_only:
-                # internal energy, enthalpy, thermal conductivity
-                u_f, hf_q, lambda_e = _evaluate_energy_properties(
-                    kin,
+                # enthalpy, thermal conductivity
+                hf_q, lambda_e = _evaluate_energy_properties(
                     kin_n,
                     fluid,
                     solid,
@@ -1983,7 +1989,7 @@ def integrate_tangent_matrices(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin_n,
@@ -2039,8 +2045,7 @@ def integrate_tangent_matrices(  # noqa
 
             if not pressure_only:
                 # -------------------------------- Conservation of energy wrt temperature
-                u_f, hf_q, lambda_e = _evaluate_energy_properties(
-                    kin,
+                hf_q, lambda_e = _evaluate_energy_properties(
                     kin_n,
                     fluid,
                     solid,
