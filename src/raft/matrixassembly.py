@@ -895,14 +895,12 @@ def _evaluate_element_kinematics(
 
 def _evaluate_flow_and_storage_state(
     kf_0: npt.NDArray[np.float64] | float,
-    kin: ElementKinematics,
     kin_n: ElementKinematics,
     nodal_kin: ElementKinematics,
     N_q: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     solid: RegionSolidData,
     w0: float,
-    nq: int,
     *,
     is_fracture: bool,
     calc_derivatives: bool = False,
@@ -920,46 +918,16 @@ def _evaluate_flow_and_storage_state(
     PropertyResult,  # rho_f_e (nodal)
     PropertyResult,  # u_f_e (nodal)
 ]:
-    """Evaluate flow properties, porosity, and nodal state in one pass.
+    """Evaluate permeability, porosity, density, viscosity, and internal energy.
 
-    Returns `(kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e)`: `kf`/`mu_q`/`rho_f`/`phi_L` are at
-    quadrature points, `phi_L_e`/`rho_f_e`/`u_f_e` at element nodes (storage terms use mass lumping,
-    so they need nodal values). `nodal_kin` drives the nodal evaluations and differs by call site
-    (residual: full time history via `kin`; tangent: current-iterate-only via `kin_n`).
+    In the fracture case, "porosity" is the fracture aperture.
     """
     want_dp = calc_derivatives and (pressure_only or fully_coupled)
     want_dT = calc_derivatives and (temperature_only or fully_coupled)
 
-    # ---- Quadrature-point flow properties
-    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-    rho_f_q = get_density(kin.T_flow_q, kin.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-    rho_f_q = PropertyResult(rho_f_q.value, rho_f_q.dp[:, :, 0:1], rho_f_q.dT[:, :, 0:1])
-    rho_f = PropertyState(q=rho_f_q)
-
-    # ---- Quadrature-point porosity
-    if is_fracture:
-        # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
-        phi_L_q = w0 * np.ones_like(kin.T_flow_q)
-        phi_L = PropertyState(q=PropertyResult(phi_L_q, np.zeros((nq, 1, 1)), np.zeros((nq, 1, 1))))
-    else:
-        phi_L_q = get_porosity_lagrangian(
-            kin.p_q,
-            N_q @ kin.p_0e,
-            kin.T_flow_q,
-            N_q @ kin.T_0e,
-            solid.phi_0,
-            solid.K_d,
-            solid.biot,
-            solid.alpha_s,
-            T_flow_lagged,
-            volumetric_strain_on,
-        )
-        phi_L_q = PropertyResult(phi_L_q.value, phi_L_q.dp[:, :, 0:1], phi_L_q.dT[:, :, 0:1])
-        phi_L = PropertyState(q=phi_L_q)
-
     # ---- Nodal state
     if is_fracture:
+        # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
         phi_L_e = PropertyResult(
             w0 * np.ones_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe)
         )
@@ -978,6 +946,16 @@ def _evaluate_flow_and_storage_state(
         )
     rho_f_e = get_density(nodal_kin.Te_flow, nodal_kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
     u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT)
+
+    # ---- Quadrature-point flow properties
+    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+
+    rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
+    rho_f = PropertyState(q=rho_f_q)
+
+    phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
+    phi_L = PropertyState(q=phi_L_q)
 
     return kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e
 
@@ -1698,14 +1676,12 @@ def integrate_residuals(  # noqa
             # Evaluate dependent variables at quad points and nodes
             kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
                 kf_0,
-                kin,
                 kin_n,
                 kin,
                 N_q,
                 fluid,
                 solid,
                 w0,
-                nq,
                 is_fracture=is_fracture,
                 volumetric_strain_on=volumetric_strain_on,
             )
@@ -2009,14 +1985,12 @@ def integrate_tangent_matrices(  # noqa
             # Evaluate dependent variables at quad points and nodes
             kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
                 kf_0,
-                kin,
                 kin_n,
                 kin_n,
                 N_q,
                 fluid,
                 solid,
                 w0,
-                nq,
                 is_fracture=is_fracture,
                 T_flow_lagged=T_flow_lagged,
                 volumetric_strain_on=volumetric_strain_on,
