@@ -897,12 +897,19 @@ def _evaluate_flow_properties(
     kin_n: ElementKinematics,
     fluid: dict[str, Any],
     *,
+    calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
+    temperature_only: bool = False,
+    pressure_only: bool = False,
+    fully_coupled: bool = False,
 ) -> tuple[PropertyResult, PropertyResult, PropertyState]:
     """Evaluate permeability, viscosity, density and their derivatives: `(kf, mu_q, rho_f)`."""
+    want_dp = calc_derivatives and (pressure_only or fully_coupled)
+    want_dT = calc_derivatives and (temperature_only or fully_coupled)
+
     kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    rho_f = get_density(kin.T_flow_q, kin.p_q, fluid, T_flow_lagged)
+    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    rho_f = get_density(kin.T_flow_q, kin.p_q, fluid, T_flow_lagged, want_dp, want_dT)
     rho_f = PropertyResult(rho_f.value, rho_f.dp[:, :, 0:1], rho_f.dT[:, :, 0:1])
     return kf, mu_q, PropertyState(q=rho_f)
 
@@ -1001,8 +1008,15 @@ def _evaluate_nodal_state(
     is_fracture: bool,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
+    calc_derivatives: bool = False,
+    temperature_only: bool = False,
+    pressure_only: bool = False,
+    fully_coupled: bool = False,
 ) -> tuple[PropertyResult, PropertyResult, PropertyResult]:
     """Evaluate porosity, density, and internal energy at this element's own nodes."""
+    want_dp = calc_derivatives and (pressure_only or fully_coupled)
+    want_dT = calc_derivatives and (temperature_only or fully_coupled)
+
     if is_fracture:
         phi_L_e = PropertyResult(w0 * np.ones_like(kin.pe), np.zeros_like(kin.pe), np.zeros_like(kin.pe))
     else:
@@ -1018,8 +1032,8 @@ def _evaluate_nodal_state(
             T_flow_lagged,
             volumetric_strain_on,
         )
-    rho_f_e = get_density(kin.Te_flow, kin.pe, fluid, T_flow_lagged)
-    u_f_e = get_internal_energy(kin.Te, kin.pe, fluid)
+    rho_f_e = get_density(kin.Te_flow, kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
+    u_f_e = get_internal_energy(kin.Te, kin.pe, fluid, want_dp, want_dT)
     return phi_L_e, rho_f_e, u_f_e
 
 
@@ -1147,15 +1161,24 @@ def _evaluate_energy_properties(
     is_fracture: bool,
     isotropic_cond: bool,
     T_flow_lagged: bool = False,
+    calc_derivatives: bool = False,
+    temperature_only: bool = False,
+    pressure_only: bool = False,
+    fully_coupled: bool = False,
 ) -> tuple[PropertyState, EnthalpyResult, npt.NDArray[np.float64] | float]:
     """Evaluate fluid internal energy and enthalpy at quadrature points: `(u_f, hf_q, lambda_e)`.
 
     u_f.q.value carries the time history, the tangents are only evaluated at the current iterate.
     Also calculates the region's effective thermal conductivity.
     """
-    u_f = PropertyState(q=get_internal_energy(kin.T_q, kin.p_q, fluid))  # fluid internal energy, nq x 1 x 4
+    want_dp = calc_derivatives and (pressure_only or fully_coupled)
+    want_dT = calc_derivatives and (temperature_only or fully_coupled)
+
+    u_f = PropertyState(
+        q=get_internal_energy(kin.T_q, kin.p_q, fluid, want_dp, want_dT)
+    )  # fluid internal energy, nq x 1 x 4
     hf_q = get_enthalpy(
-        kin_n.p_q, kin_n.T_q, kin_n.T_flow_q, fluid, T_flow_lagged
+        kin_n.p_q, kin_n.T_q, kin_n.T_flow_q, fluid, T_flow_lagged, want_dp, want_dT
     )  # fluid enthalpy, nq x 1 x 1
 
     phi_L_n = phi_L.q_n
@@ -1676,7 +1699,7 @@ def integrate_residuals(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid)
+            kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid, calc_derivatives=False)
             _, q_D, _, _ = _evaluate_darcy_flux(
                 N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=isotropic_perm
             )  # q_D = mass flux
@@ -1699,6 +1722,7 @@ def integrate_residuals(  # noqa
                 w0,
                 is_fracture=is_fracture,
                 volumetric_strain_on=volumetric_strain_on,
+                calc_derivatives=False,
             )
             rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
             phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
@@ -1727,6 +1751,7 @@ def integrate_residuals(  # noqa
                     mesh_data.nsd,
                     is_fracture=is_fracture,
                     isotropic_cond=isotropic_cond,
+                    calc_derivatives=False,
                 )
                 u_f = NodalPropertyState(q=u_f.q, e=u_f_e)
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
@@ -1992,7 +2017,17 @@ def integrate_tangent_matrices(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid, T_flow_lagged=T_flow_lagged)
+            kf, mu_q, rho_f = _evaluate_flow_properties(
+                kf_0,
+                kin,
+                kin_n,
+                fluid,
+                T_flow_lagged=T_flow_lagged,
+                calc_derivatives=True,
+                temperature_only=temperature_only,
+                pressure_only=pressure_only,
+                fully_coupled=fully_coupled,
+            )
             _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
                 N_q,
                 B_q,
@@ -2026,6 +2061,10 @@ def integrate_tangent_matrices(  # noqa
                 is_fracture=is_fracture,
                 T_flow_lagged=T_flow_lagged,
                 volumetric_strain_on=volumetric_strain_on,
+                calc_derivatives=True,
+                temperature_only=temperature_only,
+                pressure_only=pressure_only,
+                fully_coupled=fully_coupled,
             )
             rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
             phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
@@ -2065,6 +2104,10 @@ def integrate_tangent_matrices(  # noqa
                     is_fracture=is_fracture,
                     isotropic_cond=isotropic_cond,
                     T_flow_lagged=T_flow_lagged,
+                    calc_derivatives=True,
+                    temperature_only=temperature_only,
+                    pressure_only=pressure_only,
+                    fully_coupled=fully_coupled,
                 )
                 u_f = NodalPropertyState(q=u_f.q, e=u_f_e)
 

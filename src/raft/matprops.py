@@ -47,6 +47,8 @@ def get_viscosity(
     p: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
+    want_dp: bool = False,
+    want_dT: bool = False,
 ) -> PropertyResult:
     """Get viscosity and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
@@ -70,33 +72,35 @@ def get_viscosity(
     p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
     p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
-    assert AS is not None
+
+    # Value
+    mu = np.empty(T_arr.shape)
+    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+        AS.update(CP.PT_INPUTS, p_i, T_i)
+        mu.flat[i] = AS.viscosity()
 
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a central difference.
     dT = 0.5  # K
     dp = 1  # Pa
 
-    mu = np.empty(T_arr.shape)
-    dmu_dT = np.empty(T_arr.shape)
-    dmu_dp = np.empty(T_arr.shape)
-    for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
-        AS.update(CP.PT_INPUTS, p_i, T_i)
-        mu.flat[i] = AS.viscosity()
+    dmu_dT = np.zeros(T_arr.shape)
+    dmu_dp = np.zeros(T_arr.shape)
 
-        AS.update(CP.PT_INPUTS, p_i, T_i + dT)
-        mu_plus = AS.viscosity()
-        AS.update(CP.PT_INPUTS, p_i, T_i - dT)
-        mu_minus = AS.viscosity()
-        dmu_dT.flat[i] = (mu_plus - mu_minus) / (2 * dT)
+    if want_dp:
+        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+            AS.update(CP.PT_INPUTS, p_i + dp, T_i)
+            mu_plus = AS.viscosity()
+            AS.update(CP.PT_INPUTS, p_i - dp, T_i)
+            mu_minus = AS.viscosity()
+            dmu_dp.flat[i] = (mu_plus - mu_minus) / (2 * dp)
 
-        AS.update(CP.PT_INPUTS, p_i + dp, T_i)
-        mu_plus = AS.viscosity()
-        AS.update(CP.PT_INPUTS, p_i - dp, T_i)
-        mu_minus = AS.viscosity()
-        dmu_dp.flat[i] = (mu_plus - mu_minus) / (2 * dp)
-
-    if T_flow_lagged:
-        dmu_dT = np.zeros(T_arr.shape)
+    if want_dT and not T_flow_lagged:
+        for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
+            AS.update(CP.PT_INPUTS, p_i, T_i + dT)
+            mu_plus = AS.viscosity()
+            AS.update(CP.PT_INPUTS, p_i, T_i - dT)
+            mu_minus = AS.viscosity()
+            dmu_dT.flat[i] = (mu_plus - mu_minus) / (2 * dT)
 
     return PropertyResult(mu.reshape(np.shape(T)), dmu_dp.reshape(np.shape(T)), dmu_dT.reshape(np.shape(T)))
 
@@ -106,6 +110,8 @@ def get_density(
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
+    want_dp: bool = False,
+    want_dT: bool = False,
 ) -> PropertyResult:
     """Get density and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
@@ -130,19 +136,17 @@ def get_density(
     p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
     p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
-    assert AS is not None
 
     rho = np.empty(T_arr.shape)
-    drho_dT = np.empty(T_arr.shape)
-    drho_dp = np.empty(T_arr.shape)
+    drho_dT = np.zeros(T_arr.shape)
+    drho_dp = np.zeros(T_arr.shape)
     for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
         AS.update(CP.PT_INPUTS, p_i, T_i)
         rho.flat[i] = AS.rhomass()
-        drho_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
-        drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
-
-    if T_flow_lagged:
-        drho_dT = np.zeros(T_arr.shape)
+        if want_dp:
+            drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
+        if want_dT and not T_flow_lagged:
+            drho_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
 
     return PropertyResult(
         rho.reshape(np.shape(T)), drho_dp.reshape(np.shape(T)), drho_dT.reshape(np.shape(T))
@@ -226,6 +230,8 @@ def get_enthalpy(
     T_flow: npt.NDArray[np.float64],
     fluid: dict[str, Any],
     T_flow_lagged: bool = False,
+    want_dp: bool = False,
+    want_dT: bool = False,
 ) -> EnthalpyResult:
     """Get the fluid enthalpy at a specified pressure and temperature.
 
@@ -258,13 +264,21 @@ def get_enthalpy(
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
         cp = cp_f * np.ones(np.shape(T))
     else:
-        u = get_internal_energy(T, p, fluid)
-        rho_f_lagged = get_density(T_flow, p, fluid, T_flow_lagged)
-        rho_f_true = get_density(T, p, fluid)
+        u = get_internal_energy(T, p, fluid, want_dp, True)  # Always take dT for cp
+        rho_f_true = get_density(T, p, fluid, want_dp, True)  # Always take dT for cp
+        if T_flow_lagged:
+            rho_f_lagged = get_density(T_flow, p, fluid, T_flow_lagged, want_dp, want_dT)
+        else:
+            rho_f_lagged = rho_f_true
 
         hf = u.value + p / rho_f_lagged.value
-        dhf_dT = u.dT - p / rho_f_lagged.value**2 * rho_f_lagged.dT
-        dhf_dp = u.dp + 1 / rho_f_lagged.value - p / rho_f_lagged.value**2 * rho_f_lagged.dp
+        dhf_dT = np.zeros(hf.shape)
+        dhf_dp = np.zeros(hf.shape)
+        if want_dT and not T_flow_lagged:
+            dhf_dT = u.dT - p / rho_f_lagged.value**2 * rho_f_lagged.dT
+        if want_dp:
+            dhf_dp = u.dp + 1 / rho_f_lagged.value - p / rho_f_lagged.value**2 * rho_f_lagged.dp
+
         cp = u.dT - p / rho_f_true.value**2 * rho_f_true.dT
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
@@ -273,6 +287,8 @@ def get_internal_energy(
     T: npt.NDArray[np.float64],
     p: npt.NDArray[np.float64],  # noqa
     fluid: dict[str, Any],
+    want_dp: bool = False,
+    want_dT: bool = False,
 ) -> PropertyResult:
     """Get the fluid internal energy at a specified pressure and temperature.
 
@@ -296,16 +312,17 @@ def get_internal_energy(
     p_arr = np.broadcast_to(np.asarray(p, dtype=float), T_arr.shape)
     p_arr = np.clip(p_arr, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
-    assert AS is not None
 
     u_f = np.empty(T_arr.shape)
-    duf_dT = np.empty(T_arr.shape)
-    duf_dp = np.empty(T_arr.shape)
+    duf_dT = np.zeros(T_arr.shape)
+    duf_dp = np.zeros(T_arr.shape)
     for i, (T_i, p_i) in enumerate(zip(T_arr.ravel(), p_arr.ravel())):
         AS.update(CP.PT_INPUTS, p_i, T_i)
         u_f.flat[i] = AS.umass()
-        duf_dT.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iT, CP.iP)
-        duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
+        if want_dT:
+            duf_dT.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iT, CP.iP)
+        if want_dp:
+            duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
 
     return PropertyResult(u_f.reshape(np.shape(T)), duf_dp.reshape(np.shape(T)), duf_dT.reshape(np.shape(T)))
 
