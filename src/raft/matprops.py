@@ -69,7 +69,7 @@ def _clip_p(p_in: float) -> float:
 
 def create_abstract_state(fluid_type: str) -> CP.AbstractState:
     """Create a CoolProp AbstractState for a fluid, to be reused across property lookups."""
-    return CP.AbstractState("HEOS", fluid_type)
+    return CP.AbstractState("BICUBIC&HEOS", fluid_type)
 
 
 def get_viscosity(
