@@ -893,27 +893,93 @@ def _evaluate_element_kinematics(
     return ElementKinematics(Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP)
 
 
-def _evaluate_flow_properties(
+def _evaluate_flow_and_storage_state(
     kf_0: npt.NDArray[np.float64] | float,
     kin: ElementKinematics,
     kin_n: ElementKinematics,
+    nodal_kin: ElementKinematics,
+    N_q: npt.NDArray[np.float64],
     fluid: dict[str, Any],
+    solid: RegionSolidData,
+    w0: float,
+    nq: int,
     *,
+    is_fracture: bool,
     calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
     temperature_only: bool = False,
     pressure_only: bool = False,
     fully_coupled: bool = False,
-) -> tuple[PropertyResult, PropertyResult, PropertyState]:
-    """Evaluate permeability, viscosity, density and their derivatives: `(kf, mu_q, rho_f)`."""
+    volumetric_strain_on: bool = True,
+) -> tuple[
+    PropertyResult,  # kf
+    PropertyResult,  # mu_q
+    PropertyState,  # rho_f (quad points)
+    PropertyState,  # phi_L (quad points)
+    PropertyResult,  # phi_L_e (nodal)
+    PropertyResult,  # rho_f_e (nodal)
+    PropertyResult,  # u_f_e (nodal)
+]:
+    """Evaluate flow properties, porosity, and nodal state in one pass.
+
+    Returns `(kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e)`: `kf`/`mu_q`/`rho_f`/`phi_L` are at
+    quadrature points, `phi_L_e`/`rho_f_e`/`u_f_e` at element nodes (storage terms use mass lumping,
+    so they need nodal values). `nodal_kin` drives the nodal evaluations and differs by call site
+    (residual: full time history via `kin`; tangent: current-iterate-only via `kin_n`).
+    """
     want_dp = calc_derivatives and (pressure_only or fully_coupled)
     want_dT = calc_derivatives and (temperature_only or fully_coupled)
 
+    # ---- Quadrature-point flow properties
     kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
     mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-    rho_f = get_density(kin.T_flow_q, kin.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-    rho_f = PropertyResult(rho_f.value, rho_f.dp[:, :, 0:1], rho_f.dT[:, :, 0:1])
-    return kf, mu_q, PropertyState(q=rho_f)
+    rho_f_q = get_density(kin.T_flow_q, kin.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    rho_f_q = PropertyResult(rho_f_q.value, rho_f_q.dp[:, :, 0:1], rho_f_q.dT[:, :, 0:1])
+    rho_f = PropertyState(q=rho_f_q)
+
+    # ---- Quadrature-point porosity
+    if is_fracture:
+        # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
+        phi_L_q = w0 * np.ones_like(kin.T_flow_q)
+        phi_L = PropertyState(q=PropertyResult(phi_L_q, np.zeros((nq, 1, 1)), np.zeros((nq, 1, 1))))
+    else:
+        phi_L_q = get_porosity_lagrangian(
+            kin.p_q,
+            N_q @ kin.p_0e,
+            kin.T_flow_q,
+            N_q @ kin.T_0e,
+            solid.phi_0,
+            solid.K_d,
+            solid.biot,
+            solid.alpha_s,
+            T_flow_lagged,
+            volumetric_strain_on,
+        )
+        phi_L_q = PropertyResult(phi_L_q.value, phi_L_q.dp[:, :, 0:1], phi_L_q.dT[:, :, 0:1])
+        phi_L = PropertyState(q=phi_L_q)
+
+    # ---- Nodal state
+    if is_fracture:
+        phi_L_e = PropertyResult(
+            w0 * np.ones_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe)
+        )
+    else:
+        phi_L_e = get_porosity_lagrangian(
+            nodal_kin.pe,
+            nodal_kin.p_0e,
+            nodal_kin.Te_flow,
+            nodal_kin.T_0e,
+            solid.phi_0,
+            solid.K_d,
+            solid.biot,
+            solid.alpha_s,
+            T_flow_lagged,
+            volumetric_strain_on,
+        )
+    rho_f_e = get_density(nodal_kin.Te_flow, nodal_kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
+    u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT)
+
+    return kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e
 
 
 def _evaluate_darcy_flux(
@@ -966,77 +1032,6 @@ def _evaluate_darcy_flux(
             dqD_dT = rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
 
     return darcy_flux, q_D, dqD_dp, dqD_dT
-
-
-def _evaluate_quad_porosity(
-    kin: ElementKinematics,
-    N_q: npt.NDArray[np.float64],
-    solid: RegionSolidData,
-    w0: float,
-    nq: int,
-    *,
-    is_fracture: bool,
-    T_flow_lagged: bool = False,
-    volumetric_strain_on: bool = True,
-) -> PropertyState:
-    """Evaluate the Lagrangian porosity and derivatives at quadrature points."""
-    if is_fracture:
-        # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
-        phi_L = w0 * np.ones_like(kin.T_flow_q)
-        return PropertyState(q=PropertyResult(phi_L, np.zeros((nq, 1, 1)), np.zeros((nq, 1, 1))))
-
-    phi_L_result = get_porosity_lagrangian(
-        kin.p_q,
-        N_q @ kin.p_0e,
-        kin.T_flow_q,
-        N_q @ kin.T_0e,
-        solid.phi_0,
-        solid.K_d,
-        solid.biot,
-        solid.alpha_s,
-        T_flow_lagged,
-        volumetric_strain_on,
-    )
-    phi_L_result = PropertyResult(phi_L_result.value, phi_L_result.dp[:, :, 0:1], phi_L_result.dT[:, :, 0:1])
-    return PropertyState(q=phi_L_result)
-
-
-def _evaluate_nodal_state(
-    kin: ElementKinematics,  # this element's own kinematics; pass `.n` for the tangent's current-iterate
-    fluid: dict[str, Any],
-    solid: RegionSolidData,
-    w0: float,
-    *,
-    is_fracture: bool,
-    T_flow_lagged: bool = False,
-    volumetric_strain_on: bool = True,
-    calc_derivatives: bool = False,
-    temperature_only: bool = False,
-    pressure_only: bool = False,
-    fully_coupled: bool = False,
-) -> tuple[PropertyResult, PropertyResult, PropertyResult]:
-    """Evaluate porosity, density, and internal energy at this element's own nodes."""
-    want_dp = calc_derivatives and (pressure_only or fully_coupled)
-    want_dT = calc_derivatives and (temperature_only or fully_coupled)
-
-    if is_fracture:
-        phi_L_e = PropertyResult(w0 * np.ones_like(kin.pe), np.zeros_like(kin.pe), np.zeros_like(kin.pe))
-    else:
-        phi_L_e = get_porosity_lagrangian(
-            kin.pe,
-            kin.p_0e,
-            kin.Te_flow,
-            kin.T_0e,
-            solid.phi_0,
-            solid.K_d,
-            solid.biot,
-            solid.alpha_s,
-            T_flow_lagged,
-            volumetric_strain_on,
-        )
-    rho_f_e = get_density(kin.Te_flow, kin.pe, fluid, T_flow_lagged, want_dp, want_dT)
-    u_f_e = get_internal_energy(kin.Te, kin.pe, fluid, want_dp, want_dT)
-    return phi_L_e, rho_f_e, u_f_e
 
 
 def _evaluate_total_energy(
@@ -1701,31 +1696,24 @@ def integrate_residuals(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f = _evaluate_flow_properties(kf_0, kin, kin_n, fluid, calc_derivatives=False)
-            _, q_D, _, _ = _evaluate_darcy_flux(
-                N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=isotropic_perm
-            )  # q_D = mass flux
-
-            phi_L = _evaluate_quad_porosity(
+            kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
+                kf_0,
+                kin,
+                kin_n,
                 kin,
                 N_q,
+                fluid,
                 solid,
                 w0,
                 nq,
                 is_fracture=is_fracture,
                 volumetric_strain_on=volumetric_strain_on,
             )
+            _, q_D, _, _ = _evaluate_darcy_flux(
+                N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=isotropic_perm
+            )  # q_D = mass flux
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
-                kin,
-                fluid,
-                solid,
-                w0,
-                is_fracture=is_fracture,
-                volumetric_strain_on=volumetric_strain_on,
-                calc_derivatives=False,
-            )
             rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
             phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
@@ -2019,12 +2007,19 @@ def integrate_tangent_matrices(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f = _evaluate_flow_properties(
+            kf, mu_q, rho_f, phi_L, phi_L_e, rho_f_e, u_f_e = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin,
                 kin_n,
+                kin_n,
+                N_q,
                 fluid,
+                solid,
+                w0,
+                nq,
+                is_fracture=is_fracture,
                 T_flow_lagged=T_flow_lagged,
+                volumetric_strain_on=volumetric_strain_on,
                 calc_derivatives=True,
                 temperature_only=temperature_only,
                 pressure_only=pressure_only,
@@ -2043,31 +2038,7 @@ def integrate_tangent_matrices(  # noqa
                 want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
             )
 
-            phi_L = _evaluate_quad_porosity(
-                kin,
-                N_q,
-                solid,
-                w0,
-                nq,
-                is_fracture=is_fracture,
-                T_flow_lagged=T_flow_lagged,
-                volumetric_strain_on=volumetric_strain_on,
-            )
-
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            phi_L_e, rho_f_e, u_f_e = _evaluate_nodal_state(
-                kin_n,
-                fluid,
-                solid,
-                w0,
-                is_fracture=is_fracture,
-                T_flow_lagged=T_flow_lagged,
-                volumetric_strain_on=volumetric_strain_on,
-                calc_derivatives=True,
-                temperature_only=temperature_only,
-                pressure_only=pressure_only,
-                fully_coupled=fully_coupled,
-            )
             rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
             phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
             phi_L_n = phi_L.q_n
