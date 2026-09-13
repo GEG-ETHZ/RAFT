@@ -1,13 +1,31 @@
 """All material property correlations are stored here."""
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
 import CoolProp.CoolProp as CP  # noqa: N817
 import numpy as np
 import numpy.typing as npt
+from numba import njit  # type: ignore[import-untyped]
 
-Number = npt.NDArray[np.float64] | float
+# Set clipping max and min to prevent errors during convergence
+_P_MAX = 7e8
+_P_MIN = 1e5
+_T_MAX = 1.9e3
+_T_MIN = 274
+
+
+@functools.lru_cache(maxsize=64)
+def _const_array(value: float, shape: tuple[int, ...]) -> npt.NDArray[np.float64]:
+    """Cached constant array, reused across calls with the same (value, shape) pair.
+
+    Constant array for 0 derivatives in functions. Avoids overhead when called millions
+    of times in the Newton loop. Read-only: never mutate the returned array in place.
+    """
+    arr = np.full(shape, value)
+    arr.flags.writeable = False
+    return arr
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +55,18 @@ class EnthalpyResult:
     cp: npt.NDArray[np.float64]  # specific heat for SUPG calcs
 
 
+@njit  # type: ignore[untyped-decorator]
+def _clip_T(T_in: float) -> float:
+    """Cap limits of T to prevent errors in unconverged intermediate states."""
+    return max(min(T_in, _T_MAX), _T_MIN)
+
+
+@njit  # type: ignore[untyped-decorator]
+def _clip_p(p_in: float) -> float:
+    """Cap limits of p to prevent errors in unconverged intermediate states."""
+    return max(min(p_in, _P_MAX), _P_MIN)
+
+
 def create_abstract_state(fluid_type: str) -> CP.AbstractState:
     """Create a CoolProp AbstractState for a fluid, to be reused across property lookups."""
     return CP.AbstractState("HEOS", fluid_type)
@@ -59,13 +89,9 @@ def get_viscosity(
 
     if viscosity_coefficients != 0:
         mu = np.full(T.shape, viscosity_coefficients)
-        zeros = np.broadcast_to(0.0, T.shape)
+        zeros = _const_array(0.0, T.shape)
         return PropertyResult(mu, zeros, zeros)
 
-    # Cap limits, to keep (T, p) within CoolProp's valid range even for transient/
-    # intermediate solver states (e.g. under-relaxed Newton iterates).
-    T_arr = np.clip(T, 274.0, 600.0)
-    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
 
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a central difference.
@@ -73,13 +99,13 @@ def get_viscosity(
     dp = 1  # Pa
     want_dT_eff = want_dT and not T_flow_lagged
 
-    mu = np.empty(T_arr.shape)
-    dmu_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
-    dmu_dT = np.empty(T_arr.shape) if want_dT_eff else np.broadcast_to(0.0, T_arr.shape)
+    mu = np.empty(T.shape)
+    dmu_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
+    dmu_dT = np.empty(T.shape) if want_dT_eff else _const_array(0.0, T.shape)
 
-    for i in range(T_arr.size):
-        T_i = T_arr.flat[i]
-        p_i = p_arr.flat[i]
+    for i in range(T.size):
+        T_i = _clip_T(T.flat[i])
+        p_i = _clip_p(p.flat[i])
         AS.update(CP.PT_INPUTS, p_i, T_i)
         mu.flat[i] = AS.viscosity()
 
@@ -121,23 +147,21 @@ def get_density(
         Kf = fluid["bulk_mod"]
         density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
 
-        drho_dT = np.broadcast_to(0.0, T.shape) if T_flow_lagged else np.broadcast_to(-rho_0 * alpha, T.shape)
-        drho_dp = np.broadcast_to(rho_0 / Kf, p.shape)
+        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else _const_array(-rho_0 * alpha, T.shape)
+        drho_dp = _const_array(rho_0 / Kf, p.shape)
 
         return PropertyResult(density, drho_dp, drho_dT)
 
-    T_arr = np.clip(T, 274.0, 600.0)
-    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
     want_dT_eff = want_dT and not T_flow_lagged
 
-    rho = np.empty(T_arr.shape)
-    drho_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
-    drho_dT = np.empty(T_arr.shape) if want_dT_eff else np.broadcast_to(0.0, T_arr.shape)
+    rho = np.empty(T.shape)
+    drho_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
+    drho_dT = np.empty(T.shape) if want_dT_eff else _const_array(0.0, T.shape)
 
-    for i in range(T_arr.size):
-        T_i = T_arr.flat[i]
-        p_i = p_arr.flat[i]
+    for i in range(T.size):
+        T_i = _clip_T(T.flat[i])
+        p_i = _clip_p(p.flat[i])
         AS.update(CP.PT_INPUTS, p_i, T_i)
         rho.flat[i] = AS.rhomass()
         if want_dp:
@@ -158,9 +182,8 @@ def get_porosity(
 
     Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
     """
-    exponent = np.clip(-(p - p_0) / K_d, -700, 700)  # exp(709) ~ float64 max
-    phi = 1 - (1 - phi_0) * np.exp(exponent)
-    dphi_dT = np.broadcast_to(0.0, phi.shape)
+    phi = 1 - (1 - phi_0) * np.exp(-(p - p_0) / K_d)
+    dphi_dT = _const_array(0.0, phi.shape)
     dphi_dp = -(phi - 1) / K_d
 
     return PropertyResult(phi, dphi_dp, dphi_dT)
@@ -183,12 +206,12 @@ def get_volumetricstrain(
     primary unknown. `volumetric_strain_on=False` forces zero strain, e.g. for initial conditions.
     """
     if not volumetric_strain_on:
-        zeros = np.broadcast_to(0.0, np.shape(p))
+        zeros = _const_array(0.0, np.shape(p))
         return PropertyResult(zeros, zeros, zeros)
 
     strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
-    dstrain_dT = np.broadcast_to(0.0 if T_flow_lagged else therm_expansion, strain.shape)
-    dstrain_dp = np.broadcast_to(biot / K_d, strain.shape)
+    dstrain_dT = _const_array(0.0 if T_flow_lagged else therm_expansion, strain.shape)
+    dstrain_dp = _const_array(biot / K_d, strain.shape)
 
     return PropertyResult(strain, dstrain_dp, dstrain_dT)
 
@@ -247,10 +270,8 @@ def get_enthalpy(
         Kf = fluid["bulk_mod"]
 
         rho_f = rho_0 * (1 - alpha_f * (T_flow - T0)) * (1 + (p - p0) / Kf)
-        drho_dT = (
-            np.broadcast_to(0.0, T.shape) if T_flow_lagged else np.broadcast_to(-rho_0 * alpha_f, T.shape)
-        )
-        drho_dp = np.broadcast_to(rho_0 / Kf, p.shape)
+        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else _const_array(-rho_0 * alpha_f, T.shape)
+        drho_dp = _const_array(rho_0 / Kf, p.shape)
 
         u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
         duf_dT = cp_f - alpha_f * p / rho_0
@@ -259,7 +280,7 @@ def get_enthalpy(
         hf = u_f + p / rho_f
         dhf_dT = duf_dT - p / rho_f**2 * drho_dT
         dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
-        cp = np.broadcast_to(cp_f, T.shape)
+        cp = _const_array(cp_f, T.shape)
     else:
         u = get_internal_energy(T, p, fluid, want_dp, True)  # Always take dT for cp
         rho_f_true = get_density(T, p, fluid, want_dp, True)  # Always take dT for cp
@@ -304,17 +325,15 @@ def get_internal_energy(
         duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha_f * T[..., 0:1] / rho_0
         return PropertyResult(u_f, duf_dp, duf_dT)
 
-    T_arr = np.clip(T, 274.0, 600.0)
-    p_arr = np.clip(p, 1.0e5, 1.0e8)
     AS = fluid["abstract_state"]
 
-    u_f = np.empty(T_arr.shape)
-    duf_dT = np.empty(T_arr.shape) if want_dT else np.broadcast_to(0.0, T_arr.shape)
-    duf_dp = np.empty(T_arr.shape) if want_dp else np.broadcast_to(0.0, T_arr.shape)
+    u_f = np.empty(T.shape)
+    duf_dT = np.empty(T.shape) if want_dT else _const_array(0.0, T.shape)
+    duf_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
 
-    for i in range(T_arr.size):
-        T_i = T_arr.flat[i]
-        p_i = p_arr.flat[i]
+    for i in range(T.size):
+        T_i = _clip_T(T.flat[i])
+        p_i = _clip_p(p.flat[i])
         AS.update(CP.PT_INPUTS, p_i, T_i)
         u_f.flat[i] = AS.umass()
         if want_dT:
@@ -334,7 +353,7 @@ def get_effective_permeability(
 ) -> PropertyResult:
     """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
     kf_eff = np.asarray(kf, dtype=np.float64)
-    dkf_dT = np.broadcast_to(0.0, T.shape)
-    dkf_dp = np.broadcast_to(0.0, T.shape)
+    dkf_dT = _const_array(0.0, T.shape)
+    dkf_dp = _const_array(0.0, T.shape)
 
     return PropertyResult(kf_eff, dkf_dp, dkf_dT)
