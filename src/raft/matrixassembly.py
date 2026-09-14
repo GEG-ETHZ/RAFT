@@ -914,12 +914,9 @@ def _evaluate_flow_and_storage_state(
 ) -> tuple[
     PropertyResult,  # kf
     PropertyResult,  # mu_q
-    PropertyState,  # rho_f (quad points)
-    PropertyState,  # phi_L (quad points)
-    PropertyState,  # u_f (quad points)
-    PropertyResult,  # phi_L_e (nodal)
-    PropertyResult,  # rho_f_e (nodal)
-    PropertyResult,  # u_f_e (nodal)
+    NodalPropertyState,  # rho_f
+    NodalPropertyState,  # phi_L
+    NodalPropertyState,  # u_f
     npt.NDArray[np.float64],  # rho_dT_true_q, current-iterate density dρ/dT for `get_enthalpy`'s `cp`
 ]:
     """Evaluate permeability, porosity, density, viscosity, and internal energy.
@@ -958,7 +955,7 @@ def _evaluate_flow_and_storage_state(
         )
 
     phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
-    phi_L = PropertyState(q=phi_L_q)
+    phi_L = NodalPropertyState(q=phi_L_q, e=phi_L_e)
 
     # ---- Density
     rho_f_e, rho_dT_true_e = get_density(
@@ -966,20 +963,19 @@ def _evaluate_flow_and_storage_state(
     )
 
     rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
-    rho_f = PropertyState(q=rho_f_q)
+    rho_f = NodalPropertyState(q=rho_f_q, e=rho_f_e)
     rho_dT_true_q = N_q @ rho_dT_true_e[:, 0:1]  # current-iterate only; `cp` never needs history
 
     # ---- Internal energy
     if not pressure_only:
         u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT_props)
-
         u_f_q = PropertyResult(N_q @ u_f_e.value, N_q @ u_f_e.dp[:, 0:1], N_q @ u_f_e.dT[:, 0:1])
-        u_f = PropertyState(q=u_f_q)
     else:
         u_f_e = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
-        u_f = PropertyState(q=u_f_e)
+        u_f_q = u_f_e
+    u_f = NodalPropertyState(q=u_f_q, e=u_f_e)
 
-    return kf, mu_q, rho_f, phi_L, u_f, phi_L_e, rho_f_e, u_f_e, rho_dT_true_q
+    return kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q
 
 
 def _evaluate_darcy_flux(
@@ -1692,17 +1688,7 @@ def integrate_residuals(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            (
-                kf,
-                mu_q,
-                rho_f,
-                phi_L,
-                u_f,
-                phi_L_e,
-                rho_f_e,
-                u_f_e,
-                rho_dT_true_q,
-            ) = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin,
@@ -1719,8 +1705,6 @@ def integrate_residuals(  # noqa
             )  # q_D = mass flux
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
-            phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
 
             # ------ Conservation of mass
@@ -1749,7 +1733,6 @@ def integrate_residuals(  # noqa
                     isotropic_cond=isotropic_cond,
                     calc_derivatives=False,
                 )
-                u_f = NodalPropertyState(q=u_f.q, e=u_f_e)
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
                     kin, phi_L, rho_f, u_f, solid, cv, steady_temp, is_fracture=is_fracture
                 )
@@ -2012,17 +1995,7 @@ def integrate_tangent_matrices(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            (
-                kf,
-                mu_q,
-                rho_f,
-                phi_L,
-                u_f,
-                phi_L_e,
-                rho_f_e,
-                u_f_e,
-                rho_dT_true_q,
-            ) = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin_n,
@@ -2052,8 +2025,6 @@ def integrate_tangent_matrices(  # noqa
             )
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            rho_f = NodalPropertyState(q=rho_f.q, e=rho_f_e)
-            phi_L = NodalPropertyState(q=phi_L.q, e=phi_L_e)
             phi_L_n = phi_L.q_n
             m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
 
@@ -2095,7 +2066,6 @@ def integrate_tangent_matrices(  # noqa
                     pressure_only=pressure_only,
                     fully_coupled=fully_coupled,
                 )
-                u_f = NodalPropertyState(q=u_f.q, e=u_f_e)
 
                 # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight)
                 _, _, integrand_dFCdT_e, integrand_dFCdp_e = _evaluate_energy_storage_integrands(
