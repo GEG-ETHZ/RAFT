@@ -36,13 +36,13 @@ material:
   fluid:
       fluid_type: "Water"         # "Water" or "CO2"
       bulk_mod: 2.10e+9         # Pa
-      density:      0       # kg/m^3
+      density:      950       # kg/m^3
       reference_temperature: 413 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
       therm_expansion: 300.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
-      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
+      viscosity: 1.0e-3       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:

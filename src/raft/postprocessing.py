@@ -348,7 +348,7 @@ def _build_point_scalars(
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
     if controls["output_density"]:
-        rho = get_density(T, p, fluid).value
+        rho = get_density(T, p, fluid)[0].value
         scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
 
     return scalardata_point
