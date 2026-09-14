@@ -58,13 +58,13 @@ class EnthalpyResult:
     cp: npt.NDArray[np.float64]  # specific heat for SUPG calcs
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _clip_T(T_in: float) -> float:
     """Cap limits of T to prevent errors in unconverged intermediate states."""
     return max(min(T_in, _T_MAX), _T_MIN)
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _clip_p(p_in: float) -> float:
     """Cap limits of p to prevent errors in unconverged intermediate states."""
     return max(min(p_in, _P_MAX), _P_MIN)
@@ -181,7 +181,7 @@ def get_density(
     return PropertyResult(rho, drho_dp, drho_dT), drho_dT_true
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _porosity_values(
     p: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],
@@ -210,7 +210,7 @@ def get_porosity(
     return PropertyResult(phi, dphi_dp, dphi_dT)
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _volumetric_strain_values(
     p: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],
@@ -258,7 +258,7 @@ def get_volumetricstrain(
     )
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _porosity_lagrangian_values(
     p: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],

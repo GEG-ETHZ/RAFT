@@ -7,7 +7,7 @@ import numpy.typing as npt
 from numba import njit  # type: ignore[import-untyped]
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _getNmatrix_B8(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     N = np.empty((1, 8))
     n1 = 0.5 - 0.5 * parent_coords
@@ -23,7 +23,7 @@ def _getNmatrix_B8(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return N
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _getNmatrix_T4(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     N = np.empty((1, 4))
     xi = parent_coords[0]
@@ -48,7 +48,7 @@ def _getNmatrix_Q4(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return N
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _getNmatrix_T3(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     N = np.empty((1, 3))
     xi = parent_coords[0]
@@ -59,7 +59,7 @@ def _getNmatrix_T3(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.flo
     return N
 
 
-@njit  # type: ignore[untyped-decorator]
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def _getNmatrix_L2(parent_coords: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     N = np.empty((1, 2))
     xi = parent_coords[0]
