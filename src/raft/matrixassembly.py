@@ -1041,7 +1041,7 @@ def _total_energy_values(
     cp_s: float,
     is_fracture: bool,
 ) -> npt.NDArray[np.float64]:
-    """Total (solid + fluid) stored energy."""
+    """Numba kernal for total stored energy."""
     solid_factor = 0.0 if is_fracture else 1.0
     return (1 - phi_L_value) * rho_s * cp_s * T * solid_factor + phi_L_value * rho_f_value * u_f_value
 
@@ -1056,6 +1056,7 @@ def _evaluate_total_energy(
     is_fracture: bool,
 ) -> npt.NDArray[np.float64]:
     """Evaluate the total (solid + fluid) stored energy."""
+    # Evaluated in numba kernel.
     E: npt.NDArray[np.float64] = _total_energy_values(
         T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, is_fracture
     )
@@ -1075,7 +1076,7 @@ def _mass_storage_integrands_values(
     want_tangent_dp: bool,
     want_tangent_dT: bool,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Mass storage rate (nodal, lumped) and optionally its pressure and temperature tangents."""
+    """Numba kernel for mass storage integrands."""
     f_mass_e = phi_L_e_value * rho_f_e_value
     mass_dot_e = (1 - steady_pres) * (
         cv[0] * f_mass_e[:, 0:1] + cv[1] * f_mass_e[:, 1:2] + cv[2] * f_mass_e[:, 2:3]
@@ -1116,6 +1117,8 @@ def _evaluate_mass_storage_integrands(
     """
     phi_L_e = phi_L.e
     rho_f_e = rho_f.e
+
+    # Evaluated in numba kernel
     mass_dot_e, integrand_dFsdp_e, integrand_dFsdT = _mass_storage_integrands_values(
         phi_L_e.value,
         phi_L_e.dp,
@@ -1154,7 +1157,7 @@ def _energy_storage_integrands_values(
 ) -> tuple[
     npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
 ]:
-    """Nodal (lumped) energy storage rate and optionally its temperature and pressure tangents."""
+    """Numba kernel for energy storage integrands."""
     E_e = _total_energy_values(Te, phi_L_e_value, rho_f_e_value, u_f_e_value, rho_s, cp_s, is_fracture)
     energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
 
@@ -1212,6 +1215,8 @@ def _evaluate_energy_storage_integrands(
     phi_L_e = phi_L.e
     rho_f_e = rho_f.e
     u_f_e = u_f.e
+
+    # Evaluated in numba kernel.
     E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp = _energy_storage_integrands_values(
         kin.Te,
         phi_L_e.value,
