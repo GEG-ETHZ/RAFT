@@ -42,6 +42,18 @@ class PropertyResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DensityResult(PropertyResult):
+    """Density with an extra, never-lagged/zeroed temperature derivative for `cp`.
+
+    `dT` follows the usual `T_flow_lagged` convention (zeroed when T isn't the primary
+    unknown, for Jacobian consistency). `dT_true` is always the genuine dρ/dT at the
+    point evaluated, needed by `get_enthalpy`'s `cp` regardless of that convention.
+    """
+
+    dT_true: npt.NDArray[np.float64]  # noqa: N815
+
+
+@dataclass(frozen=True, slots=True)
 class EnthalpyResult:
     """Fluid enthalpy and its partial derivatives, plus `cp`.
 
@@ -133,11 +145,12 @@ def get_density(
     T_flow_lagged: bool = False,
     want_dp: bool = False,
     want_dT: bool = False,
-) -> PropertyResult:
+) -> DensityResult:
     """Get density and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
     `fluid["density"]` of 0 looks it up from CoolProp instead of treating it as a constant
-    reference density. `T_flow_lagged` zeroes drho_dT when T is not the primary unknown.
+    reference density. `T_flow_lagged` zeroes `dT` when T is not the primary unknown; `dT_true`
+    is always the real derivative at the point evaluated (needed by `get_enthalpy`'s `cp`).
     """
     if fluid["density"] != 0:
         T0 = fluid["reference_temperature"]
@@ -147,17 +160,17 @@ def get_density(
         Kf = fluid["bulk_mod"]
         density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
 
-        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else _const_array(-rho_0 * alpha, T.shape)
+        dT_true = _const_array(-rho_0 * alpha, T.shape)
+        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else dT_true
         drho_dp = _const_array(rho_0 / Kf, p.shape)
 
-        return PropertyResult(density, drho_dp, drho_dT)
+        return DensityResult(density, drho_dp, drho_dT, dT_true)
 
     AS = fluid["abstract_state"]
-    want_dT_eff = want_dT and not T_flow_lagged
 
     rho = np.empty(T.shape)
     drho_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
-    drho_dT = np.empty(T.shape) if want_dT_eff else _const_array(0.0, T.shape)
+    dT_true = np.empty(T.shape) if want_dT else _const_array(0.0, T.shape)
 
     for i in range(T.size):
         T_i = _clip_T(T.flat[i])
@@ -166,10 +179,11 @@ def get_density(
         rho.flat[i] = AS.rhomass()
         if want_dp:
             drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
-        if want_dT_eff:
-            drho_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
+        if want_dT:
+            dT_true.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
 
-    return PropertyResult(rho, drho_dp, drho_dT)
+    drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else dT_true
+    return DensityResult(rho, drho_dp, drho_dT, dT_true)
 
 
 def get_porosity(
@@ -243,61 +257,38 @@ def get_porosity_lagrangian(
 
 
 def get_enthalpy(
+    rho_f: DensityResult,
+    u_f: PropertyResult,
     p: npt.NDArray[np.float64],
-    T: npt.NDArray[np.float64],
-    T_flow: npt.NDArray[np.float64],
-    fluid: dict[str, Any],
-    T_flow_lagged: bool = False,
+    *,
     want_dp: bool = False,
     want_dT: bool = False,
+    want_cp: bool = False,
 ) -> EnthalpyResult:
-    """Get the fluid enthalpy at a specified pressure and temperature.
+    """Get fluid enthalpy from already-evaluated density and internal energy.
 
-    hf = u_f(p,T) + p / rho_f(p, T_flow)
-    Build from components in both linearized and CoolProp branches. The CoolProp
-    branch follows the same split to allow for lagging, but using other CoolProp
-    function rather than call enthalpy directly.
+    hf = u_f + p / rho_f. Takes `rho_f`/`u_f` as inputs (rather than evaluating them from
+    T/p itself) so callers can reuse a single density/internal-energy evaluation across
+    enthalpy, storage, and flux terms instead of re-deriving them per term.
 
-    Also returns `cp`, (∂h/∂T)_p with the pressure-work term stripped out (e.g. for SUPG's
-    Peclet number).
+    `rho_f.dT` may follow a `T_flow_lagged` convention (zeroed when T isn't the primary
+    unknown) for `dhf_dT`'s sake; `cp`, (∂h/∂T)_p with the pressure-work term stripped out
+    (e.g. for SUPG's Peclet number), instead always uses `rho_f.dT_true`, since `cp` is a
+    physical quantity independent of that Jacobian convention. Set `want_cp=True` only when
+    the caller actually uses `.cp` (it requires `u_f.dT`/`rho_f.dT_true` to have been computed).
     """
-    if fluid["density"] != 0:
-        rho_0 = fluid["density"]
-        T0 = fluid["reference_temperature"]
-        p0 = fluid["reference_pressure"]
-        alpha_f = fluid["therm_expansion"]
-        cp_f = fluid["specific_heat"]
-        Kf = fluid["bulk_mod"]
+    hf = u_f.value + p / rho_f.value
+    dhf_dT = np.zeros(hf.shape)
+    dhf_dp = np.zeros(hf.shape)
+    if want_dT:
+        dhf_dT = u_f.dT - p / rho_f.value**2 * rho_f.dT
+    if want_dp:
+        dhf_dp = u_f.dp + 1 / rho_f.value - p / rho_f.value**2 * rho_f.dp
 
-        rho_f = rho_0 * (1 - alpha_f * (T_flow - T0)) * (1 + (p - p0) / Kf)
-        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else _const_array(-rho_0 * alpha_f, T.shape)
-        drho_dp = _const_array(rho_0 / Kf, p.shape)
+    cp = np.zeros(hf.shape)
+    if want_cp:
+        cp = u_f.dT - p / rho_f.value**2 * rho_f.dT_true
 
-        u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
-        duf_dT = cp_f - alpha_f * p / rho_0
-        duf_dp = p / (Kf * rho_0) - alpha_f * T / rho_0
-
-        hf = u_f + p / rho_f
-        dhf_dT = duf_dT - p / rho_f**2 * drho_dT
-        dhf_dp = duf_dp + 1 / rho_f - p / rho_f**2 * drho_dp
-        cp = _const_array(cp_f, T.shape)
-    else:
-        u = get_internal_energy(T, p, fluid, want_dp, True)  # Always take dT for cp
-        rho_f_true = get_density(T, p, fluid, want_dp, True)  # Always take dT for cp
-        if T_flow_lagged:
-            rho_f_lagged = get_density(T_flow, p, fluid, T_flow_lagged, want_dp, want_dT)
-        else:
-            rho_f_lagged = rho_f_true
-
-        hf = u.value + p / rho_f_lagged.value
-        dhf_dT = np.zeros(hf.shape)
-        dhf_dp = np.zeros(hf.shape)
-        if want_dT:
-            dhf_dT = u.dT - p / rho_f_lagged.value**2 * rho_f_lagged.dT
-        if want_dp:
-            dhf_dp = u.dp + 1 / rho_f_lagged.value - p / rho_f_lagged.value**2 * rho_f_lagged.dp
-
-        cp = u.dT - p / rho_f_true.value**2 * rho_f_true.dT
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
 
