@@ -181,21 +181,57 @@ def get_density(
     return PropertyResult(rho, drho_dp, drho_dT), drho_dT_true
 
 
+@njit  # type: ignore[untyped-decorator]
+def _porosity_values(
+    p: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    phi_0: float,
+    K_d: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Porosity evaluation kernel.
+
+    Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
+    """
+    phi = 1.0 - (1.0 - phi_0) * np.exp(-(p - p_0) / K_d)
+    dphi_dp = -(phi - 1.0) / K_d
+    return phi, dphi_dp
+
+
 def get_porosity(
     p: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],
     phi_0: float,
     K_d: float,
 ) -> PropertyResult:
-    """Get the current porosity based on the undeformed reference state.
-
-    Assume alpha_m = alpha_s and temperature therefore does not affect porosity.
-    """
-    phi = 1 - (1 - phi_0) * np.exp(-(p - p_0) / K_d)
+    """Get the current porosity based on the undeformed reference state."""
+    phi, dphi_dp = _porosity_values(p, p_0, phi_0, K_d)
     dphi_dT = _const_array(0.0, phi.shape)
-    dphi_dp = -(phi - 1) / K_d
 
     return PropertyResult(phi, dphi_dp, dphi_dT)
+
+
+@njit  # type: ignore[untyped-decorator]
+def _volumetric_strain_values(
+    p: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    T_0: npt.NDArray[np.float64],
+    K_d: float,
+    biot: float,
+    therm_expansion: float,
+    T_flow_lagged: bool,
+    volumetric_strain_on: bool,
+) -> tuple[npt.NDArray[np.float64], float, float]:
+    """Volumetric strain kernel."""
+    if volumetric_strain_on:
+        strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
+        dstrain_dp = biot / K_d
+        dstrain_dT = 0.0 if T_flow_lagged else therm_expansion
+    else:
+        strain = np.zeros_like(p)
+        dstrain_dp = 0.0
+        dstrain_dT = 0.0
+    return strain, dstrain_dp, dstrain_dT
 
 
 def get_volumetricstrain(
@@ -214,15 +250,39 @@ def get_volumetricstrain(
     Non-volumetric sources are neglected. `T_flow_lagged` zeroes dstrain_dT when T is not the
     primary unknown. `volumetric_strain_on=False` forces zero strain, e.g. for initial conditions.
     """
-    if not volumetric_strain_on:
-        zeros = _const_array(0.0, np.shape(p))
-        return PropertyResult(zeros, zeros, zeros)
+    strain, dstrain_dp, dstrain_dT = _volumetric_strain_values(
+        p, p_0, T, T_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on
+    )
+    return PropertyResult(
+        strain, _const_array(dstrain_dp, strain.shape), _const_array(dstrain_dT, strain.shape)
+    )
 
-    strain = biot / K_d * (p - p_0) + therm_expansion * (T - T_0)
-    dstrain_dT = _const_array(0.0 if T_flow_lagged else therm_expansion, strain.shape)
-    dstrain_dp = _const_array(biot / K_d, strain.shape)
 
-    return PropertyResult(strain, dstrain_dp, dstrain_dT)
+@njit  # type: ignore[untyped-decorator]
+def _porosity_lagrangian_values(
+    p: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    T_0: npt.NDArray[np.float64],
+    phi_0: float,
+    K_d: float,
+    biot: float,
+    therm_expansion: float,
+    T_flow_lagged: bool,
+    volumetric_strain_on: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Kernel for lagrangian porosity: phi_L = phi * (1 + volumetric strain)."""
+    phi, dphi_dp = _porosity_values(p, p_0, phi_0, K_d)
+    strain, dstrain_dp, dstrain_dT = _volumetric_strain_values(
+        p, p_0, T, T_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on
+    )
+
+    one_plus_strain = 1.0 + strain
+    phi_L = phi * one_plus_strain
+    dphi_L_dp = dphi_dp * one_plus_strain + phi * dstrain_dp
+    dphi_L_dT = phi * dstrain_dT  # d_phi_dT = 0 assuming alpha_m = alpha_s
+
+    return phi_L, dphi_L_dp, dphi_L_dT
 
 
 def get_porosity_lagrangian(
@@ -237,17 +297,15 @@ def get_porosity_lagrangian(
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
 ) -> PropertyResult:
-    """Get the Lagrangian porosity which includes the volumetric strain in the deformed state."""
-    phi = get_porosity(p, p_0, phi_0, K_d)
-    strain = get_volumetricstrain(
-        p, p_0, T, T_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on
+    """Get the Lagrangian porosity which includes the volumetric strain in the deformed state.
+
+    Non-volumetric strain sources are neglected. `T_flow_lagged` zeroes dphi_L/dT when T is
+    not the primary unknown. `volumetric_strain_on=False` forces zero strain, e.g. for
+    initial conditions.
+    """
+    phi_L, dphi_L_dp, dphi_L_dT = _porosity_lagrangian_values(
+        p, p_0, T, T_0, phi_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on
     )
-
-    # phi_L = phi * (1 + strain), by the product rule:
-    phi_L = phi.value * (1 + strain.value)
-    dphi_L_dT = phi.dT * (1 + strain.value) + phi.value * strain.dT
-    dphi_L_dp = phi.dp * (1 + strain.value) + phi.value * strain.dp
-
     return PropertyResult(phi_L, dphi_L_dp, dphi_L_dT)
 
 
