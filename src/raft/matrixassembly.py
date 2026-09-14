@@ -1485,6 +1485,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     pressure_coupling: bool,
     thermal_coupling: bool,
     advection_on: bool,
+    T_flow_lagged: bool,
 ) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
     """Integrate the fracture-matrix leak-off/convective-exchange flux into residual vectors.
 
@@ -1542,6 +1543,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
                     kf_perp,
                     mu_q,
                     rhof_q,
+                    T_flow_lagged=T_flow_lagged,
                 )
                 Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
                 matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
@@ -1815,6 +1817,7 @@ def integrate_residuals(  # noqa
                 solid,
                 w0,
                 is_fracture=is_fracture,
+                T_flow_lagged=temperature_only,
                 pressure_only=pressure_only,
                 volumetric_strain_on=volumetric_strain_on,
             )
@@ -1910,6 +1913,7 @@ def integrate_residuals(  # noqa
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
                     advection_on=advection_on,
+                    T_flow_lagged=temperature_only,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
 
