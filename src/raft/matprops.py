@@ -126,56 +126,212 @@ def get_viscosity(
     return PropertyResult(mu, dmu_dp, dmu_dT)
 
 
-def get_density(
+def _eos_linear_values(
     T: npt.NDArray[np.float64],
-    p: npt.NDArray[np.float64],  # noqa
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
     fluid: dict[str, Any],
+    T_flow_lagged: bool,
+    need_density: bool,
+    need_u: bool,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Closed-form (non-CoolProp) `get_EOS` branch for a linear/constant-density fluid model.
+
+    No `AbstractState` involved, so there's no update-count concern here; density and internal
+    energy's formulas are just ported directly from the pre-`get_EOS` `get_density`/
+    `get_internal_energy`, gated by the same `need_density`/`need_u` flags for consistency.
+    """
+    rho_0 = fluid["density"]
+    T0 = fluid["reference_temperature"]
+    p0 = fluid["reference_pressure"]
+    alpha = fluid["therm_expansion"]
+    Kf = fluid["bulk_mod"]
+    cp_f = fluid["specific_heat"]
+
+    rho_value = drho_dp = drho_dT = drho_dT_true = rho_true_value = _EMPTY
+    if need_density:
+        rho_value = rho_0 * (1 - alpha * (T_flow - T0)) * (1 + 1 / Kf * (p - p0))
+        drho_dT_true = _const_array(-rho_0 * alpha, T_flow.shape)
+        drho_dT = _const_array(0.0, T_flow.shape) if T_flow_lagged else drho_dT_true
+        drho_dp = _const_array(rho_0 / Kf, p.shape)
+        rho_true_value = rho_value
+
+    u_value = duf_dp = duf_dT = _EMPTY
+    if need_u:
+        u_value = cp_f * T - alpha * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
+        duf_dT = cp_f - alpha * p[..., 0:1] / rho_0
+        duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha * T[..., 0:1] / rho_0
+
+    if need_density and need_u:
+        # Density at the same point internal energy uses (T, not T_flow), for cp's exact fidelity.
+        # Cheap either way (closed-form), so computed here whenever both are wanted, regardless
+        # of whether `T` and `T_flow` actually differ (`T_flow_lagged`).
+        rho_true_value = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
+        drho_dT_true = _const_array(-rho_0 * alpha, T.shape)
+
+    return rho_value, drho_dp, drho_dT, drho_dT_true, u_value, duf_dp, duf_dT, rho_true_value
+
+
+def _eos_coolprop_values(  # noqa
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    T_flow_lagged: bool,
+    need_density: bool,
+    need_u: bool,
+    want_dp: bool,
+    want_dT: bool,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """CoolProp `get_EOS` branch: one `AbstractState` update per distinct point actually needed.
+
+    Density is read at `T_flow`; internal energy (and the "true", never-`T_flow_lagged`
+    density reading `cp` needs) at `T`. When `T_flow_lagged=False` those coincide (the
+    caller's contract: `T_flow` aliases `T`), so density's own update is reused for `u` too
+    instead of updating `AbstractState` a second time to the same point.
+    """
+    AS = fluid["abstract_state"]
+    same_point = not T_flow_lagged
+
+    rho_value = np.empty(T_flow.shape) if need_density else _EMPTY
+    drho_dp = np.empty(T_flow.shape) if need_density and want_dp else _const_array(0.0, T_flow.shape)
+    drho_dT_true = np.empty(T_flow.shape) if need_density and want_dT else _const_array(0.0, T_flow.shape)
+
+    u_value = np.empty(T.shape) if need_u else _EMPTY
+    duf_dT = np.empty(T.shape) if need_u and want_dT else _const_array(0.0, T.shape)
+    duf_dp = np.empty(T.shape) if need_u and want_dp else _const_array(0.0, T.shape)
+
+    # Only need a genuinely separate "at T" density reading when `u`'s point differs from
+    # density's own point - piggybacked on `u`'s update below, for free.
+    need_rho_true_at_u_point = need_density and need_u and not same_point
+    rho_true_value = np.empty(T.shape) if need_rho_true_at_u_point else rho_value
+    drho_true_dT = np.empty(T.shape) if need_rho_true_at_u_point and want_dT else _const_array(0.0, T.shape)
+
+    for i in range(T.size):
+        if need_density:
+            T_flow_i = _clip_T(T_flow.flat[i])
+            p_i = _clip_p(p.flat[i])
+            AS.update(CP.PT_INPUTS, p_i, T_flow_i)
+            rho_value.flat[i] = AS.rhomass()
+            if want_dp:
+                drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
+            if want_dT:
+                drho_dT_true.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
+
+        if need_u:
+            if not (need_density and same_point):
+                T_i = _clip_T(T.flat[i])
+                p_i = _clip_p(p.flat[i])
+                AS.update(CP.PT_INPUTS, p_i, T_i)
+            # else: `AS` is already at (p_i, T_flow_i) == (p_i, T_i) from the density read above.
+            u_value.flat[i] = AS.umass()
+            if want_dT:
+                duf_dT.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iT, CP.iP)
+            if want_dp:
+                duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
+
+            if need_rho_true_at_u_point:
+                rho_true_value.flat[i] = AS.rhomass()
+                if want_dT:
+                    drho_true_dT.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
+
+    if need_rho_true_at_u_point:
+        drho_dT_true = drho_true_dT
+    drho_dT = _const_array(0.0, T_flow.shape) if T_flow_lagged else drho_dT_true
+
+    return rho_value, drho_dp, drho_dT, drho_dT_true, u_value, duf_dp, duf_dT, rho_true_value
+
+
+def get_EOS(  # noqa: N802
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    *,
     T_flow_lagged: bool = False,
+    want_density: bool = False,
+    want_internal_energy: bool = False,
+    want_enthalpy: bool = False,
     want_dp: bool = False,
     want_dT: bool = False,
 ) -> tuple[
-    PropertyResult,  # rho
-    npt.NDArray[np.float64],  # drho_dT_true, the real dρ/dT, never zeroed by `T_flow_lagged`
+    PropertyResult,  # rho, at T_flow; `_EMPTY`s unless `want_density`
+    PropertyResult,  # u, at T; `_EMPTY`s unless `want_internal_energy`
+    EnthalpyResult,  # hf, with `cp`; `_EMPTY`s unless `want_enthalpy`
 ]:
-    """Get density and its T/p derivatives, at temperature T [K] and pressure p [Pa].
+    """Get density, internal energy, and/or enthalpy, sharing one `AbstractState` update per point.
 
-    `fluid["density"]` of 0 looks it up from CoolProp instead of treating it as a constant
-    reference density. `T_flow_lagged` zeroes `dT` when T is not the primary unknown.
-    `drho_dT_true` is always the real derivative at the point evaluated, needed by
-    `get_enthalpy`'s `cp` regardless of that convention.
+    Density is evaluated at `T_flow` (the flow-property convention used throughout this
+    codebase); internal energy (and thus enthalpy, `hf = u + p / rho`) is evaluated at `T`.
+    These coincide whenever `T_flow_lagged=False` (by the caller's own contract - `T_flow`
+    aliases `T` for `fully_coupled`), collapsing this to a single evaluated point and a single
+    `AbstractState.update()` per node; only `T_flow_lagged=True` (the staggered solver's
+    temperature-only step) genuinely needs two points; even then, `want_density` and
+    `want_internal_energy`/`want_enthalpy` together still cost only one update per point each,
+    rather than the up to 3-4 separate `AbstractState` sweeps this replaces.
+
+    `hf.cp` uses density's value/derivative at the same point internal energy was evaluated
+    at (exact, not `T_flow`-approximated), which `want_enthalpy` already visits for `u` -
+    entirely internal here, so there's nothing extra for the caller to thread through.
+
+    Set only the `want_*` flags actually needed: each gates real extra work, not just what's
+    returned - e.g. `want_internal_energy=False` skips evaluating `u` entirely, even if
+    `want_enthalpy=True` needs it internally.
     """
+    need_density = want_density or want_enthalpy
+    need_u = want_internal_energy or want_enthalpy
+
     if fluid["density"] != 0:
-        T0 = fluid["reference_temperature"]
-        p0 = fluid["reference_pressure"]
-        alpha = fluid["therm_expansion"]
-        rho_0 = fluid["density"]
-        Kf = fluid["bulk_mod"]
-        density = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
+        rho_value, drho_dp, drho_dT, drho_dT_true, u_value, duf_dp, duf_dT, rho_true_value = (
+            _eos_linear_values(T, T_flow, p, fluid, T_flow_lagged, need_density, need_u)
+        )
+    else:
+        rho_value, drho_dp, drho_dT, drho_dT_true, u_value, duf_dp, duf_dT, rho_true_value = (
+            _eos_coolprop_values(T, T_flow, p, fluid, T_flow_lagged, need_density, need_u, want_dp, want_dT)
+        )
 
-        drho_dT_true = _const_array(-rho_0 * alpha, T.shape)
-        drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else drho_dT_true
-        drho_dp = _const_array(rho_0 / Kf, p.shape)
+    rho = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
+    if want_density:
+        rho = PropertyResult(rho_value, drho_dp, drho_dT)
 
-        return PropertyResult(density, drho_dp, drho_dT), drho_dT_true
+    u = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
+    if want_internal_energy:
+        u = PropertyResult(u_value, duf_dp, duf_dT)
 
-    AS = fluid["abstract_state"]
+    hf = EnthalpyResult(_EMPTY, _EMPTY, _EMPTY, _EMPTY)
+    if want_enthalpy:
+        rho_for_hf = PropertyResult(rho_value, drho_dp, drho_dT)
+        u_for_hf = PropertyResult(u_value, duf_dp, duf_dT)
+        hf = get_enthalpy(
+            rho_for_hf,
+            u_for_hf,
+            p,
+            rho_true_value=rho_true_value,
+            rho_dT_true=drho_dT_true,
+            want_dp=want_dp,
+            want_dT=want_dT,
+            want_cp=True,
+        )
 
-    rho = np.empty(T.shape)
-    drho_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
-    drho_dT_true = np.empty(T.shape) if want_dT else _const_array(0.0, T.shape)
-
-    for i in range(T.size):
-        T_i = _clip_T(T.flat[i])
-        p_i = _clip_p(p.flat[i])
-        AS.update(CP.PT_INPUTS, p_i, T_i)
-        rho.flat[i] = AS.rhomass()
-        if want_dp:
-            drho_dp.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iP, CP.iT)
-        if want_dT:
-            drho_dT_true.flat[i] = AS.first_partial_deriv(CP.iDmass, CP.iT, CP.iP)
-
-    drho_dT = _const_array(0.0, T.shape) if T_flow_lagged else drho_dT_true
-    return PropertyResult(rho, drho_dp, drho_dT), drho_dT_true
+    return rho, u, hf
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
@@ -337,13 +493,18 @@ def _enthalpy_values(
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def _enthalpy_cp_values(
-    rho_value: npt.NDArray[np.float64],
+    rho_true_value: npt.NDArray[np.float64],
     u_dT: npt.NDArray[np.float64],
     p: npt.NDArray[np.float64],
     rho_dT_true: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
-    """cp, (dh/dT)_p with the pressure-work term stripped out (e.g. for SUPG's Peclet number)."""
-    return u_dT - p / rho_value**2 * rho_dT_true
+    """cp, (dh/dT)_p with the pressure-work term stripped out (e.g. for SUPG's Peclet number).
+
+    Uses density's value and derivative at the true (never-lagged) point, not the possibly
+    T_flow-evaluated `rho_f` passed to `hf` - `cp` is a physical quantity independent of
+    the `T_flow_lagged` Jacobian convention, at whatever point it happens to be evaluated at.
+    """
+    return u_dT - p / rho_true_value**2 * rho_dT_true
 
 
 def get_enthalpy(
@@ -351,6 +512,7 @@ def get_enthalpy(
     u_f: PropertyResult,
     p: npt.NDArray[np.float64],
     *,
+    rho_true_value: npt.NDArray[np.float64] = _EMPTY,
     rho_dT_true: npt.NDArray[np.float64] = _EMPTY,
     want_dp: bool = False,
     want_dT: bool = False,
@@ -363,9 +525,9 @@ def get_enthalpy(
     enthalpy, storage, and flux terms instead of re-deriving them per term.
 
     `rho_f.dT` may follow a `T_flow_lagged` convention (zeroed when T isn't the primary
-    unknown) for `dhf_dT`'s sake; `cp`, (∂h/∂T)_p with the pressure-work term stripped out
-    (e.g. for SUPG's Peclet number), instead always uses `rho_dT_true` (from `get_density`),
-    since `cp` is a physical quantity independent of that Jacobian convention.
+    unknown) for `dhf_dT`'s sake; `cp` instead always uses `rho_true_value`/`rho_dT_true`
+    (from `get_EOS`), density's value/derivative at the true, never-lagged point, since `cp`
+    is a physical quantity independent of that Jacobian convention.
     """
     hf, dhf_dp, dhf_dT = _enthalpy_values(
         rho_f.value, rho_f.dp, rho_f.dT, u_f.value, u_f.dp, u_f.dT, p, want_dp, want_dT
@@ -373,52 +535,9 @@ def get_enthalpy(
 
     cp = np.zeros(hf.shape)
     if want_cp:
-        cp = _enthalpy_cp_values(rho_f.value, u_f.dT, p, rho_dT_true)
+        cp = _enthalpy_cp_values(rho_true_value, u_f.dT, p, rho_dT_true)
 
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
-
-
-def get_internal_energy(
-    T: npt.NDArray[np.float64],
-    p: npt.NDArray[np.float64],  # noqa
-    fluid: dict[str, Any],
-    want_dp: bool = False,
-    want_dT: bool = False,
-) -> PropertyResult:
-    """Get the fluid internal energy at a specified pressure and temperature.
-
-    Integrated from du_f = (cp_f - alpha_f/rho_0 * p) dT + (p/(K_f*rho_0) - alpha_f/rho_0 * T) dp,
-    linearized at the reference density rho_0 to match get_density.
-    Density is used as the sentinel evaluate u_f directly from CoolProp at (T, p).
-    """
-    if fluid["density"] != 0:
-        rho_0 = fluid["density"]
-        alpha_f = fluid["therm_expansion"]
-        cp_f = fluid["specific_heat"]
-        Kf = fluid["bulk_mod"]
-
-        u_f = cp_f * T - alpha_f * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
-        duf_dT = cp_f - alpha_f * p[..., 0:1] / rho_0
-        duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha_f * T[..., 0:1] / rho_0
-        return PropertyResult(u_f, duf_dp, duf_dT)
-
-    AS = fluid["abstract_state"]
-
-    u_f = np.empty(T.shape)
-    duf_dT = np.empty(T.shape) if want_dT else _const_array(0.0, T.shape)
-    duf_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)
-
-    for i in range(T.size):
-        T_i = _clip_T(T.flat[i])
-        p_i = _clip_p(p.flat[i])
-        AS.update(CP.PT_INPUTS, p_i, T_i)
-        u_f.flat[i] = AS.umass()
-        if want_dT:
-            duf_dT.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iT, CP.iP)
-        if want_dp:
-            duf_dp.flat[i] = AS.first_partial_deriv(CP.iUmass, CP.iP, CP.iT)
-
-    return PropertyResult(u_f, duf_dp, duf_dT)
 
 
 def get_effective_permeability(

@@ -16,10 +16,8 @@ from scipy.sparse import csc_matrix, hstack, vstack
 from .matprops import (
     EnthalpyResult,
     PropertyResult,
-    get_density,
     get_effective_permeability,
-    get_enthalpy,
-    get_internal_energy,
+    get_EOS,
     get_porosity_lagrangian,
     get_viscosity,
 )
@@ -95,6 +93,31 @@ class NodalPropertyState(PropertyState):
     def e_n(self) -> PropertyResult:
         """Current-iterate (column 0) slice of the nodal value."""
         return PropertyResult(self.e.value[:, 0:1], self.e.dp[:, 0:1], self.e.dT[:, 0:1])
+
+
+@dataclass(frozen=True, slots=True)
+class NodalEnthalpyState:
+    """`NodalPropertyState`'s counterpart for `EnthalpyResult`, which also carries `cp`.
+
+    Same quad point (`.q`)/element node (`.e`) shape as `NodalPropertyState`, evaluated once at
+    nodes in `_evaluate_flow_and_storage_state` and interpolated to quad points from there,
+    rather than re-derived per consumer (`_evaluate_advection_terms`'s `.e_n`/`.q_n`).
+    """
+
+    q: EnthalpyResult
+    e: EnthalpyResult
+
+    @property
+    def q_n(self) -> EnthalpyResult:
+        """Current-iterate (column 0) slice of the quadrature-point value."""
+        q = self.q
+        return EnthalpyResult(q.value[:, :, 0:1], q.dp[:, :, 0:1], q.dT[:, :, 0:1], q.cp[:, :, 0:1])
+
+    @property
+    def e_n(self) -> EnthalpyResult:
+        """Current-iterate (column 0) slice of the nodal value."""
+        e = self.e
+        return EnthalpyResult(e.value[:, 0:1], e.dp[:, 0:1], e.dT[:, 0:1], e.cp[:, 0:1])
 
 
 @dataclass(frozen=True, slots=True)
@@ -836,11 +859,16 @@ def _evaluate_fracture_advection_flux(
         # Use matrix properties
         T_eval, T_flow_eval, p_eval = T_m_q, T_flow_mq, p_m_q
 
-    u_eval = get_internal_energy(T_eval, p_eval, fluid, want_tangent, want_tangent)
-    rho_eval, _ = get_density(
-        T_flow_eval if T_flow_lagged else T_eval, p_eval, fluid, T_flow_lagged, want_tangent, want_tangent
+    _, _, hf_q = get_EOS(
+        T_eval,
+        T_flow_eval,
+        p_eval,
+        fluid,
+        T_flow_lagged=T_flow_lagged,
+        want_enthalpy=True,
+        want_dp=want_tangent,
+        want_dT=want_tangent,
     )
-    hf_q = get_enthalpy(rho_eval, u_eval, p_eval, want_dp=want_tangent, want_dT=want_tangent)
     flux_adv_T_q = hf_q.value * flux_p_q  # Advective heat flux
 
     dqadv_dTf = dqadv_dTm = dqadv_dpf = dqadv_dpm = _EMPTY
@@ -918,7 +946,7 @@ def _evaluate_flow_and_storage_state(
     NodalPropertyState,  # rho_f
     NodalPropertyState,  # phi_L
     NodalPropertyState,  # u_f
-    npt.NDArray[np.float64],  # rho_dT_true_q, current-iterate density dρ/dT for `get_enthalpy`'s `cp`
+    NodalEnthalpyState,  # hf
 ]:
     """Evaluate permeability, porosity, density, viscosity, and internal energy.
 
@@ -926,9 +954,6 @@ def _evaluate_flow_and_storage_state(
     """
     want_dp = calc_derivatives and (pressure_only or fully_coupled)
     want_dT = calc_derivatives and (temperature_only or fully_coupled)
-    # `get_enthalpy`'s `cp` always needs density/internal-energy's real temperature derivative,
-    # regardless of whether this call is building a tangent - so force it on whenever the
-    # energy equation will actually run (i.e. whenever this isn't a pressure-only pass).
     want_dT_props = want_dT or not pressure_only
 
     # ---- Quadrature-point flow properties
@@ -958,25 +983,38 @@ def _evaluate_flow_and_storage_state(
     phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
     phi_L = NodalPropertyState(q=phi_L_q, e=phi_L_e)
 
-    # ---- Density
-    rho_f_e, rho_dT_true_e = get_density(
-        nodal_kin.Te_flow, nodal_kin.pe, fluid, T_flow_lagged, want_dp, want_dT_props
+    # ---- Equation of state variables Density, internal energy, and enthalpy.
+    # Density is evaluated with T_flow for consistency with the mass flow rates.
+    # Internal energy is evaluated with T, the current temperature field.
+    # Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
+    rho_f_e, u_f_e, hf_e = get_EOS(
+        nodal_kin.Te,
+        nodal_kin.Te_flow,
+        nodal_kin.pe,
+        fluid,
+        T_flow_lagged=T_flow_lagged,
+        want_density=True,
+        want_internal_energy=not pressure_only,
+        want_enthalpy=not pressure_only,
+        want_dp=want_dp,
+        want_dT=want_dT_props,
     )
 
     rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
     rho_f = NodalPropertyState(q=rho_f_q, e=rho_f_e)
-    rho_dT_true_q = N_q @ rho_dT_true_e[:, 0:1]  # current-iterate only; `cp` never needs history
 
-    # ---- Internal energy
     if not pressure_only:
-        u_f_e = get_internal_energy(nodal_kin.Te, nodal_kin.pe, fluid, want_dp, want_dT_props)
         u_f_q = PropertyResult(N_q @ u_f_e.value, N_q @ u_f_e.dp[:, 0:1], N_q @ u_f_e.dT[:, 0:1])
+        hf_q = EnthalpyResult(
+            N_q @ hf_e.value, N_q @ hf_e.dp[:, 0:1], N_q @ hf_e.dT[:, 0:1], N_q @ hf_e.cp[:, 0:1]
+        )
     else:
-        u_f_e = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
         u_f_q = u_f_e
+        hf_q = hf_e
     u_f = NodalPropertyState(q=u_f_q, e=u_f_e)
+    hf = NodalEnthalpyState(q=hf_q, e=hf_e)
 
-    return kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q
+    return kf, mu_q, rho_f, phi_L, u_f, hf
 
 
 def _evaluate_darcy_flux(
@@ -1240,36 +1278,17 @@ def _evaluate_energy_storage_integrands(
     return E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp
 
 
-def _evaluate_energy_properties(
-    kin_n: ElementKinematics,
-    rho_f_n: PropertyResult,
-    rho_dT_true_n: npt.NDArray[np.float64],
-    u_f_n: PropertyResult,
-    solid: RegionSolidData,
+def _evaluate_effective_conductivity(
     phi_L: PropertyState,
+    solid: RegionSolidData,
     w0: float,
     lambda_f: float,
     nsd: int,
     *,
     is_fracture: bool,
     isotropic_cond: bool,
-    calc_derivatives: bool = False,
-    temperature_only: bool = False,
-    pressure_only: bool = False,
-    fully_coupled: bool = False,
-) -> tuple[EnthalpyResult, npt.NDArray[np.float64] | float]:
-    """Evaluate fluid enthalpy at quadrature points and the region's effective thermal conductivity.
-
-    `rho_f_n`/`rho_dT_true_n`/`u_f_n` (current-iterate density/internal energy at quad points)
-    are evaluated once in `_evaluate_flow_and_storage_state` and reused here rather than re-derived.
-    """
-    want_dp = calc_derivatives and (pressure_only or fully_coupled)
-    want_dT = calc_derivatives and (temperature_only or fully_coupled)
-
-    hf_q = get_enthalpy(
-        rho_f_n, u_f_n, kin_n.p_q, rho_dT_true=rho_dT_true_n, want_dp=want_dp, want_dT=want_dT, want_cp=True
-    )  # fluid enthalpy, nq x 1 x 1
-
+) -> npt.NDArray[np.float64] | float:
+    """Evaluate the region's effective thermal conductivity."""
     phi_L_n = phi_L.q_n
     lambda_s = solid.lambda_s
     lambda_e: npt.NDArray[np.float64] | float
@@ -1282,7 +1301,7 @@ def _evaluate_energy_properties(
             else (phi_L_n.value * lambda_f * np.eye(nsd) + (1 - phi_L_n.value) * lambda_s)
         )
 
-    return hf_q, lambda_e
+    return lambda_e
 
 
 def _evaluate_advection_terms(
@@ -1297,7 +1316,7 @@ def _evaluate_advection_terms(
     rho_f: NodalPropertyState,  # fluid density
     phi_L: PropertyState,  # Lagrangian porosity or aperture (fracture case)
     u_f: NodalPropertyState,  # Internal energy
-    hf_q: EnthalpyResult,  # Enthalpy
+    hf: NodalEnthalpyState,  # Enthalpy
     lambda_e: npt.NDArray[np.float64] | float,  # thermal conductivity
     cv: npt.NDArray[np.float64],  # rate coefficient
     steady_temp: float,  # steady-state temperature control
@@ -1319,6 +1338,7 @@ def _evaluate_advection_terms(
     """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
     rho_s, cp_s = solid.rho_s, solid.cp_s
     rho_f_n = rho_f.q_n
+    hf_q = hf.q_n
     darcy_flux = q_D / rho_f_n.value  # Volume flux
 
     flux = hf_q.cp * q_D  # temperature advecting flux
@@ -1370,8 +1390,7 @@ def _evaluate_advection_terms(
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
     )
     # Enthalpy at nodes
-    hf_e = get_enthalpy(rho_f.e_n, u_f.e_n, kin_n.pe)  # fluid enthalpy, nne x 1
-    grad_hf = B_q @ hf_e.value  # Enthalpy gradient
+    grad_hf = B_q @ hf.e_n.value  # Enthalpy gradient
     grad_rhof = B_q @ rho_f.e_n.value  # density gradient
     RTh = (
         energy_dot + (grad_hf * rho_f_n.value + hf_q.value * grad_rhof).transpose(0, 2, 1) @ darcy_flux
@@ -1787,7 +1806,7 @@ def integrate_residuals(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin,
@@ -1817,20 +1836,15 @@ def integrate_residuals(  # noqa
 
             # ------ Conservation of energy
             if not pressure_only:
-                # enthalpy, thermal conductivity
-                hf_q, lambda_e = _evaluate_energy_properties(
-                    kin_n,
-                    rho_f.q_n,
-                    rho_dT_true_q,
-                    u_f.q_n,
-                    solid,
+                # thermal conductivity
+                lambda_e = _evaluate_effective_conductivity(
                     phi_L,
+                    solid,
                     w0,
                     lambda_f,
                     mesh_data.nsd,
                     is_fracture=is_fracture,
                     isotropic_cond=isotropic_cond,
-                    calc_derivatives=False,
                 )
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
                     kin, phi_L, rho_f, u_f, solid, cv, steady_temp, is_fracture=is_fracture
@@ -1857,7 +1871,7 @@ def integrate_residuals(  # noqa
                         rho_f,
                         phi_L,
                         u_f,
-                        hf_q,
+                        hf,
                         lambda_e,
                         cv,
                         steady_temp,
@@ -2094,7 +2108,7 @@ def integrate_tangent_matrices(  # noqa
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
-            kf, mu_q, rho_f, phi_L, u_f, rho_dT_true_q = _evaluate_flow_and_storage_state(
+            kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
                 kf_0,
                 kin_n,
                 kin_n,
@@ -2148,22 +2162,14 @@ def integrate_tangent_matrices(  # noqa
 
             if not pressure_only:
                 # -------------------------------- Conservation of energy wrt temperature
-                hf_q, lambda_e = _evaluate_energy_properties(
-                    kin_n,
-                    rho_f.q_n,
-                    rho_dT_true_q,
-                    u_f.q_n,
-                    solid,
+                lambda_e = _evaluate_effective_conductivity(
                     phi_L,
+                    solid,
                     w0,
                     lambda_f,
                     mesh_data.nsd,
                     is_fracture=is_fracture,
                     isotropic_cond=isotropic_cond,
-                    calc_derivatives=True,
-                    temperature_only=temperature_only,
-                    pressure_only=pressure_only,
-                    fully_coupled=fully_coupled,
                 )
 
                 # Energy storage vector - FC (lumped: nodal dFC/dT times the lumped mass weight)
@@ -2210,7 +2216,7 @@ def integrate_tangent_matrices(  # noqa
                         rho_f,
                         phi_L,
                         u_f,
-                        hf_q,
+                        hf,
                         lambda_e,
                         cv,
                         steady_temp,
@@ -2379,9 +2385,10 @@ def integrate_enthlpy_bndry_residual(
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
             p_i = p[nodes_i, 0]
-            u_i = get_internal_energy(T_i, p_i, fluid)
-            rho_i, _ = get_density(T_flow_i if T_flow_lagged else T_i, p_i, fluid, T_flow_lagged)
-            hf_i = get_enthalpy(rho_i, u_i, p_i).value
+            _, _, hf_result = get_EOS(
+                T_i, T_flow_i, p_i, fluid, T_flow_lagged=T_flow_lagged, want_enthalpy=True
+            )
+            hf_i = hf_result.value
             node_value.update(zip(nodes_i.tolist(), (q_i * hf_i).tolist()))
 
     if node_value:
@@ -2439,11 +2446,9 @@ def integrate_enthlpy_bndry_tangent(
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
             p_i = p[nodes_i, 0]
-            u_i = get_internal_energy(T_i, p_i, fluid, want_dT=True)
-            rho_i, _ = get_density(
-                T_flow_i if T_flow_lagged else T_i, p_i, fluid, T_flow_lagged, want_dT=True
+            _, _, hf_result = get_EOS(
+                T_i, T_flow_i, p_i, fluid, T_flow_lagged=T_flow_lagged, want_enthalpy=True, want_dT=True
             )
-            hf_result = get_enthalpy(rho_i, u_i, p_i, want_dT=True)
             hf_i, dhf_dT_i = hf_result.value, hf_result.dT
             node_diag_value.update(zip(nodes_i.tolist(), (q_i * dhf_dT_i).tolist()))
 

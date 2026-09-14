@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matprops import get_density, get_porosity, get_viscosity
+from .matprops import get_EOS, get_porosity, get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
@@ -348,7 +348,7 @@ def _build_point_scalars(
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
     if controls["output_density"]:
-        rho = get_density(T, p, fluid)[0].value
+        rho = get_EOS(T, T, p, fluid, want_density=True)[0].value
         scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
 
     return scalardata_point
