@@ -355,17 +355,91 @@ def _vctrzd_qp_vctr_integrate(
     return result
 
 
-# Q4 boundary edges are traversed as (fixed_axis, fixed_value, t_sign): the local parameter
-# `t` from the edge projection maps to whichever of xi/eta isn't pinned to +-1 on that edge.
-_Q4_EDGE_MAP = (
-    (1, -1.0, 1.0),  # edge 0-1: eta = -1, xi = +t
-    (0, 1.0, 1.0),  # edge 1-2: xi = 1, eta = +t
-    (1, 1.0, -1.0),  # edge 2-3: eta = 1, xi = -t
-    (0, -1.0, -1.0),  # edge 3-0: xi = -1, eta = -t
-)
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_q4(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical boundary points to Q4 parent coordinates by edge projection."""
+    n_loop = goal_pts.shape[2]
+    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+    x_nodes = nodes[:, 0]
+    y_nodes = nodes[:, 1]
+    tol = 1.0e-7
+
+    # Q4 boundary edges as (node_i, node_j, fixed_axis, fixed_value, t_sign): the local
+    # parameter `t` from the edge projection maps to whichever of xi/eta isn't pinned to +-1.
+    edge_i = (0, 1, 2, 3)
+    edge_j = (1, 2, 3, 0)
+    fixed_axis = (1, 0, 1, 0)
+    fixed_val = (-1.0, 1.0, 1.0, -1.0)
+    t_sign = (1.0, 1.0, -1.0, -1.0)
+
+    for gp in range(n_loop):
+        x_target = goal_pts[gp, 0, 0]
+        y_target = goal_pts[gp, 0, 1]
+        xi = 0.0
+        eta = 0.0
+        for idx in range(4):
+            i = edge_i[idx]
+            j = edge_j[idx]
+            dx = x_nodes[j] - x_nodes[i]
+            dy = y_nodes[j] - y_nodes[i]
+
+            # Use the larger projection direction to avoid division by zero
+            # on perfectly horizontal or vertical edges.
+            if abs(dx) >= abs(dy):
+                t = 2.0 * (x_target - x_nodes[i]) / dx - 1.0
+                # Check if the actual y matches the expected y along this line segment
+                y_expected = y_nodes[i] + 0.5 * (t + 1.0) * dy
+                is_collinear = abs(y_target - y_expected) < tol
+            else:
+                t = 2.0 * (y_target - y_nodes[i]) / dy - 1.0
+                # Check if the actual x matches the expected x along this line segment
+                x_expected = x_nodes[i] + 0.5 * (t + 1.0) * dx
+                is_collinear = abs(x_target - x_expected) < tol
+
+            # The point must be collinear AND fall within the segment endpoints [-1, 1]
+            if is_collinear and (-1.0 - tol <= t <= 1.0 + tol):
+                t = max(-1.0, min(1.0, t))  # Clean up minor numerical fuzz
+
+                # Map the 1D parameter 't' back to 2D parent space based on the edge index
+                free_val = t_sign[idx] * t
+                if fixed_axis[idx] == 0:
+                    xi, eta = fixed_val[idx], free_val
+                else:
+                    xi, eta = free_val, fixed_val[idx]
+                break
+
+        parent_coords[gp, 0, 0] = xi
+        parent_coords[gp, 0, 1] = eta
+
+    return parent_coords
 
 
-def _get_parent_coordinates(  # noqa
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_t3(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical points to T3 parent coordinates via the direct linear solve."""
+    n_loop = goal_pts.shape[2]
+    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+
+    x1, x2, x3 = nodes[0, 0], nodes[1, 0], nodes[2, 0]
+    y1, y2, y3 = nodes[0, 1], nodes[1, 1], nodes[2, 1]
+
+    # Determinant (2x the physical area of the triangle)
+    D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+
+    for gp in range(n_loop):
+        x_target = goal_pts[gp, 0, 0]
+        y_target = goal_pts[gp, 0, 1]
+        parent_coords[gp, 0, 0] = ((y3 - y1) * (x_target - x1) - (x3 - x1) * (y_target - y1)) / D
+        parent_coords[gp, 0, 1] = (-(y2 - y1) * (x_target - x1) + (x2 - x1) * (y_target - y1)) / D
+
+    return parent_coords
+
+
+def _get_parent_coordinates(
     etype: str, nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Determine the parent coordinates of a physical point in an isoparametric element.
@@ -373,62 +447,11 @@ def _get_parent_coordinates(  # noqa
     Assumes that the point is on the element boundary.  Used for mapping fracture
     quadrature points to matrix element boundary points.
     """
-    parent_coords = np.empty((np.size(nodes, 1), 1, np.size(goal_pts, -1)))
-    x_targets = goal_pts[:, 0, 0]
-    y_targets = goal_pts[:, 0, 1]
-
+    parent_coords: npt.NDArray[np.float64]
     if etype == "Q4":
-        edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
-        x_nodes = nodes[:, 0]
-        y_nodes = nodes[:, 1]
-        tol = 1.0e-7
-
-        for gp in range(np.size(goal_pts, 2)):
-            x_target = x_targets[gp]
-            y_target = y_targets[gp]
-            for idx, (i, j) in enumerate(edges):
-                dx = x_nodes[j] - x_nodes[i]
-                dy = y_nodes[j] - y_nodes[i]
-
-                # Use the larger projection direction to avoid division by zero
-                # on perfectly horizontal or vertical edges.
-                if abs(dx) >= abs(dy):
-                    t = 2.0 * (x_target - x_nodes[i]) / dx - 1.0
-                    # Check if the actual y matches the expected y along this line segment
-                    y_expected = y_nodes[i] + 0.5 * (t + 1.0) * dy
-                    is_collinear = abs(y_target - y_expected) < tol
-                else:
-                    t = 2.0 * (y_target - y_nodes[i]) / dy - 1.0
-                    # Check if the actual x matches the expected x along this line segment
-                    x_expected = x_nodes[i] + 0.5 * (t + 1.0) * dx
-                    is_collinear = abs(x_target - x_expected) < tol
-
-                # The point must be collinear AND fall within the segment endpoints [-1, 1]
-                if is_collinear and (-1.0 - tol <= t <= 1.0 + tol):
-                    t = max(-1.0, min(1.0, t))  # Clean up minor numerical fuzz
-
-                    # Map the 1D parameter 't' back to 2D parent space based on the edge index
-                    fixed_axis, fixed_val, t_sign = _Q4_EDGE_MAP[idx]
-                    free_val = t_sign * t
-                    xi, eta = (fixed_val, free_val) if fixed_axis == 0 else (free_val, fixed_val)
-                    break
-
-            parent_coords[gp] = np.array([xi, eta])
-
-    elif etype == "T3":
-        # Direct mapping - linear in the target coordinates, so solve for every
-        # goal point at once instead of looping.
-        x1, x2, x3 = nodes[0, 0], nodes[1, 0], nodes[2, 0]
-        y1, y2, y3 = nodes[0, 1], nodes[1, 1], nodes[2, 1]
-
-        # Determinant (2x the physical area of the triangle)
-        D = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
-
-        xi_all = ((y3 - y1) * (x_targets - x1) - (x3 - x1) * (y_targets - y1)) / D
-        eta_all = (-(y2 - y1) * (x_targets - x1) + (x2 - x1) * (y_targets - y1)) / D
-        for gp in range(np.size(goal_pts, 2)):
-            parent_coords[gp] = np.array([xi_all[gp], eta_all[gp]])
-
+        parent_coords = _get_parent_coordinates_q4(nodes, goal_pts)
+    else:
+        parent_coords = _get_parent_coordinates_t3(nodes, goal_pts)
     return parent_coords
 
 
