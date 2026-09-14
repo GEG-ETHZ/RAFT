@@ -306,6 +306,46 @@ def get_porosity_lagrangian(
     return PropertyResult(phi_L, dphi_L_dp, dphi_L_dT)
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _enthalpy_values(
+    rho_value: npt.NDArray[np.float64],
+    rho_dp: npt.NDArray[np.float64],
+    rho_dT: npt.NDArray[np.float64],
+    u_value: npt.NDArray[np.float64],
+    u_dp: npt.NDArray[np.float64],
+    u_dT: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    want_dp: bool,
+    want_dT: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Enthalpy and its optional p/T derivatives: hf = u_f + p / rho_f.
+
+    `cp` is deliberately handled by the separate `_enthalpy_cp_values` kernel rather than
+    folded in here: its `rho_dT_true` input has no natural "not wanted" placeholder with a
+    shape numba can unify against every caller's array rank, so it's only ever compiled
+    against real, matching-shape inputs, invoked conditionally from plain Python.
+    """
+    hf = u_value + p / rho_value
+    dhf_dT = np.zeros_like(hf)
+    dhf_dp = np.zeros_like(hf)
+    if want_dT:
+        dhf_dT = u_dT - p / rho_value**2 * rho_dT
+    if want_dp:
+        dhf_dp = u_dp + 1 / rho_value - p / rho_value**2 * rho_dp
+    return hf, dhf_dp, dhf_dT
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _enthalpy_cp_values(
+    rho_value: npt.NDArray[np.float64],
+    u_dT: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    rho_dT_true: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """cp, (dh/dT)_p with the pressure-work term stripped out (e.g. for SUPG's Peclet number)."""
+    return u_dT - p / rho_value**2 * rho_dT_true
+
+
 def get_enthalpy(
     rho_f: PropertyResult,
     u_f: PropertyResult,
@@ -327,17 +367,13 @@ def get_enthalpy(
     (e.g. for SUPG's Peclet number), instead always uses `rho_dT_true` (from `get_density`),
     since `cp` is a physical quantity independent of that Jacobian convention.
     """
-    hf = u_f.value + p / rho_f.value
-    dhf_dT = np.zeros(hf.shape)
-    dhf_dp = np.zeros(hf.shape)
-    if want_dT:
-        dhf_dT = u_f.dT - p / rho_f.value**2 * rho_f.dT
-    if want_dp:
-        dhf_dp = u_f.dp + 1 / rho_f.value - p / rho_f.value**2 * rho_f.dp
+    hf, dhf_dp, dhf_dT = _enthalpy_values(
+        rho_f.value, rho_f.dp, rho_f.dT, u_f.value, u_f.dp, u_f.dT, p, want_dp, want_dT
+    )
 
     cp = np.zeros(hf.shape)
     if want_cp:
-        cp = u_f.dT - p / rho_f.value**2 * rho_dT_true
+        cp = _enthalpy_cp_values(rho_f.value, u_f.dT, p, rho_dT_true)
 
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 

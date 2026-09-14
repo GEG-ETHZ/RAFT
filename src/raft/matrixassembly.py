@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+from numba import njit  # type: ignore[import-untyped]
 from scipy.sparse import csc_matrix, hstack, vstack
 
 from .matprops import (
@@ -1030,6 +1031,21 @@ def _evaluate_darcy_flux(
     return darcy_flux, q_D, dqD_dp, dqD_dT
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _total_energy_values(
+    T: npt.NDArray[np.float64],
+    phi_L_value: npt.NDArray[np.float64],
+    rho_f_value: npt.NDArray[np.float64],
+    u_f_value: npt.NDArray[np.float64],
+    rho_s: float,
+    cp_s: float,
+    is_fracture: bool,
+) -> npt.NDArray[np.float64]:
+    """Total (solid + fluid) stored energy."""
+    solid_factor = 0.0 if is_fracture else 1.0
+    return (1 - phi_L_value) * rho_s * cp_s * T * solid_factor + phi_L_value * rho_f_value * u_f_value
+
+
 def _evaluate_total_energy(
     T: npt.NDArray[np.float64],
     phi_L: PropertyResult,
@@ -1040,8 +1056,44 @@ def _evaluate_total_energy(
     is_fracture: bool,
 ) -> npt.NDArray[np.float64]:
     """Evaluate the total (solid + fluid) stored energy."""
-    rho_s, cp_s = solid.rho_s, solid.cp_s
-    return (1 - phi_L.value) * rho_s * cp_s * T * (1 - is_fracture) + phi_L.value * rho_f.value * u_f.value
+    E: npt.NDArray[np.float64] = _total_energy_values(
+        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, is_fracture
+    )
+    return E
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _mass_storage_integrands_values(
+    phi_L_e_value: npt.NDArray[np.float64],
+    phi_L_e_dp: npt.NDArray[np.float64],
+    phi_L_e_dT: npt.NDArray[np.float64],
+    rho_f_e_value: npt.NDArray[np.float64],
+    rho_f_e_dp: npt.NDArray[np.float64],
+    rho_f_e_dT: npt.NDArray[np.float64],
+    cv: npt.NDArray[np.float64],
+    steady_pres: float,
+    want_tangent_dp: bool,
+    want_tangent_dT: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Mass storage rate (nodal, lumped) and optionally its pressure and temperature tangents."""
+    f_mass_e = phi_L_e_value * rho_f_e_value
+    mass_dot_e = (1 - steady_pres) * (
+        cv[0] * f_mass_e[:, 0:1] + cv[1] * f_mass_e[:, 1:2] + cv[2] * f_mass_e[:, 2:3]
+    )
+
+    integrand_dFsdp_e = _EMPTY
+    if want_tangent_dp:
+        integrand_dFsdp_e = (
+            (1 - steady_pres) * cv[0] * (phi_L_e_dp * rho_f_e_value + phi_L_e_value * rho_f_e_dp)
+        )
+
+    integrand_dFsdT = _EMPTY
+    if want_tangent_dT:
+        integrand_dFsdT = (
+            (1 - steady_pres) * cv[0] * (phi_L_e_dT * rho_f_e_value + phi_L_e_value * rho_f_e_dT)
+        )
+
+    return mass_dot_e, integrand_dFsdp_e, integrand_dFsdT
 
 
 def _evaluate_mass_storage_integrands(
@@ -1064,24 +1116,73 @@ def _evaluate_mass_storage_integrands(
     """
     phi_L_e = phi_L.e
     rho_f_e = rho_f.e
-    f_mass_e = phi_L_e.value * rho_f_e.value
-    mass_dot_e = (1 - steady_pres) * (
-        cv[0] * f_mass_e[:, 0:1] + cv[1] * f_mass_e[:, 1:2] + cv[2] * f_mass_e[:, 2:3]
+    mass_dot_e, integrand_dFsdp_e, integrand_dFsdT = _mass_storage_integrands_values(
+        phi_L_e.value,
+        phi_L_e.dp,
+        phi_L_e.dT,
+        rho_f_e.value,
+        rho_f_e.dp,
+        rho_f_e.dT,
+        cv,
+        steady_pres,
+        want_tangent_dp,
+        want_tangent_dT,
     )
-
-    integrand_dFsdp_e = _EMPTY
-    if want_tangent_dp:
-        integrand_dFsdp_e = (
-            (1 - steady_pres) * cv[0] * (phi_L_e.dp * rho_f_e.value + phi_L_e.value * rho_f_e.dp)
-        )
-
-    integrand_dFsdT = _EMPTY
-    if want_tangent_dT:
-        integrand_dFsdT = (
-            (1 - steady_pres) * cv[0] * (phi_L_e.dT * rho_f_e.value + phi_L_e.value * rho_f_e.dT)
-        )
-
     return mass_dot_e, integrand_dFsdp_e, integrand_dFsdT
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _energy_storage_integrands_values(
+    Te: npt.NDArray[np.float64],
+    phi_L_e_value: npt.NDArray[np.float64],
+    phi_L_e_dp: npt.NDArray[np.float64],
+    phi_L_e_dT: npt.NDArray[np.float64],
+    rho_f_e_value: npt.NDArray[np.float64],
+    rho_f_e_dp: npt.NDArray[np.float64],
+    rho_f_e_dT: npt.NDArray[np.float64],
+    u_f_e_value: npt.NDArray[np.float64],
+    u_f_e_dp: npt.NDArray[np.float64],
+    u_f_e_dT: npt.NDArray[np.float64],
+    rho_s: float,
+    cp_s: float,
+    cv: npt.NDArray[np.float64],
+    steady_temp: float,
+    is_fracture: bool,
+    kin_n_Te: npt.NDArray[np.float64],
+    want_tangent_dT: bool,
+    want_tangent_dp: bool,
+) -> tuple[
+    npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
+]:
+    """Nodal (lumped) energy storage rate and optionally its temperature and pressure tangents."""
+    E_e = _total_energy_values(Te, phi_L_e_value, rho_f_e_value, u_f_e_value, rho_s, cp_s, is_fracture)
+    energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
+
+    solid_factor = 0.0 if is_fracture else 1.0
+    integrand_dFCdT_e = _EMPTY
+    if want_tangent_dT:
+        integrand_dFCdT_e = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                (1 - phi_L_e_value) * rho_s * cp_s * solid_factor
+                + phi_L_e_value * (rho_f_e_dT * u_f_e_value + rho_f_e_value * u_f_e_dT)
+                + phi_L_e_dT * (rho_f_e_value * u_f_e_value - rho_s * cp_s * kin_n_Te)
+            )
+        )
+
+    integrand_dFCdp = _EMPTY
+    if want_tangent_dp:
+        integrand_dFCdp = (
+            (1 - steady_temp)
+            * cv[0]
+            * (
+                phi_L_e_value * (rho_f_e_dp * u_f_e_value + rho_f_e_value * u_f_e_dp)
+                + phi_L_e_dp * (rho_f_e_value * u_f_e_value - rho_s * cp_s * kin_n_Te)
+            )
+        )
+
+    return E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp
 
 
 def _evaluate_energy_storage_integrands(
@@ -1108,36 +1209,29 @@ def _evaluate_energy_storage_integrands(
     Energy storage uses a lumped-mass discretization to prevent oscillations, thus uses
     nodal quantities instead of quad point quantities.
     """
-    rho_s, cp_s = solid.rho_s, solid.cp_s
     phi_L_e = phi_L.e
     rho_f_e = rho_f.e
     u_f_e = u_f.e
-    E_e = _evaluate_total_energy(kin.Te, phi_L_e, rho_f_e, u_f_e, solid, is_fracture=is_fracture)
-    energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
-
-    integrand_dFCdT_e = _EMPTY
-    if want_tangent_dT:
-        integrand_dFCdT_e = (
-            (1 - steady_temp)
-            * cv[0]
-            * (
-                (1 - phi_L_e.value) * rho_s * cp_s * (1 - is_fracture)
-                + phi_L_e.value * (rho_f_e.dT * u_f_e.value + rho_f_e.value * u_f_e.dT)
-                + phi_L_e.dT * (rho_f_e.value * u_f_e.value - rho_s * cp_s * kin_n.Te)
-            )
-        )
-
-    integrand_dFCdp = _EMPTY
-    if want_tangent_dp:
-        integrand_dFCdp = (
-            (1 - steady_temp)
-            * cv[0]
-            * (
-                phi_L_e.value * (rho_f_e.dp * u_f_e.value + rho_f_e.value * u_f_e.dp)
-                + phi_L_e.dp * (rho_f_e.value * u_f_e.value - rho_s * cp_s * kin_n.Te)
-            )
-        )
-
+    E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp = _energy_storage_integrands_values(
+        kin.Te,
+        phi_L_e.value,
+        phi_L_e.dp,
+        phi_L_e.dT,
+        rho_f_e.value,
+        rho_f_e.dp,
+        rho_f_e.dT,
+        u_f_e.value,
+        u_f_e.dp,
+        u_f_e.dT,
+        solid.rho_s,
+        solid.cp_s,
+        cv,
+        steady_temp,
+        is_fracture,
+        kin_n.Te,
+        want_tangent_dT,
+        want_tangent_dp,
+    )
     return E_e, energy_dot_e, integrand_dFCdT_e, integrand_dFCdp
 
 
