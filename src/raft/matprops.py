@@ -110,21 +110,18 @@ def get_viscosity(
         T_i = _clip_T(T.flat[i])
         p_i = _clip_p(p.flat[i])
         AS.update(CP.PT_INPUTS, p_i, T_i)
-        mu.flat[i] = AS.viscosity()
+        mu_i = AS.viscosity()
+        mu.flat[i] = mu_i
 
         if want_dp:
             AS.update(CP.PT_INPUTS, p_i + dp, T_i)
             mu_plus = AS.viscosity()
-            AS.update(CP.PT_INPUTS, p_i - dp, T_i)
-            mu_minus = AS.viscosity()
-            dmu_dp.flat[i] = (mu_plus - mu_minus) / (2 * dp)
+            dmu_dp.flat[i] = (mu_plus - mu_i) / dp
 
         if want_dT_eff:
             AS.update(CP.PT_INPUTS, p_i, T_i + dT)
             mu_plus = AS.viscosity()
-            AS.update(CP.PT_INPUTS, p_i, T_i - dT)
-            mu_minus = AS.viscosity()
-            dmu_dT.flat[i] = (mu_plus - mu_minus) / (2 * dT)
+            dmu_dT.flat[i] = (mu_plus - mu_i) / dT
 
     return PropertyResult(mu, dmu_dp, dmu_dT)
 
