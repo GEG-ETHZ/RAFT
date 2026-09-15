@@ -373,8 +373,8 @@ def _build_cell_scalars(
         for e in range(ne):
             enodes = conn[e]
             region = mesh["regions"][e]
-            phi_0 = solid["porosity"][region]
-            K_d = solid["bulk_mod"][region]
+            phi_0 = np.atleast_1d(solid["porosity"])[region]
+            K_d = np.atleast_1d(solid["drained_bulk_mod"])[region]
             p_e = np.atleast_1d(np.mean(p[enodes]))
             p0_e = np.atleast_1d(np.mean(p_0[enodes]))
             porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d).value[0]
