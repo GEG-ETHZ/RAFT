@@ -154,7 +154,7 @@ def _eos_linear_values(
 
     rho_value = drho_dp = drho_dT = drho_dT_true = rho_true_value = _EMPTY
     if need_density:
-        rho_value = rho_0 * (1 - alpha * (T_flow - T0)) * (1 + 1 / Kf * (p - p0))
+        rho_value = rho_0 * (1 - alpha * (T_flow - T0) + 1 / Kf * (p - p0))
         drho_dT_true = _const_array(-rho_0 * alpha, T_flow.shape)
         drho_dT = _const_array(0.0, T_flow.shape) if T_flow_lagged else drho_dT_true
         drho_dp = _const_array(rho_0 / Kf, p.shape)
