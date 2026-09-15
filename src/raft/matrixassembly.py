@@ -1107,23 +1107,6 @@ def _total_energy_values(
     return (1 - phi_L_value) * rho_s * cp_s * T * solid_factor + phi_L_value * rho_f_value * u_f_value
 
 
-def _evaluate_total_energy(
-    T: npt.NDArray[np.float64],
-    phi_L: PropertyResult,
-    rho_f: PropertyResult,
-    u_f: PropertyResult,
-    solid: RegionSolidData,
-    *,
-    is_fracture: bool,
-) -> npt.NDArray[np.float64]:
-    """Evaluate the total (solid + fluid) stored energy."""
-    # Evaluated in numba kernel.
-    E: npt.NDArray[np.float64] = _total_energy_values(
-        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, is_fracture
-    )
-    return E
-
-
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def _mass_storage_integrands_values(
     phi_L_e_value: npt.NDArray[np.float64],
@@ -1327,6 +1310,104 @@ def _evaluate_effective_conductivity(
     return lambda_e
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _flux_magnitude(flux_vec: npt.NDArray[np.float64], nsd: int) -> float:
+    """`|flux_vec|`, resolved per `nsd` since numba can't loop over a runtime-sized slice."""
+    if nsd == 3:
+        return float(np.sqrt(flux_vec[0, 0] ** 2 + flux_vec[1, 0] ** 2 + flux_vec[2, 0] ** 2))
+    if nsd == 2:
+        return float(np.sqrt(flux_vec[0, 0] ** 2 + flux_vec[1, 0] ** 2))
+    return float(abs(flux_vec[0, 0]))
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _effective_length(
+    flux_vec: npt.NDArray[np.float64], flux_mag: float, L_vec: npt.NDArray[np.float64], nsd: int
+) -> float:
+    """SUPG effective length, weighted by the flux direction relative to the element extents."""
+    if nsd == 3:
+        return float(
+            flux_mag
+            / np.sqrt(
+                (flux_vec[0, 0] / L_vec[0, 0]) ** 2
+                + (flux_vec[1, 0] / L_vec[1, 0]) ** 2
+                + (flux_vec[2, 0] / L_vec[2, 0]) ** 2
+            )
+        )
+    if nsd == 2:
+        return float(
+            flux_mag / np.sqrt((flux_vec[0, 0] / L_vec[0, 0]) ** 2 + (flux_vec[1, 0] / L_vec[1, 0]) ** 2)
+        )
+    return float(L_vec[0, 0])
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _supg_tau_values(
+    hf_cp: npt.NDArray[np.float64],
+    q_D: npt.NDArray[np.float64],
+    L_vec: npt.NDArray[np.float64],
+    lambda_e: npt.NDArray[np.float64],
+    nsd: int,
+    isotropic_cond: bool,
+) -> npt.NDArray[np.float64]:
+    """Numba kernel for the SUPG stabilization coefficient tau, one quad point at a time.
+
+    `lambda_e` must already be broadcast to a (nq, a, a) shape (a=1 isotropic, a=nsd
+    anisotropic), mirroring how a region-constant material property is prepped before
+    crossing into a jit kernel elsewhere in this module.
+    """
+    nq = q_D.shape[0]
+    tau = np.empty((nq, 1, 1))
+    flux_vec = np.empty((nsd, 1))
+    for q in range(nq):
+        for d in range(nsd):
+            flux_vec[d, 0] = hf_cp[q, 0, 0] * q_D[q, d, 0]
+
+        flux_mag = _flux_magnitude(flux_vec, nsd)
+
+        no_flow = flux_mag == 0.0
+        if no_flow:
+            # prevent divide by zero
+            flux_mag = 1.0e-15
+            for d in range(nsd):
+                flux_vec[d, 0] = 1.0e-15
+
+        dl_eff = _effective_length(flux_vec, flux_mag, L_vec, nsd)
+
+        if isotropic_cond:
+            lambda_e_projected = lambda_e[q, 0, 0]
+        else:
+            # anisotropic case - project conductivity along flowlines
+            n_stream = flux_vec / flux_mag
+            lambda_e_projected = (n_stream.T @ lambda_e[q] @ n_stream)[0, 0]
+
+        # Peclet number
+        Pe = dl_eff * flux_mag / lambda_e_projected
+        t = dl_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+        if no_flow:
+            t = 0.0
+        tau[q, 0, 0] = t
+
+    return tau
+
+
+def _evaluate_total_energy(
+    T: npt.NDArray[np.float64],
+    phi_L: PropertyResult,
+    rho_f: PropertyResult,
+    u_f: PropertyResult,
+    solid: RegionSolidData,
+    *,
+    is_fracture: bool,
+) -> npt.NDArray[np.float64]:
+    """Evaluate the total (solid + fluid) stored energy."""
+    # Evaluated in numba kernel.
+    E: npt.NDArray[np.float64] = _total_energy_values(
+        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, is_fracture
+    )
+    return E
+
+
 def _evaluate_advection_terms(
     N_q: npt.NDArray[np.float64],  # Shape functions
     B_q: npt.NDArray[np.float64],  # Shape function gradients
@@ -1364,47 +1445,20 @@ def _evaluate_advection_terms(
     hf_q = hf.q_n
     darcy_flux = q_D / rho_f_n.value  # Volume flux
 
-    flux = hf_q.cp * q_D  # temperature advecting flux
-    if nsd == 3:
-        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2 + flux[:, 2, 0] ** 2)
-    elif nsd == 2:
-        flux_mag = np.sqrt(flux[:, 0, 0] ** 2 + flux[:, 1, 0] ** 2)
-    else:
-        flux_mag = np.abs(flux[:, 0, 0])  # keep 1D (nq,), matching the nsd 2/3 branches
-    indx_noflow = np.nonzero(flux_mag == 0)
-    # prevent divide by zero
-    flux_mag[indx_noflow] = 1.0e-15
-    flux[indx_noflow, :, :] = 1.0e-15
+    # lambda_e is a region constant: scalar-like (isotropic fracture case), (nq, 1, 1)
+    # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast to a uniform shape so
+    # the numba kernel only ever sees consistently-shaped, contiguous arrays. `.copy()` is
+    # required, not just `ascontiguousarray`: when `lambda_e` already has the target shape
+    # (the isotropic bulk case), `broadcast_to` is a no-op view and `ascontiguousarray` skips
+    # copying it, leaving it read-only - a different numba type than the writable array the
+    # other branches produce, which costs a fresh ~1s compiled specialization the first time
+    # that branch is hit.
+    lambda_e_shape = (nq, 1, 1) if isotropic_cond else (nq, nsd, nsd)
+    lambda_e_arr = np.asarray(lambda_e, dtype=np.float64)
+    lambda_e_bcast = np.ascontiguousarray(np.broadcast_to(lambda_e_arr, lambda_e_shape)).copy()
 
-    # Effective length weighted by fluxes
-    L_vec = kin.L_vec
-    if nsd == 3:
-        dl_eff = flux_mag / np.sqrt(
-            (flux[:, 0, 0] / L_vec[0, 0]) ** 2
-            + (flux[:, 1, 0] / L_vec[1, 0]) ** 2
-            + (flux[:, 2, 0] / L_vec[2, 0]) ** 2
-        )
-    elif nsd == 2:
-        dl_eff = flux_mag / np.sqrt((flux[:, 0, 0] / L_vec[0, 0]) ** 2 + (flux[:, 1, 0] / L_vec[1, 0]) ** 2)
-    else:
-        dl_eff = L_vec * np.ones((1, 1, nq))
-        flux_mag = flux_mag.reshape(1, 1, -1)  # reshape for 1D broadcasting
-
-    if isotropic_cond:
-        lambda_e_projected = lambda_e * np.ones((nq, 1, 1))
-    else:
-        # anisotropic case - project conductivity along flowlines
-        n_stream = flux / flux_mag.reshape(-1, 1, 1)
-        n_stream_T = n_stream.transpose(0, 2, 1)
-        lambda_e_projected = (n_stream_T @ lambda_e) @ n_stream  # nq x 1 x 1
-
-    # Peclet number
-    Pe = dl_eff * flux_mag / lambda_e_projected.reshape(1, 1, -1)
-
-    # SUPG stabilization coefficient
-    tau = dl_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
-    tau[:, :, indx_noflow] = 0
-    tau = tau.reshape(-1, 1, 1)
+    # Evaluated in numba kernel.
+    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, nsd, isotropic_cond)
 
     # Discretized strong form residual at quadrature points
     # Energy rate
