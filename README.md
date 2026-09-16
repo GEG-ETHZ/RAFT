@@ -309,38 +309,51 @@ Numerical solver controls
 
 ### Installation
 1. [install uv](https://docs.astral.sh/uv/getting-started/installation/) <!--NOTE: link to Wiki for uv-->
-1. run `uv sync` to install dependencies. Re-run whenever dependencies in `pyproject.toml` change
+1. run `uv sync`
+1. (Contributors) install the git hooks: `uv run prek install` and `uv run prek install --hook-type pre-push` — see [Setup](CONTRIBUTING.md#setup) for what they enforce
 1. execute a script via: `uv run some_script.py`
 
 ## Project Structure
 ```
 └── tango-reservoir-simulator
     ├── README.md
+    ├── CONTRIBUTING.md
+    ├── CHANGELOG.md
+    ├── theory.md
     ├── pyproject.toml
+    ├── justfile
     ├── .gitignore
     ├── .python-version
+    ├── .pre-commit-config.yaml
+    ├── .gitlab-ci.yml
     ├── config/
     ├── outputs/
+    ├── scripts/
+    │   ├── debug_fracture_angles.py
+    │   ├── plot_fluid_props.py
+    │   └── plot_fluid_props_functionofpressure.py
     ├── src/
     │   └── raft/
-    │       ├── __init__.py
-    │       ├── __main__.py
-    │       ├── matprops.py
-    │       ├── matrixassembly.py
-    │       ├── meshprocessing.py
-    │       ├── parseboundaryconditions.py
-    │       ├── postprocessing.py
-    │       ├── preprocessing.py
-    │       ├── py.typed
-    │       ├── shapefunctions.py
-    │       ├── solvers.py
-    │       ├── spyder_runfile.py
-    │       ├── subsurface.py
-    │       └── writevtk.py
+    │       ├── __init__.py
+    │       ├── __main__.py
+    │       ├── logging_utils.py
+    │       ├── matprops.py
+    │       ├── matrixassembly.py
+    │       ├── meshprocessing.py
+    │       ├── parseboundaryconditions.py
+    │       ├── postprocessing.py
+    │       ├── preprocessing.py
+    │       ├── py.typed
+    │       ├── shapefunctions.py
+    │       ├── solvers.py
+    │       ├── spyder_runfile.py
+    │       ├── subsurface.py
+    │       └── writevtk.py
     ├── tests/
     │   ├── __init__.py
     │   ├── test_simulation.py
     │   ├── test_checks.py
+    │   ├── test_wellbore.py
     │   ├── test_configs/
     │   └── test_demo.py
     └── uv.lock
