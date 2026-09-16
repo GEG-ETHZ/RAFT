@@ -1,5 +1,5 @@
 mesh:
-  file: square2D.msh
+  file: 2D_example.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]

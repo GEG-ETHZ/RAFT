@@ -36,5 +36,5 @@ config/*
 !config/box_profiling.geo
 !config/box_profiling.msh
 !config/config_example_2D.yaml
-!config/square2D.geo
-!config/square2D.msh
+!config/2D_example.geo
+!config/2D_example.msh

@@ -22,37 +22,38 @@ material:
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
       viscosity: 0.7e-3         # m^2 (permeability)
+      reference_temperature: 400
 
 initial_conditions:
-  T_ini: 200                  # deg C
+  T_ini: 400                  # deg C
   p_ini: 1.0e+5
 
 
 boundary_conditions:
-  - nodes: [0, 1, 2, 3, 7, 8, 9, 10]
+  - faces: [y_min]
     hydraulics:
       values: [1e5]
       type: pressure
   - nodes: [4]
     hydraulics:
-      values: [0.1]
+      values: [0.001]
       type: flux
     thermal:
-      values: [10]
+      values: [300]
       type: temperature
-  - nodes: [13]
+  - faces: [y_max]
     hydraulics:
-      values: [0.5]
+      values: [0.001]
       type: flux
     thermal:
-      values: [100]
+      values: [350]
       type: temperature
 
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 3.0e+5
+  t_end: 1.0e+6
   timestep: 1.0e+3
   timestep_min: 1.0e+3
   timestep_max: 1.0e+4
@@ -61,6 +62,9 @@ simulation:
   output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
+  output_viscosity: 1
+  output_density: 1
+  output_porosity: 1
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
