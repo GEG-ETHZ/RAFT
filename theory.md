@@ -196,15 +196,20 @@ Pressure and temperature are assembled into a single combined system and solved 
 ## Adaptive Timestep Control
 The timestep is adapted every step based on solution error/convergence. The three most recent timesteps are tracked as a rolling history $\Delta t = [\Delta t^n, \Delta t^{n-1}, \Delta t^{n-2}]$, since the second-order rate/extrapolation coefficients above need timestep history beyond just the current step.
 
-"Convergence" is checked differently per [`solver_type`](README.md#simulation):
-* `"linearized"`: both the pressure and temperature Newton-Raphson sub-solves must converge (against `NR_tol`), and then the relative difference between the extrapolated temperature $\hat{\textbf{T}}^n$ used to evaluate flow properties and the actual solved temperature $\textbf{T}^n$ is compared against [`rel_error_T`](README.md#simulation). The `rel_error_T` check is a step-quality check on the extrapolation/splitting, separate from each sub-solve's own nonlinear convergence.
-* `"fully_coupled"`: the Newton-Raphson residual norm falling below `NR_tol` within `iter_max` iterations (see [`iterative_controls`](README.md#simulation)).
+Convergence for the `fully_coupled` and `linearized` sub-problems is checked against the specified relative residual tolerance, `NR_tol`. The residuals are a measure of the magnitude of flux, and are normalized by the number of elements and the magnitude of the fluxes at fixed degrees of freedom. If any Newton-Raphson solves do not converge, the timestep is cut by a factor of $0.5$ and the solve is re-attempted. If the step does not converge and the timestep is at `timestep_min`, the simulation is aborted.
 
-If a step does not converge, and the timestep is already at `timestep_min`, the two solvers diverge in behavior: `"linearized"` accepts the step anyway (with a warning) and proceeds, since it has no further fallback; `"fully_coupled"` aborts the simulation. Otherwise, the timestep is cut and the step is retried at the same start time:
-* `"linearized"`: $\Delta t^n \leftarrow \max\left(0.85\,\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}}\,\Delta t^n,\ \Delta t_{min}\right)$, where $\varepsilon_T$ is the extrapolation error — an error-proportional cut (similar in form to classic embedded-RK adaptive step-size control), so a larger error produces a sharper cut.
-* `"fully_coupled"`: a fixed cut factor of $0.5$ is applied.
+The `linearized` solver has a second error checking method in which it calculates the relative difference between the expolated temperature used for evaluating properties,  $\hat{\textbf{T}}^n$, and the actual solved temperature $\textbf{T}^n$. This error is called the extrapolation error, $\varepsilon_T$. If $\varepsilon_T$ > `rel_error_T` (the user specified acceptable extrapolation convergence error), the timestep is cut and repeated. The cut factor is calculated as:
 
-If the step converges, the timestep history is shifted ($\Delta t^{n-1}\!\to\!\Delta t^{n-2}$, $\Delta t^n\!\to\!\Delta t^{n-1}$) and the timestep is grown geometrically for the next step, $\Delta t^{n+1} = \min(1.25\,\Delta t^n,\ \Delta t_{max})$ — a fixed growth factor, not error-based.
+$$\Delta t^n \leftarrow \max\left(0.85\,\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}}\,\Delta t^n,\ \Delta t_{min}\right)$$
+
+thus the cut is error-proportional and a larger error produces a sharper cut.
+
+If the timestep $\Delta t < \Delta t_{max}$ and the timestep converges, the timestep grows for the next step.
+* For the `linearized` solver, the timestep is proportional to the extrapolation error but capped at $2\times$:
+$$\Delta t^{n+1} = \min\left(\min\left(\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}},\ 2\right)\Delta t^n,\ \Delta t_{max}\right)$$
+
+* For the `fully_coupled` solver, the timestep increases by a static $1.5$ factor.
+$$\Delta t^{n+1} = \min(0.5\,\Delta t^n,\ \Delta t_{max})$$
 
 Finally, the proposed step is clamped so it never overshoots a *critical time*: any boundary-condition breakpoint (a `"table"` time or a `"ramp"` end time — see [Value Specification](README.md#boundary_conditions)) or `t_end`. If $t + \Delta t^n$ would step past the next critical time, $\Delta t^n$ is shortened to land exactly on it, so boundary-condition discontinuities always fall on a solved timestep rather than being smoothed over within one.
 

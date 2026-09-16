@@ -144,10 +144,10 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 200000.0
+  t_end: 400000.0
   timestep: 10.0
   timestep_min: 1.0
-  timestep_max: 1000.0
+  timestep_max: 10000.0
   solver_type: "linearized"
 
   # Output
@@ -168,7 +168,7 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  rel_error_T: 1.0e-1 # Relative error for extrapolation
+  rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations

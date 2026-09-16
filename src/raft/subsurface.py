@@ -65,10 +65,12 @@ def _update_time(  # noqa
             return t, dt, False
 
     # otherwise, increase the timestep
+    increase_factor = min(4 / (1 + 3 * timestep_error / rel_tol_T), 2) if solver_type == "linearized" else 1.5
+
     dt[2] = dt[1]
     dt[1] = dt[0]
     if dt[0] < dt_max:
-        dt[0] = min(1.25 * dt[0], dt_max)  # Note: arbitrary timestep increasing rate. Could be made variable.
+        dt[0] = min((increase_factor) * dt[0], dt_max)
     t += dt[0]
 
     # find next critical time and prevent overshoot
@@ -80,6 +82,8 @@ def _update_time(  # noqa
             dt[0] = max(t_next - t, dt_min)
             t += dt[0]
 
+    if verbose:
+        print(f"    Next timestep: {dt[0]:.2e}")
     return t, dt, True
 
 
