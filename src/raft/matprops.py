@@ -157,6 +157,75 @@ def get_viscosity(
     return PropertyResult(mu, dmu_dp, dmu_dT)
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _eos_linear_kernel_values(
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    rho_0: float,
+    T0: float,
+    p0: float,
+    alpha: float,
+    Kf: float,
+    cp_f: float,
+    T_flow_lagged: bool,
+    need_density: bool,
+    need_u: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Numba kernel for the closed-form linear-density EOS branch of `get_EOS`.
+
+    Returns two stacked bundles rather than 8 separate arrays: numba boxes a returned tuple
+    one element at a time on *every* call regardless of caching, so an 8-way return here (this
+    function is called millions of times) was measurably more expensive than the handful of
+    microseconds its own arithmetic takes - bundling same-shaped outputs into one array each
+    cuts that boxing cost ~4x. `_eos_linear_values` below unpacks the bundles and restores the
+    `_EMPTY` convention for fields `need_density`/`need_u` didn't ask for.
+
+    `main` stacks (rho_value, drho_dp, drho_dT, drho_dT_true, rho_true_value, u_value), all
+    T's shape. `duf` stacks (duf_dT, duf_dp), `T[..., 0:1]`'s shape.
+    """
+    rho_value = np.zeros_like(T_flow)
+    drho_dp = np.zeros_like(p)
+    drho_dT = np.zeros_like(T_flow)
+    drho_dT_true = np.zeros_like(T_flow)
+    rho_true_value = np.zeros_like(T_flow)
+    if need_density:
+        rho_value = rho_0 * (1 - alpha * (T_flow - T0) + 1 / Kf * (p - p0))
+        drho_dT_true = np.full(T_flow.shape, -rho_0 * alpha)
+        drho_dT = np.zeros(T_flow.shape) if T_flow_lagged else drho_dT_true
+        drho_dp = np.full(p.shape, rho_0 / Kf)
+        rho_true_value = rho_value
+
+    u_value = np.zeros_like(T)
+    duf_dT = np.zeros_like(T[..., 0:1])
+    duf_dp = np.zeros_like(T[..., 0:1])
+    if need_u:
+        u_value = cp_f * T - alpha * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
+        duf_dT = cp_f - alpha * p[..., 0:1] / rho_0
+        duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha * T[..., 0:1] / rho_0
+
+    if need_density and need_u:
+        # Density at the same point internal energy uses (T, not T_flow), for cp's exact fidelity.
+        # Cheap either way (closed-form), so computed here whenever both are wanted, regardless
+        # of whether `T` and `T_flow` actually differ (`T_flow_lagged`).
+        rho_true_value = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
+        drho_dT_true = np.full(T.shape, -rho_0 * alpha)
+
+    main = np.empty((6,) + T.shape)
+    main[0] = rho_value
+    main[1] = drho_dp
+    main[2] = drho_dT
+    main[3] = drho_dT_true
+    main[4] = rho_true_value
+    main[5] = u_value
+
+    duf = np.empty((2,) + duf_dT.shape)
+    duf[0] = duf_dT
+    duf[1] = duf_dp
+
+    return main, duf
+
+
 def _eos_linear_values(
     T: npt.NDArray[np.float64],
     T_flow: npt.NDArray[np.float64],
@@ -176,33 +245,27 @@ def _eos_linear_values(
     npt.NDArray[np.float64],
 ]:
     """Closed-form (non-CoolProp) `get_EOS` branch for a linear density fluid model."""
-    rho_0 = fluid["density"]
-    T0 = fluid["reference_temperature"]
-    p0 = fluid["reference_pressure"]
-    alpha = fluid["therm_expansion"]
-    Kf = fluid["bulk_mod"]
-    cp_f = fluid["specific_heat"]
+    # `float(...)`: config values may parse as Python int (e.g. a YAML "4200" with no decimal
+    # point) - numba treats int and float scalar args as different types, so an unnormalized
+    # mix costs an extra compiled specialization the first time it's hit.
+    rho_0 = float(fluid["density"])
+    T0 = float(fluid["reference_temperature"])
+    p0 = float(fluid["reference_pressure"])
+    alpha = float(fluid["therm_expansion"])
+    Kf = float(fluid["bulk_mod"])
+    cp_f = float(fluid["specific_heat"])
 
-    rho_value = drho_dp = drho_dT = drho_dT_true = rho_true_value = _EMPTY
-    if need_density:
-        rho_value = rho_0 * (1 - alpha * (T_flow - T0) + 1 / Kf * (p - p0))
-        drho_dT_true = _const_array(-rho_0 * alpha, T_flow.shape)
-        drho_dT = _const_array(0.0, T_flow.shape) if T_flow_lagged else drho_dT_true
-        drho_dp = _const_array(rho_0 / Kf, p.shape)
-        rho_true_value = rho_value
+    # Evaluated in numba kernel.
+    main, duf = _eos_linear_kernel_values(
+        T, T_flow, p, rho_0, T0, p0, alpha, Kf, cp_f, T_flow_lagged, need_density, need_u
+    )
+    rho_value, drho_dp, drho_dT, drho_dT_true, rho_true_value, u_value = main
+    duf_dT, duf_dp = duf
 
-    u_value = duf_dp = duf_dT = _EMPTY
-    if need_u:
-        u_value = cp_f * T - alpha * T * p / rho_0 + p**2 / (2 * Kf * rho_0)
-        duf_dT = cp_f - alpha * p[..., 0:1] / rho_0
-        duf_dp = p[..., 0:1] / (Kf * rho_0) - alpha * T[..., 0:1] / rho_0
-
-    if need_density and need_u:
-        # Density at the same point internal energy uses (T, not T_flow), for cp's exact fidelity.
-        # Cheap either way (closed-form), so computed here whenever both are wanted, regardless
-        # of whether `T` and `T_flow` actually differ (`T_flow_lagged`).
-        rho_true_value = rho_0 * (1 - alpha * (T - T0)) * (1 + 1 / Kf * (p - p0))
-        drho_dT_true = _const_array(-rho_0 * alpha, T.shape)
+    if not need_density:
+        rho_value = drho_dp = drho_dT = drho_dT_true = rho_true_value = _EMPTY
+    if not need_u:
+        u_value = duf_dp = duf_dT = _EMPTY
 
     return rho_value, drho_dp, drho_dT, drho_dT_true, u_value, duf_dp, duf_dT, rho_true_value
 
