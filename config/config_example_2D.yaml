@@ -12,9 +12,9 @@ mesh:
         region_number: 2
   dimensions: 2
   fractures:
-         - values: [[25.5, 37.5], [20], [60]]
-         - values: [[25.5, 37.5], [30], [130]]
-         - values: [[15, 32, 0.0], [20], [100]]
+         - values: [[27, 53], [20], [20]]
+         - values: [[45.5, 41], [22], [130]]
+         - values: [[13, 33, 0.0], [20], [100]]
 
 
 material:
@@ -46,8 +46,8 @@ material:
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-3, 1.0e-3, 1.1e-3]
-    nusselt: [2, 1, 5]
+    aperture: [1.0e-4, 1.0e-4, 1.1e-4]
+    nusselt: [2, 2, 2]
 
 initial_conditions:
   assignment: "constant"
@@ -63,11 +63,11 @@ initial_conditions:
 boundary_conditions:
         # Inlet/outlet example: a rate-controlled well, switching to a pressure
         # limit if it would otherwise exceed the given bounds.
-        - lines: [[[43.4, 20.0], [53, 37.5]]]
+        - lines: [[[43.4, 20.0], [45, 30]]]
           tag: "inlet"
           hydraulics:
               type: "flux"
-              values: [[0, 0.01], 100]
+              values: [[0, 0.01], 1000]
               function: "ramp"
               constraints:
                   maximum_pressure: 3.0e+7
@@ -80,7 +80,7 @@ boundary_conditions:
           tag: "outlet"
           hydraulics:
               type: "flux"
-              values: [[0, -0.01], 100]
+              values: [[0, -0.01], 1000]
               function: "ramp"
               constraints:
                   maximum_pressure: 3.0e+7
@@ -106,11 +106,11 @@ boundary_conditions:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 43.0e+7
-  timestep: 1000.0
+  t_end: 3.0e+7
+  timestep: 10.0
   timestep_min: 1.0
   timestep_max: 6.0e+5
-  solver_type: "linearized"
+  solver_type: "fully_coupled"
 
   # Output
   output_frequency: 1
@@ -130,9 +130,9 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  rel_error_T: 1.0e-2 # Relative error for extrapolation
+  rel_error_T: 5.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
+      NR_tol: 2.0e-5 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
       NR_step: 1
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

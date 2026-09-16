@@ -219,9 +219,9 @@ def _check_convergence_NR(
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
         numerator = np.linalg.norm(R[key][nF])
-        flux_scale = np.linalg.norm(R[key][fixed_dofs[key]])
+        flux_scale = max(np.linalg.norm(R[key][fixed_dofs[key]]), 1)
 
-        NR[key][iteration] = numerator / flux_scale / nn if flux_scale > 1.0e-12 else numerator / nn
+        NR[key][iteration] = numerator / flux_scale / nn
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
@@ -293,7 +293,7 @@ def _aitken_relax(
         Relaxation parameter bounds (min_relax, max_relax). Defaults to (0.001, 1.0).
     """
     if bounds is None:
-        min_relax = 0.001
+        min_relax = 0.01
         max_relax = 10.0
     else:
         min_relax, max_relax = bounds
