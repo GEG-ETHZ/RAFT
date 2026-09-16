@@ -5,7 +5,9 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 ## Table of Contents
 - [Symbol Glossary](#symbol-glossary)
 - [Strong Form Governing Equations](#strong-form-governing-equations)
-- [Fluid Equation of State](#fluid-equation-of-state)
+    - [Conservation of Mass](#conservation-of-mass)
+    - [Conservation of Energy](#conservation-of-energy)
+    - [Fluid Equation of State](#fluid-equation-of-state)
 - [Weak Form and Finite Element Discretization](#weak-form-and-finite-element-discretization)
 - [Fracture Coupling](#fracture-coupling)
 - [Fracture Mesh Cutting Algorithm](#fracture-mesh-cutting-algorithm)
