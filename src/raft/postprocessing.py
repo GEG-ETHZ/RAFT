@@ -176,7 +176,7 @@ def compute_fluid_flux(  # noqa
     # Material properties - fluid
     fluid = material["fluid"]
     mu = fluid["viscosity"]
-    mu_nonlinear = mu == 0
+    mu_nonlinear = mu <= 0
 
     for r in range(num_regions):
         if isfracture:

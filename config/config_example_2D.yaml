@@ -1,15 +1,15 @@
 mesh:
-  file: square2D_plain.msh
+  file: square2D.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
-        region_number: 0
+        region_number: 1
       - shape: "sphere"
         values: [[34, 38.5, 0], 5]
-        region_number: 0
+        region_number: 1
       - shape: "polyhedron"
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
-        region_number: 0
+        region_number: 2
   dimensions: 2
   fractures:
          - values: [[25.5, 37.5], [20], [60]]
@@ -23,24 +23,24 @@ material:
       bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
       density: [2000, 2000, 2000]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
-      specific_heat: [800, 80, 10]        # J/kgK
+      specific_heat: [800, 800, 800]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [[5.0e-14, 5.0e-14],   1.0e-14, 1.0e-17]       # m^2
+      permeability: [[5.0e-15, 5.0e-16],   1.0e-18, 1.0e-17]       # m^2
       rotation_x: [0.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
-      rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_y: [30.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
   # Fluid parameters - single phase flow is assumed
   fluid:
-      fluid_type: "CO2"         # "Water" or "CO2"
+      fluid_type: "Water"         # "Water" or "CO2"
       bulk_mod: 2.10e+9         # Pa
       density:      1000       # kg/m^3
-      reference_temperature: 413 # Reference temperature for density (C/K)
+      reference_temperature: 293 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
-      therm_expansion: 300.0e-6 # 1/K
+      therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
       viscosity: -1       # 0 -> non-constant, real-fluid viscosity
 
@@ -51,8 +51,8 @@ material:
 
 initial_conditions:
   assignment: "constant"
-  T_ini: 286
-  p_ini: 1.0e+7
+  T_ini: 410
+  p_ini: 6.0e+6
   T_grad: 0.1
   p_grad: 1.0e+3
   grad_direction_T: [0,1,-1]
@@ -63,91 +63,53 @@ initial_conditions:
 boundary_conditions:
         # Inlet/outlet example: a rate-controlled well, switching to a pressure
         # limit if it would otherwise exceed the given bounds.
-        # - lines: [[[43.4, 20.0], [53, 37.5]]]
-        #   tag: "inlet"
-        #   hydraulics:
-        #       type: "flux"
-        #       values: [[0, 0.01], 100]
-        #       function: "ramp"
-        #       constraints:
-        #           maximum_pressure: 3.0e+7
-        #           minimum_pressure: 1.0e+5
-        # - coords: [[27, 48]]
-        #   tag: "outlet"
-        #   hydraulics:
-        #       type: "flux"
-        #       values: [[0, -0.01], 100]
-        #       function: "ramp"
-        #       constraints:
-        #           maximum_pressure: 3.0e+7
-        #           minimum_pressure: 1.0e+5
-
-        # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
-        # # - faces: [x_max]
-        #   hydraulics:
-        #       type: "pressure"
-        #       values: [6.0e+5]
-        #       # constraints:
-              #     maximum_pressure: 3.0e+6
-              #     minimum_pressure: 1.0e+5
-          # thermal:
-          #     type: "temperature"
-          #     values: [296]
-        - faces: [y_min]
+        - lines: [[[43.4, 20.0], [53, 37.5]]]
+          tag: "inlet"
           hydraulics:
-              type: "pressure"
-              values: [1.0e+7]
+              type: "flux"
+              values: [[0, 0.01], 100]
+              function: "ramp"
+              constraints:
+                  maximum_pressure: 3.0e+7
+                  minimum_pressure: 1.0e+5
           thermal:
               type: "temperature"
-              values: [286]
-              # function: "ramp"
-          # tag: "inflow"
-        # - coords: [[43.4, 20.0]]
-        #   hydraulics:
-        #       type: "pressure"
-        #       values: [1.0e6]
+              values: [330]
+
+        - lines: [[[0, 40.0], [-20, 25]]]
+          tag: "outlet"
+          hydraulics:
+              type: "flux"
+              values: [[0, -0.01], 100]
+              function: "ramp"
+              constraints:
+                  maximum_pressure: 3.0e+7
+                  minimum_pressure: 1.0e+5
 
         - faces: [y_max]
           hydraulics:
               type: "pressure"
-              values: [2.0e+7]
+              values: [6.0e+6]
           thermal:
               type: "temperature"
               values: [410]
 
-        - faces: [x_min]
+        - faces: [y_min]
           hydraulics:
-              type: "flux"
-              values: [0.001]
-        # - lines: [[[20.0, 10.0], [40.2, 15.0]]]
-        #   thermal:
-        #       type: "temperature"
-        #       values: [343]
-
-        # - lines: [[[43.4, 20.0], [53, 37.5]]]
-        #   thermal:
-        #       type: "temperature"
-        #       function: "ramp"
-        #       values: [[343, 403], 100000]
-
-        # - faces: [x_min]
-        #   hydraulics:
-        #       type: "flux"
-        #       values: [1.0e-3]
-        # - coords: [[15, 56]]
-        #   hydraulics:
-        #       type: "flux"
-        #       values: [0.01]
-
+              type: "pressure"
+              values: [6.0e+6]
+          thermal:
+              type: "temperature"
+              values: [410]
 
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 400000.0
-  timestep: 10.0
+  t_end: 43.0e+7
+  timestep: 1000.0
   timestep_min: 1.0
-  timestep_max: 10000.0
+  timestep_max: 6.0e+5
   solver_type: "linearized"
 
   # Output
