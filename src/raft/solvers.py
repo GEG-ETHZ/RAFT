@@ -354,7 +354,13 @@ def _newton_raphson_loop(  # noqa
     NR_tol = controls["iterative_controls"]["NR_tol"]
     aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     NR_step = controls["iterative_controls"]["NR_step"]
+    one_pass = controls["iterative_controls"]["one_pass"]
     converged = False
+
+    if one_pass:
+        # Overwrite bad input when doing a one-pass solve
+        aitken_on = False
+        NR_step = 1.0
 
     # Initaliaze
     iteration = 0
@@ -553,6 +559,12 @@ def _newton_raphson_loop(  # noqa
                 primary_variables[key][:, 0:1] = d_n[key_dofs[key]]
 
             iteration += 1
+
+        if one_pass:
+            converged = True
+            if verbose:
+                print(" - CONVERGED IN ONE PASS")
+            break
 
         if iteration >= iter_max:
             if verbose:

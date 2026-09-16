@@ -98,6 +98,9 @@ def get_viscosity(
         zeros = _const_array(0.0, T.shape)
         return PropertyResult(mu, zeros, zeros)
 
+    # Determine if dT is wanted or not based on lagging.
+    want_dT_eff = want_dT and not T_flow_lagged
+
     if mu0 == -1:
         # Get visocsity using a 4 coefficient approximation.
         A = 1.856e-14  # Pa-s
@@ -115,7 +118,9 @@ def get_viscosity(
         mu = A * np.exp(B / T + C * T + D * T**2)
 
         out_of_limits = (low_limit >= T) | (up_limit <= T)
-        dmu_dT = np.where(out_of_limits, 0.0, mu * (-B / T**2 + C + 2 * D * T))
+        dmu_dT = np.empty(T.shape) if want_dT_eff else _const_array(0.0, T.shape)
+        if want_dT_eff:
+            dmu_dT = np.where(out_of_limits, 0.0, mu * (-B / T**2 + C + 2 * D * T))
         zeros = _const_array(0.0, T.shape)
 
         return PropertyResult(mu, zeros, dmu_dT)
@@ -127,7 +132,6 @@ def get_viscosity(
     # CoolProp has no closed-form viscosity derivative, so dmu/dT is a forward difference.
     dT = 0.5  # K
     dp = 1  # Pa
-    want_dT_eff = want_dT and not T_flow_lagged
 
     mu = np.empty(T.shape)
     dmu_dp = np.empty(T.shape) if want_dp else _const_array(0.0, T.shape)

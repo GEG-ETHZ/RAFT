@@ -113,51 +113,65 @@ def _apply_defaults(
     return config
 
 
-def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
+def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Determine physics controls that are controlled through implicit inputs.
 
     This primarily includes non-constant material properties, but also includes
     non-feasible combinations of settings.
     """
     fluid_name = config["material"]["fluid"]["fluid_type"]
+    controls = config["simulation"]
     # Viscosity
     mu = config["material"]["fluid"]["viscosity"]
     if not isinstance(mu, (int, float)):
         raise ValueError(f"Incompatible viscosity format: {mu}")
-    elif mu <= 0:  # non-constant: real-fluid viscosity from CoolProp
-        config["simulation"]["viscosity_nonconstant"] = 1
+    elif mu <= 0:  # non-constant: real-fluid viscosity from CoolProp or only temperature-dependent
+        controls["viscosity_nonconstant"] = 1
         if verbose:
             print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
     else:  # constant
-        config["simulation"]["viscosity_nonconstant"] = 0
+        controls["viscosity_nonconstant"] = 0
 
     # Density
     rho = config["material"]["fluid"]["density"]
     if not isinstance(rho, (int, float)):
         raise ValueError(f"Incompatible density format: {rho}")
     elif rho == 0:  # non-constant: real-fluid density from CoolProp
-        config["simulation"]["density_nonconstant"] = 1
+        controls["density_nonconstant"] = 1
         if verbose:
             print(f"\nDensity computed from CoolProp ({fluid_name}) as a function of T and p.")
     else:  # constant
-        config["simulation"]["density_nonconstant"] = 0
+        controls["density_nonconstant"] = 0
 
     # Axisymmetry
-    axisymmetric_on = config["simulation"]["axisymmetric_on"]
+    axisymmetric_on = controls["axisymmetric_on"]
     if axisymmetric_on and config["mesh"]["dimensions"] == 3:
-        config["simulation"]["axisymmetric_on"] = 0
+        controls["axisymmetric_on"] = 0
         if verbose:
             print("Axisymmetry turned off, not valid in 3D analysis.")
 
     # Fractures
-    config["simulation"]["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
+    controls["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
 
     # CoolProp AbstractState, reused across all property lookups instead of
     # re-initializing it on every matprops call.
-    if config["simulation"]["viscosity_nonconstant"] or config["simulation"]["density_nonconstant"]:
+    if controls["viscosity_nonconstant"] or controls["density_nonconstant"]:
         config["material"]["fluid"]["abstract_state"] = create_abstract_state(fluid_name)
     else:
         config["material"]["fluid"]["abstract_state"] = None
+
+    # One-pass linearized?
+    # If using the boussinesq approximation (rho !=0), the flow properties are not functions of pressure
+    # (mu or kf), and using the linearized solver, the linearized
+    # pressure and temperature solves are both linear, so we can save the second residual calc.
+    if rho != 0 and mu != 0 and controls["solver_type"] == "linearized":
+        controls["iterative_controls"]["one_pass"] = True
+        if verbose:
+            print(
+                "\nUsing the linearized solver with Boussinesq EOS and pressure-independent flow properties. One-pass solve enabled."  # noqa
+            )
+    else:
+        controls["iterative_controls"]["one_pass"] = False
 
     return config
 
