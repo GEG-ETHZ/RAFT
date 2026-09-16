@@ -21,9 +21,9 @@ material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
       bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
-      density: [100, 2000, 2000]             # kg/m^3
+      density: [2000, 2000, 2000]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
-      specific_heat: [80, 80, 10]        # J/kgK
+      specific_heat: [800, 80, 10]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
       porosity: [0.01, 0.01, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
@@ -34,15 +34,15 @@ material:
 
   # Fluid parameters - single phase flow is assumed
   fluid:
-      fluid_type: "Water"         # "Water" or "CO2"
+      fluid_type: "CO2"         # "Water" or "CO2"
       bulk_mod: 2.10e+9         # Pa
-      density:      0       # kg/m^3
+      density:      1000       # kg/m^3
       reference_temperature: 413 # Reference temperature for density (C/K)
       reference_pressure: 1.0e+5 # Reference pressure for density
       therm_cond:   0.6         # W/mK
       therm_expansion: 300.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
-      viscosity: 0       # 0 -> non-constant, real-fluid viscosity
+      viscosity: -1       # 0 -> non-constant, real-fluid viscosity
 
   # Fracture parameters
   fracture:
@@ -52,7 +52,7 @@ material:
 initial_conditions:
   assignment: "constant"
   T_ini: 286
-  p_ini: 1.0e+6
+  p_ini: 1.0e+7
   T_grad: 0.1
   p_grad: 1.0e+3
   grad_direction_T: [0,1,-1]
@@ -96,7 +96,7 @@ boundary_conditions:
         - faces: [y_min]
           hydraulics:
               type: "pressure"
-              values: [1.0e+5]
+              values: [1.0e+7]
           thermal:
               type: "temperature"
               values: [286]
@@ -145,9 +145,9 @@ simulation:
   # Time
   t_start: 0.0
   t_end: 200000.0
-  timestep: 1000.0
+  timestep: 10.0
   timestep_min: 1.0
-  timestep_max: 100000.0
+  timestep_max: 1000.0
   solver_type: "linearized"
 
   # Output

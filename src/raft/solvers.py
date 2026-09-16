@@ -573,7 +573,7 @@ def _newton_raphson_loop(  # noqa
         q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
         primary_variables["q"] = q
 
-    if debug_plot_on:
+    if debug_plot_on or iteration >= iter_max:
         _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
 
     return primary_variables, converged, iteration_error

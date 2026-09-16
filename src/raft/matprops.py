@@ -85,15 +85,42 @@ def get_viscosity(
 ) -> PropertyResult:
     """Get viscosity and its T/p derivatives, at temperature T [K] and pressure p [Pa].
 
-    `fluid["viscosity"]` of 0 looks it up from CoolProp instead of treating it as a constant.
+    `fluid["viscosity"]` = 0 looks it up from CoolProp instead of treating it as a constant.
     `T_flow_lagged` zeroes dmu_dT when T is not the primary unknown being solved for.
-    """
-    viscosity_coefficients = fluid["viscosity"]
 
-    if viscosity_coefficients != 0:
-        mu = np.full(T.shape, viscosity_coefficients)
+    `fluid["viscosity"]` = -1 uses a 4 coefficient temperature-only approximation.
+    """
+    mu0 = fluid["viscosity"]
+
+    if mu0 > 0:
+        # Constant Viscosity
+        mu = np.full(T.shape, mu0)
         zeros = _const_array(0.0, T.shape)
         return PropertyResult(mu, zeros, zeros)
+
+    if mu0 == -1:
+        # Get visocsity using a 4 coefficient approximation.
+        A = 1.856e-14  # Pa-s
+        B = 4209  # K
+        C = 0.04527  # K^-1
+        D = -3.376e-5  # K^-2
+
+        # Cap limits on temperature
+        low_limit = 200.0
+        up_limit = 1.0e3
+
+        T = np.maximum(T, _T_MIN)
+        T = np.minimum(T, _T_MAX)
+
+        mu = A * np.exp(B / T + C * T + D * T**2)
+
+        out_of_limits = (low_limit >= T) | (up_limit <= T)
+        dmu_dT = np.where(out_of_limits, 0.0, mu * (-B / T**2 + C + 2 * D * T))
+        zeros = _const_array(0.0, T.shape)
+
+        return PropertyResult(mu, zeros, dmu_dT)
+
+    # Otherwise use CoolProp viscosity
 
     AS = fluid["abstract_state"]
 

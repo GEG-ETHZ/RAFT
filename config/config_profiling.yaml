@@ -19,7 +19,7 @@ material:
       bulk_mod: 2.10e+9         # Pa
       density:      925         # kg/m^3
       therm_cond:   0.6         # W/mK
-      therm_expansion: 200.0e-4 # 1/K
+      therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4200       # J/kgK
       viscosity: 0.7e-3         # m^2 (permeability)
 
@@ -37,22 +37,17 @@ boundary_conditions:
     hydraulics:
       values: [0.1]
       type: flux
-  - nodes: [13]
-    hydraulics:
-      values: [0.5]
-      type: flux
-  - nodes: [4]
     thermal:
       values: [10]
       type: temperature
   - nodes: [13]
+    hydraulics:
+      values: [0.5]
+      type: flux
     thermal:
       values: [100]
       type: temperature
-  - nodes: []
-    thermal:
-      values: []
-      type: flux
+
 
 simulation:
   # Time

@@ -124,7 +124,7 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     mu = config["material"]["fluid"]["viscosity"]
     if not isinstance(mu, (int, float)):
         raise ValueError(f"Incompatible viscosity format: {mu}")
-    elif mu == 0:  # non-constant: real-fluid viscosity from CoolProp
+    elif mu <= 0:  # non-constant: real-fluid viscosity from CoolProp
         config["simulation"]["viscosity_nonconstant"] = 1
         if verbose:
             print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
