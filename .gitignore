@@ -14,7 +14,7 @@ build/
 profiles/
 *.prof
 *.stats
-*/spyder_runfile.py
+**/spyder_runfile.py
 
 data/*
 !data/**/.gitkeep
