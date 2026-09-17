@@ -1,0 +1,79 @@
+mesh:
+  file: square2D_Q4.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod:  20.0e+9        # Pa
+      density: 2.0             # kg/m^3
+      therm_cond: 3.0          # W/mK
+      specific_heat: 1000        # J/kgK
+      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
+      porosity: 0.01                # -
+      biot_coeff: 0.5               # -
+      permeability: 5.0e-13         # m^2
+
+  # Fluid parameters
+  fluid:
+      density: 1              # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      bulk_mod: 2.10e+30      # Pa
+      therm_expansion: 00.0e-6 # 1/K
+      specific_heat: 1000     # J/kgK
+      therm_cond: 3           # W/mK
+      viscosity: 0.7e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+
+initial_conditions:
+  geothermal_gradient: 0.0      # deg C/m
+  T_surf: 200                   # deg C
+  pressure_gradient: 0.0        # Pa/m
+  p_surf: 1.0
+
+boundary_conditions:
+  - lines:
+    - - [51, 0]
+      - [51, 75]
+    hydraulics:
+      values: [43]
+      type: pressure
+  - lines:
+    - - [0, 0]
+      - [0, 75]
+    hydraulics:
+      values: [7]
+      type: flux
+  - lines:
+    - - [0, 0]
+      - [0, 75]
+    thermal:
+      values: [72]
+      type: temperature
+  - lines:
+    - - [51, 0]
+      - [51, 75]
+    thermal:
+      values: [-91.0]
+      type: flux
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+
+  # Output
+  output_frequency: 1
+  output_vtk: 1        # turn vtk output on/off
+  # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
+
+  # Physical controls
+  rate_order: 1     # order of rate of change approximation
+  advection_on: 0
+  gravity: 0.0    # m/s^2
+  steady_pressure: 1
+  steady_temperature: 1
+
+  # Numerical controls
+  rel_error_T: 1.0e-2 # Relative error for extrapolation

@@ -1,3 +1,20 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Import mesh, assign regions, extract relevant mesh properties."""
 
 import warnings
@@ -9,8 +26,46 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import scipy as sp
-from matplotlib.collections import PolyCollection
+from matplotlib.axes import Axes
+from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.tri import Triangulation
+
+
+def _element_colors(n_elems: int, cmap_name: str = "tab20") -> npt.NDArray[np.float64]:
+    """Distinct-ish RGBA color per element, cycling through a qualitative colormap.
+
+    Used (with alpha) so that overlapping elements blend into a visibly different
+    color instead of one silently occluding the other.
+    """
+    cmap = plt.get_cmap(cmap_name)
+    return cmap(np.arange(n_elems) % cmap.N)
+
+
+def _label_element_ids(
+    ax: Axes,
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    prefix: str = "E",
+) -> None:
+    for elem_id, elem_nodes in enumerate(conn):
+        centroid = np.mean(nodes[elem_nodes], axis=0)
+        ax.text(
+            centroid[0],
+            centroid[1],
+            f"{prefix}{elem_id}",
+            color="black",
+            fontweight="bold",
+            ha="center",
+            va="center",
+            fontsize=6,
+            zorder=4,
+            bbox=dict(  # noqa
+                facecolor="white",
+                alpha=0.8,
+                edgecolor="none",
+                boxstyle="round,pad=0.2",
+            ),
+        )
 
 
 def debugging_mesh_plot(
@@ -37,12 +92,12 @@ def debugging_mesh_plot(
         cbar = fig.colorbar(tc, ax=ax)
         cbar.set_label("Nodal Scalar Value")
 
-        facecolor = "none"
+        facecolor: str | npt.NDArray[np.float64] = "none"
         alpha = 1.0
         plot_title = "Interpolated Nodal Values Mesh Plot"
     else:
-        facecolor = "skyblue"
-        alpha = 0.6
+        facecolor = _element_colors(len(conn))
+        alpha = 0.5
         plot_title = "Mesh Plot"
 
     # 2. Overlay element borders
@@ -81,31 +136,64 @@ def debugging_mesh_plot(
 
     # 5. Add Element IDs at centroids
     if plot_ids:
-        for elem_id, elem_nodes in enumerate(conn):
-            centroid = np.mean(nodes[elem_nodes], axis=0)
-            ax.text(
-                centroid[0],
-                centroid[1],
-                f"E{elem_id}",
-                color="black",
-                fontweight="bold",
-                ha="center",
-                va="center",
-                fontsize=6,
-                zorder=4,
-                bbox=dict(  # noqa
-                    facecolor="white",
-                    alpha=0.8,
-                    edgecolor="none",
-                    boxstyle="round,pad=0.2",
-                ),
-            )
+        _label_element_ids(ax, nodes, conn, prefix="E")
 
     # 6. Final adjustments
     ax.autoscale_view()
     ax.set_aspect("equal")
     plt.grid(True, linestyle="--", alpha=0.3)
     plt.title(plot_title)
+    plt.show()
+
+
+def debugging_mesh_plot_matrix_and_fracture(
+    matrix_nodes: npt.NDArray[np.float64],
+    matrix_conn: list[list[int]],
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64] | list[list[int]],
+    plot_ids: bool = False,
+) -> None:
+    """Plot the matrix and fracture meshes together, each element individually colored.
+
+    Matrix elements are filled polygons; fracture elements are drawn as line segments
+    on top. Overlaps within either mesh blend into a visibly different color, and
+    fracture segments that don't sit on a matrix element boundary stand out clearly.
+    """
+    fig, ax = plt.subplots()
+
+    matrix_verts = [matrix_nodes[elem] for elem in matrix_conn]
+    matrix_mesh = PolyCollection(
+        matrix_verts,
+        closed=True,
+        edgecolor="black",
+        facecolor=_element_colors(len(matrix_conn), "tab20"),
+        alpha=0.5,
+        linewidth=1.0,
+        zorder=1,
+    )
+    ax.add_collection(matrix_mesh)
+
+    frac_segments = [frac_nodes[elem] for elem in frac_conn]
+    frac_mesh = LineCollection(
+        frac_segments,
+        colors=_element_colors(len(frac_segments), "gist_rainbow"),
+        linewidth=1.5,
+        zorder=3,
+    )
+    ax.add_collection(frac_mesh)
+
+    ax.scatter(matrix_nodes[:, 0], matrix_nodes[:, 1], color="black", zorder=2, s=2, label="matrix nodes")
+    ax.scatter(frac_nodes[:, 0], frac_nodes[:, 1], color="red", zorder=4, s=8, label="fracture nodes")
+
+    if plot_ids:
+        _label_element_ids(ax, matrix_nodes, matrix_conn, prefix="M")
+        _label_element_ids(ax, frac_nodes, list(frac_conn), prefix="F")
+
+    ax.autoscale_view()
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize=6)
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.title("Matrix + Fracture Mesh Plot")
     plt.show()
 
 
@@ -122,7 +210,7 @@ def load_Gmsh(meshfile: str, nsd: int) -> tuple[npt.NDArray[np.float64] | None, 
         with open(meshfile) as f:
             lines: list[str] = [line.strip() for line in f.readlines()]
     except FileNotFoundError:
-        print("Error: File {meshfile} not found.")
+        print(f"Error: File {meshfile} not found.")
         return None, None
 
     # Find the start of nodes and elements sections
@@ -242,8 +330,9 @@ def _get_all_edges(
                 # Increment count
                 face_tracker[sorted_face][0] += 1
             else:
-                # Store count and original
-                face_tracker[sorted_face] = [1, original_face]
+                # Store count, original face, and originating element id
+                # (only meaningful for faces that stay boundary, i.e. count == 1)
+                face_tracker[sorted_face] = [1, original_face, elem]
     return face_tracker
 
 
@@ -263,8 +352,10 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     # then find unique faces.
     face_tracker = _get_all_edges(conn, ne, nne, nsd, elem_indx)
 
-    # sort through the faces and extract all unique faces
-    boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
+    # sort through the faces and extract all unique faces (and their owning element)
+    boundary_data = [data for data in face_tracker.values() if data[0] == 1]
+    boundary_faces = [data[1] for data in boundary_data]
+    boundary_elems = [data[2] for data in boundary_data]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
     boundaries: dict[str, Any] = {}
@@ -282,7 +373,15 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     boundaries["z_min_conn"] = []
     boundaries["z_max_conn"] = []
 
-    for face in boundary_faces:
+    # Element id attached to each face in the corresponding "*_conn" list, same order/index.
+    boundaries["x_min_elems"] = []
+    boundaries["x_max_elems"] = []
+    boundaries["y_min_elems"] = []
+    boundaries["y_max_elems"] = []
+    boundaries["z_min_elems"] = []
+    boundaries["z_max_elems"] = []
+
+    for face, elem in zip(boundary_faces, boundary_elems):
         # calculate plane normal
         xI = nodes[face, :]
         if nsd == 3:
@@ -310,6 +409,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
 
         boundaries[f"{max_component}_{side}"].update(face)
         boundaries[f"{max_component}_{side}_conn"].append(list(face))
+        boundaries[f"{max_component}_{side}_elems"].append(elem)
 
     # Remove fracture faces from exterior sets
     if "fracture_mesh" in mesh:
@@ -334,11 +434,16 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         for key in ("x", "y", "z"):
             for side in ("min", "max"):
                 conn_key = f"{key}_{side}_conn"
+                elems_key = f"{key}_{side}_elems"
                 if conn_key not in boundaries:
                     continue
-                boundaries[conn_key] = [
-                    face for face in boundaries[conn_key] if tuple(sorted(face)) not in fracture_faces
+                kept = [
+                    (face, elem)
+                    for face, elem in zip(boundaries[conn_key], boundaries[elems_key])
+                    if tuple(sorted(face)) not in fracture_faces
                 ]
+                boundaries[conn_key] = [face for face, _ in kept]
+                boundaries[elems_key] = [elem for _, elem in kept]
                 boundaries[f"{key}_{side}"] = {n for face in boundaries[conn_key] for n in face}
 
     # Combine boundary sets
@@ -359,6 +464,8 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         mesh["boundaries"].pop("z_min")
         mesh["boundaries"].pop("z_max_conn")
         mesh["boundaries"].pop("z_min_conn")
+        mesh["boundaries"].pop("z_max_elems")
+        mesh["boundaries"].pop("z_min_elems")
         mesh["boundaries"].pop("z_all")
 
     return mesh
@@ -525,7 +632,7 @@ def _compute_node_levels(
     psi = np.abs(s) - half_length
 
     # Snap any node numerically collinear with the (infinite) fracture line to phi = 0
-    collinear_mask = np.abs(phi) < tol
+    collinear_mask = np.all((np.abs(phi) < tol, psi < tol), axis=0)
     phi[collinear_mask] = 0.0
 
     # Nodes directly on the physical fracture segment (phi = 0 and psi <= 0) -- a
@@ -534,6 +641,33 @@ def _compute_node_levels(
     on_frac_nodes = set(np.where(on_frac_mask)[0])
 
     return phi, psi, s, on_frac_nodes
+
+
+# Geometry of one already-processed fracture, kept around so any node -- including
+# ones created much later, mid-cut, for a different fracture -- can have its sign
+# w.r.t. this fracture evaluated directly from coordinates. (center_2d, n, tol)
+FracGeom = tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]
+
+
+def _evaluate_historical_phi_sign(
+    coords: npt.NDArray[np.float64], frac_geoms: list[FracGeom]
+) -> npt.NDArray[np.float64]:
+    """phi_sign of one or more nodes against every previously-processed fracture.
+
+    phi is affine in nodal coordinates (a signed distance to an infinite line), so this
+    evaluates directly from a node's coordinates -- no interpolation or topology
+    tracking needed, even for a node created moments ago mid-cut. Returns an
+    (n_nodes, len(frac_geoms)) array; n_nodes == 1 for a single new node.
+    """
+    coords = np.atleast_2d(coords)
+    if not frac_geoms:
+        return np.empty((coords.shape[0], 0))
+    cols = []
+    for center_2d, n, tol in frac_geoms:
+        phi = np.dot(coords[:, :2] - center_2d, n)
+        phi[np.abs(phi) < tol] = 0.0
+        cols.append(np.sign(phi))
+    return np.column_stack(cols)
 
 
 @dataclass
@@ -560,11 +694,20 @@ class FractureLevelSet:
     s: npt.NDArray[np.float64]  # tangential projection
     on_frac_nodes: set[int]  # nodes lying exactly on the fracture segment
 
-    phi_sign: npt.NDArray[np.float64]  # sign of phi
+    phi_sign: npt.NDArray[np.float64]  # sign of phi for the current fracture
+    # (center_2d, n, tol) for every fracture processed before this one, in order.
+    frac_geoms: list[FracGeom]
+    # phi_sign of every current node against every fracture processed so far,
+    # NOT including the current one -- shape (nn, len(frac_geoms)).
+    phi_sign_history: npt.NDArray[np.float64]
 
 
 def _build_fracture_level_set(
-    nodes: npt.NDArray[np.float64], fracture_spec: dict[str, Any], tol: float
+    nodes: npt.NDArray[np.float64],
+    fracture_spec: dict[str, Any],
+    phi_sign_history: npt.NDArray[np.float64],
+    frac_geoms: list[FracGeom],
+    tol: float,
 ) -> FractureLevelSet:
     """Compute fracture geometry and nodal level sets once for reuse across mesh-cutting steps."""
     # Geometric properties
@@ -589,6 +732,8 @@ def _build_fracture_level_set(
         s=s,
         on_frac_nodes=on_frac_nodes,
         phi_sign=phi_sign,
+        frac_geoms=frac_geoms,
+        phi_sign_history=phi_sign_history,
     )
 
 
@@ -608,6 +753,7 @@ def _create_fracture_nodes_conn(  # noqa
     u = frac_ls.u
     tol = frac_ls.tol
     phi = frac_ls.phi
+    psi = frac_ls.psi
 
     # list of all boundary faces in the mesh. Each key is a unique boundary.
     boundary_list = _get_all_edges(conn, ne, nne, nsd, elem_indx)
@@ -637,7 +783,7 @@ def _create_fracture_nodes_conn(  # noqa
 
                 frac_nodes = np.vstack((frac_nodes, new_node))
 
-    frac_nodes = np.unique(frac_nodes, axis=0)
+    frac_nodes = np.unique(np.round(frac_nodes, 9), axis=0)
 
     # Now check tip elements
     tips = [-1.0, 1.0]
@@ -647,7 +793,7 @@ def _create_fracture_nodes_conn(  # noqa
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
         nearest_indx = int(np.argmin(d))
-        if phi[nearest_indx] == 0.0:
+        if phi[nearest_indx] == 0.0 and psi[nearest_indx] < tol:
             tip_coords = nodes[nearest_indx, :]
 
         # Check if fracture node at tip_coords already exists
@@ -724,6 +870,10 @@ class _CutState:
     nodes: npt.NDArray[np.float64]
     phi: npt.NDArray[np.float64]
     phi_sign: npt.NDArray[np.float64]
+    # phi_sign against every fracture processed before the current one -- (nn, k).
+    # Grown by one row alongside `nodes`/`phi_sign` for each newly created node.
+    phi_sign_history: npt.NDArray[np.float64]
+    frac_geoms: list[FracGeom]
     psi: npt.NDArray[np.float64]
     new_node_index: int
 
@@ -731,17 +881,22 @@ class _CutState:
 def _find_cut_elements(
     conn: list[list[int]],
     ne: int,
+    phi: npt.NDArray[np.float64],
     phi_sign: npt.NDArray[np.float64],
     psi: npt.NDArray[np.float64],
     tol: float,
 ) -> list[int]:
     """Find matrix elements with a true interior cut: nodes of both signs, within the
     tangential extent of the fracture. Excludes vertex-touching and edge-aligned cases.
+
+    A node sitting on the fracture's infinite line but beyond the tip (psi >= tol) never
+    gets its `phi` snapped to exactly 0 by the level-set setup, so skip those nodes.
     """
     matrix_elements_to_cut = []
     for e in range(ne):
         enodes = conn[e]
-        signs = phi_sign[enodes]
+        on_line = np.abs(phi[enodes]) < tol
+        signs = phi_sign[enodes][~on_line]
 
         if np.any(signs > 0) and np.any(signs < 0):  # noqa
             # The element crosses the normal level set
@@ -751,7 +906,7 @@ def _find_cut_elements(
     return matrix_elements_to_cut
 
 
-def _find_collinear_tip_elements(
+def _find_collinear_tip_elements(  # noqa
     conn: list[list[int]],
     nsd: int,
     phi_sign: npt.NDArray[np.float64],
@@ -759,6 +914,7 @@ def _find_collinear_tip_elements(
     frac_ls: FractureLevelSet,
     tip_nodes: list[int],
     frac_nodes: npt.NDArray[np.float64],
+    nodes: npt.NDArray[np.float64],
 ) -> list[tuple[int, int, int, int]]:
     """Find elements with a boundary edge collinear with the fracture line whose two
     endpoints straddle a crack tip tangentially (one within the fracture's tangential
@@ -767,13 +923,19 @@ def _find_collinear_tip_elements(
     Returns (element_index, near_node, far_node, tip_index) tuples: near_node lies
     within the fracture's tangential extent, far_node lies beyond the tip, and
     tip_index indexes into `tip_nodes`/`frac_nodes` for the matching crack tip.
+
+    Skips a match if the tip itself already coincides with an existing matrix node --
+    that case is already handled by the fracture element loop's own tip cut
+    (`_cut_matrix_element`/`_group_split_nodes`), and inserting a second, independent
+    tip node here would create a coincident duplicate that can leave a degenerate,
+    zero-area element behind once nodes are deduplicated.
     """
     zero_nodes = set(np.flatnonzero(phi_sign == 0.0).tolist())
-    if len(zero_nodes) < 2:
+    if not zero_nodes:
         return []
 
-    # Determine which elements have exactly 2 nodes with a zero phi level set
-    candidate_elems = [e for e, enodes in enumerate(conn) if sum(n in zero_nodes for n in enodes) >= 2]
+    # Determine which elements have at least one node already classified as on the fracture
+    candidate_elems = [e for e, enodes in enumerate(conn) if any(n in zero_nodes for n in enodes)]
     if not candidate_elems:
         return []
 
@@ -781,24 +943,41 @@ def _find_collinear_tip_elements(
     u = frac_ls.u
     s = frac_ls.s
     tol = frac_ls.tol
+    phi = frac_ls.phi
     tip_s = {idx: float(np.dot(frac_nodes[idx] - center_2d, u)) for idx in tip_nodes}
 
-    # Check that these are tip elements
     found: list[tuple[int, int, int, int]] = []
     for e in candidate_elems:
         enodes = conn[e]
         faces = _get_element_face_lists(len(enodes), nsd)
         for face_local in faces.values():
             a, b = enodes[face_local[0]], enodes[face_local[1]]
-            if a not in zero_nodes or b not in zero_nodes:
-                continue  # not the edge
-            if np.sign(psi[a]) == np.sign(psi[b]):
+            if a in zero_nodes:
+                near_candidate, other = a, b
+            elif b in zero_nodes:
+                near_candidate, other = b, a
+            else:
+                continue  # neither endpoint is confirmed on the fracture segment
+
+            if abs(phi[other]) >= tol:
+                continue  # other endpoint isn't collinear with the (infinite) fracture line
+
+            if np.sign(psi[near_candidate]) == np.sign(psi[other]):
                 continue  # both collinear, but doesn't straddle a tip tangentially
-            if psi[a] < tol or psi[b] < tol:
-                continue  # the tip already exists as a node
-            near, far = (a, b) if psi[a] < psi[b] else (b, a)
+
+            near, far = (
+                (near_candidate, other) if psi[near_candidate] < psi[other] else (other, near_candidate)
+            )
+            if abs(psi[near]) < tol:
+                continue  # near node is essentially at the tip already, as a node
 
             tip_idx = min(tip_s, key=lambda k: abs(tip_s[k] - s[near]))
+
+            tip_coord = frac_nodes[tip_idx, :]
+            dist_to_existing = np.linalg.norm(nodes - tip_coord, axis=1)
+            if np.any(dist_to_existing < tol):
+                continue  # tip already lands on an existing matrix node -- handled elsewhere
+
             found.append((e, near, far, tip_idx))
     return found
 
@@ -905,19 +1084,41 @@ def _insert_split_nodes(
     """Add new nodes for one cut element: a single node at each fracture tip, or a
     coincident pair shifted to either side of the fracture for interior fracture nodes.
 
-    Appends to `state.nodes`/`phi_sign`/`psi` and returns the extended `m_nodes` list,
-    together with the shifted (non-tip) nodes so they can be restored afterwards.
+    Appends to `state.nodes`/`phi_sign`/`phi_sign_history`/`psi` and returns the
+    extended `m_nodes` list, together with the shifted (non-tip) nodes so they can be
+    restored afterwards.
+
+    `phi_sign_history` is evaluated at each node's unshifted coordinate `f_coords[i, :]`
+    -- the position the node is ultimately restored to below -- rather than at the
+    shifted pos/neg coordinate, so a node's history stays consistent with where it
+    ends up for deduplication.
+
+    A coordinate on an earlier fracture's line evaluates to a historical sign of 0,
+    but `_resolve_zero_level_set_nodes` never leaves an existing node at 0 -- so a
+    fresh node here must be resolved the same way (majority sign of its element's
+    neighbors) or it won't dedup against that existing node.
     """
     shifted_nodes = []
-    shift_dist = 0.5 * tol if tip_element else 0.0
+    shift_dist = 0.01 * tol if tip_element else 0.0
+    neighbor_nodes = list(m_nodes)
 
     for i in range(len(f_nodes)):
+        hist_row = _evaluate_historical_phi_sign(f_coords[i, :], state.frac_geoms)
+        zero_cols = np.flatnonzero(hist_row[0] == 0.0)
+        if zero_cols.size and neighbor_nodes:
+            neighbor_hist = state.phi_sign_history[neighbor_nodes, :]
+            for col in zero_cols:
+                side_sign = _majority_side_sign(neighbor_hist[:, col].tolist())
+                if side_sign is not None:
+                    hist_row[0, col] = side_sign
+
         if np.any(f_nodes[i] == tip_nodes):
             # For tip nodes, add one node
             state.nodes = np.vstack((state.nodes, f_coords[i, :]))
             m_nodes.append(state.new_node_index)
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, 0.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, 0.0))
         else:
             # Positive side shift
@@ -927,6 +1128,7 @@ def _insert_split_nodes(
             shifted_nodes.append((state.new_node_index, f_coords[i, :]))  # Store to revert
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, 1.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, -1.0))
 
             # Negative side shift
@@ -936,6 +1138,7 @@ def _insert_split_nodes(
             shifted_nodes.append((state.new_node_index, f_coords[i, :]))  # Store to revert
             state.new_node_index += 1
             state.phi_sign = np.hstack((state.phi_sign, -1.0))
+            state.phi_sign_history = np.vstack((state.phi_sign_history, hist_row))
             state.psi = np.hstack((state.psi, -1.0))
 
     return m_nodes, shifted_nodes
@@ -1100,6 +1303,17 @@ def _replace_cut_elements(
     return conn
 
 
+def _majority_side_sign(values: list[float] | npt.NDArray[np.float64]) -> float | None:
+    """Resolve an on-line (zero) sign to a side using the majority of nonzero neighbor signs.
+
+    Returns None if there is nothing nonzero to disambiguate against.
+    """
+    nonzero = [v for v in values if v != 0.0]
+    if not nonzero:
+        return None
+    return 1.0 if max(set(nonzero), key=nonzero.count) > 0 else -1.0
+
+
 def _resolve_zero_level_set_nodes(
     state: _CutState,
     conn: list[list[int]],
@@ -1132,14 +1346,17 @@ def _resolve_zero_level_set_nodes(
 
         for e in elems_with_node:
             enodes = conn[e]
-            other_signs = [state.phi_sign[n2] for n2 in enodes if n2 != node and state.phi_sign[n2] != 0.0]
-            if not other_signs:
+            other_signs = [state.phi_sign[n2] for n2 in enodes if n2 != node]
+            side_sign = _majority_side_sign(other_signs)
+            if side_sign is None:
                 continue  # nothing to disambiguate against; leave this occurrence alone
-            side_sign = 1.0 if max(set(other_signs), key=other_signs.count) > 0 else -1.0
             last_side_sign = side_sign
 
             state.nodes = np.vstack((state.nodes, state.nodes[node, :]))
             state.phi_sign = np.hstack((state.phi_sign, side_sign))
+            # Duplicate shares the original's coordinates exactly, so its history
+            # w.r.t. earlier fractures is identical -- copy rather than recompute.
+            state.phi_sign_history = np.vstack((state.phi_sign_history, state.phi_sign_history[node, :]))
             state.psi = np.hstack((state.psi, state.psi[node]))
             conn[e] = [state.new_node_index if n2 == node else n2 for n2 in enodes]
             state.new_node_index += 1
@@ -1151,11 +1368,21 @@ def _resolve_zero_level_set_nodes(
 
 
 def _deduplicate_split_nodes(
-    nodes: npt.NDArray[np.float64], phi_sign: npt.NDArray[np.float64], conn: list[list[int]], nsd: int
+    nodes: npt.NDArray[np.float64],
+    phi_sign_history: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    nsd: int,
 ) -> tuple[npt.NDArray[np.float64], list[list[int]], npt.NDArray[np.float64]]:
-    """Remove duplicate nodes (matching coordinates and phi_sign) introduced while cutting."""
-    # Add phi_sign as a nodal coordinate
-    nodes_old = np.hstack((nodes, phi_sign.reshape(-1, 1)))
+    """Remove duplicate nodes introduced while cutting, matching on coordinates AND
+    phi_sign against every fracture considered so far (the current one plus history).
+
+    Keying on the full history -- not just the current fracture's phi_sign -- matters
+    at fracture intersections: two nodes can coincide in space and share the current
+    fracture's sign while sitting on opposite sides of an earlier fracture, in which
+    case they must stay distinct rather than merge.
+    """
+    # Append phi_sign_history columns as extra nodal coordinates
+    nodes_old = np.hstack((nodes, phi_sign_history))
 
     # Round nodes to avoid truncation errors
     decimals = 9
@@ -1170,7 +1397,35 @@ def _deduplicate_split_nodes(
     # Update connectivity
     conn = [nodes_map[sublist].tolist() for sublist in conn]
 
-    return nodes, conn, nodes_new[:, -1]
+    return nodes, conn, nodes_new[:, nsd:]
+
+
+def _snap_point_to_near_edges(
+    point: npt.NDArray[np.float64],
+    node_ids: list[int],
+    nodes: npt.NDArray[np.float64],
+    tol: float,
+) -> npt.NDArray[np.float64]:
+    """Snap `point` onto a polygon edge it lies within `tol` of, if any.
+
+    Existing snapping only checks point-to-node distance, so a point that's merely
+    near an edge (not either endpoint) slips through and later triangulates into a
+    real-but-tiny sliver. Projecting onto the edge makes that degeneracy exact.
+    """
+    n = len(node_ids)
+    for i in range(n):
+        a = nodes[node_ids[i], :]
+        b = nodes[node_ids[(i + 1) % n], :]
+        ab = b - a
+        ab_len_sq = float(np.dot(ab, ab))
+        if ab_len_sq < 1e-30:
+            continue
+        t = float(np.dot(point - a, ab) / ab_len_sq)
+        t_clamped = min(max(t, 0.0), 1.0)
+        proj = a + t_clamped * ab
+        if np.linalg.norm(point - proj) < tol:
+            return proj
+    return point
 
 
 def _cut_tip_boundary_elements(
@@ -1208,13 +1463,55 @@ def _cut_tip_boundary_elements(
                 node for node in m_nodes_orig if (state.phi_sign[node] != 0.0 or state.psi[node] > tol)
             ]
 
+            # Snap the tip onto a nearby edge so any resulting sliver has exactly-zero area.
+            snapped_coord = _snap_point_to_near_edges(f_coords_tip[0, :], m_nodes_orig, state.nodes, tol)
+            f_coords_tip_elem = snapped_coord.reshape(1, -1)
+
             m_nodes, _ = _insert_split_nodes(
-                state, m_nodes, f_nodes_tip, f_coords_tip, tip_nodes, True, frac_normal, tol
+                state, m_nodes, f_nodes_tip, f_coords_tip_elem, tip_nodes, True, frac_normal, tol
             )
 
-            new_elem.extend(_triangulate_node_groups([m_nodes], state.nodes, True))
+            tri_elem = _triangulate_node_groups([m_nodes], state.nodes, True)
+
+            # Drop the resulting zero-area triangles.
+            for tri in tri_elem:
+                if len(tri) != 3:
+                    new_elem.append(tri)
+                    continue
+                p0, p1, p2 = state.nodes[tri[0]], state.nodes[tri[1]], state.nodes[tri[2]]
+                area = 0.5 * abs((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]))
+                if area > 1e-8:
+                    new_elem.append(tri)
 
     return new_elem, matrix_elements_to_cut_arr
+
+
+def _prune_unreferenced_nodes(
+    nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    phi_sign_history: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], list[list[int]], npt.NDArray[np.float64]]:
+    """Drop nodes no longer referenced by any element and renumber connectivity.
+
+    A node cut out of every element that used to reference it (e.g. an on-fracture
+    node superseded by a fresh split-node pair everywhere it appeared) would
+    otherwise survive as a phantom DOF and make the assembled system singular.
+    """
+    referenced = np.zeros(nodes.shape[0], dtype=bool)
+    for enodes in conn:
+        referenced[enodes] = True
+
+    if referenced.all():
+        return nodes, conn, phi_sign_history
+
+    new_index = np.full(nodes.shape[0], -1, dtype=np.int64)
+    new_index[referenced] = np.arange(int(referenced.sum()))
+
+    nodes = nodes[referenced]
+    phi_sign_history = phi_sign_history[referenced]
+    conn = [new_index[enodes].tolist() for enodes in conn]
+
+    return nodes, conn, phi_sign_history
 
 
 def _split_elements(
@@ -1235,13 +1532,15 @@ def _split_elements(
         nodes=mesh["nodes"],
         phi=frac_ls.phi,
         phi_sign=frac_ls.phi_sign,
+        phi_sign_history=frac_ls.phi_sign_history,
+        frac_geoms=frac_ls.frac_geoms,
         psi=frac_ls.psi,
         new_node_index=mesh["nn"],
     )
 
     # Find matrix elements that need cutting, and their centroids -- used below to match
     # each fracture element to its parent, nearest-centroid first, to avoid excessive looping.
-    matrix_elements_to_cut = _find_cut_elements(conn, ne, state.phi_sign, state.psi, tol)
+    matrix_elements_to_cut = _find_cut_elements(conn, ne, state.phi, state.phi_sign, state.psi, tol)
     elements_to_delete = matrix_elements_to_cut.copy()  # Keep a list to delete these elements at the end
     matrix_elements_to_cut_arr = np.array(matrix_elements_to_cut)
     centroids = _compute_element_centroids(matrix_elements_to_cut_arr, conn, state.nodes)
@@ -1255,7 +1554,7 @@ def _split_elements(
     # cut them separately, up front, using the original (pre-cut) connectivity.
     if tip_nodes:
         collinear_matches = _find_collinear_tip_elements(
-            conn, nsd, state.phi_sign, state.psi, frac_ls, tip_nodes, frac_nodes
+            conn, nsd, state.phi_sign, state.psi, frac_ls, tip_nodes, frac_nodes, state.nodes
         )
         if collinear_matches:
             collinear_new_elem, collinear_consumed = _cut_collinear_tip_elements(
@@ -1310,23 +1609,33 @@ def _split_elements(
     # exactly but are not cut by the fracture.
     _resolve_zero_level_set_nodes(state, conn, tip_nodes, frac_nodes, tol)
 
-    # ---- Remove duplicate nodes introduced while cutting
-    nodes, conn, phi_sign = _deduplicate_split_nodes(state.nodes, state.phi_sign, conn, nsd)
+    # ---- Remove duplicate nodes introduced while cutting. Key on this fracture's
+    # phi_sign together with the full history so nodes that coincide but sit on
+    # opposite sides of an earlier fracture (e.g. at an intersection) stay distinct.
+    combined_history = np.hstack((state.phi_sign_history, state.phi_sign.reshape(-1, 1)))
+    nodes, conn, phi_sign_history = _deduplicate_split_nodes(state.nodes, combined_history, conn, nsd)
+    nodes, conn, phi_sign_history = _prune_unreferenced_nodes(nodes, conn, phi_sign_history)
 
-    frac_ls.phi_sign = phi_sign
+    frac_ls.phi_sign = phi_sign_history[:, -1]
+    frac_ls.phi_sign_history = phi_sign_history[:, :-1]
     mesh["nodes"] = nodes
     mesh["conn"] = sorted(conn, key=len)  # Resort conn by node length
+    # Full history including the fracture just processed, for the next iteration
+    # and for anything downstream that wants per-fracture sign of every node.
+    mesh["phi_sign_history"] = phi_sign_history
 
     return mesh, frac_ls
 
 
-def _create_global_fracture_connectivities(  # noqa
+def _create_global_fracture_connectivities(
     mesh: dict[str, Any],
     frac_ls: FractureLevelSet,
     frac_nodes: npt.NDArray[np.float64],
     frac_conn: npt.NDArray[np.int64],
 ) -> dict[str, Any]:
-    """Assemble the mesh and connectivities needed for the fractures."""
+    """Accumulate one fracture's nodes, connectivity, and bookkeeping into the running
+    `mesh["fracture_mesh"]` structure.
+    """
     ne_f = np.size(frac_conn, 0)
 
     if "fracture_mesh" not in mesh:
@@ -1334,13 +1643,13 @@ def _create_global_fracture_connectivities(  # noqa
         mesh["fracture_mesh"] = {
             "nodes": np.empty((0, frac_nodes.shape[1])),
             "conn": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
-            "conn_global": np.empty((0, frac_conn.shape[1]), dtype=np.int64),
             "matrix_conn": [],
             "region_lists": [],  # In the fractures, regions correspond to the fracture number.
             "nn": 0,
             "ne": 0,
             "fracture_tangent": [],
             "fracture_normal": [],
+            "tol": [],  # per-fracture tolerance, needed later for matrix-conn matching
         }
     frac_mesh = mesh["fracture_mesh"]
 
@@ -1360,38 +1669,39 @@ def _create_global_fracture_connectivities(  # noqa
     # Fracture unit vectors
     frac_mesh["fracture_tangent"].append(frac_ls.u)
     frac_mesh["fracture_normal"].append(frac_ls.n)
+    frac_mesh["tol"].append(frac_ls.tol)
 
-    # Fracture global connectivity
-    nn = np.size(mesh["nodes"], 0) + prior_nn
-    frac_mesh["conn_global"] = np.vstack((frac_mesh["conn_global"], frac_conn + nn))
+    # conn_global (fracture connectivity in combined matrix+fracture global numbering)
+    # is NOT computed here: mesh["nn"] (matrix node count) keeps growing as later
+    # fractures cut further matrix elements, so any offset applied now would go stale
+    # by the time the loop finishes. It's (re)computed once from frac_mesh["conn"] in
+    # `_create_fracture_mesh`, after mesh["nn"] is final.
 
     # Record which fracture-element indices (in the combined, accumulated numbering)
     # belong to this fracture.
     frac_mesh["region_lists"].append(np.arange(prior_ne, prior_ne + ne_f))
 
-    # Create fracture-matrix connectivity
-    conn = mesh["conn"]
-    matrix_nodes = mesh["nodes"][:nn]  # matrix-side node coordinates (pre-fracture-node append)
-    phi_sign = frac_ls.phi_sign
-    tol = frac_ls.tol
+    return mesh
 
-    # Build a node -> matrix-element lookup once, so each fracture element can find
-    # its matching matrix elements by set intersection rather than a full O(ne) scan.
-    node_to_elems: dict[int, set[int]] = {}
-    for e, enodes in enumerate(conn):
-        for node in enodes:
-            node_to_elems.setdefault(node, set()).add(e)
 
-    frac_matrix_conn = []
+def _find_fracture_matrix_conn(
+    matrix_nodes: npt.NDArray[np.float64],
+    conn: list[list[int]],
+    node_to_elems: dict[int, set[int]],
+    frac_nodes: npt.NDArray[np.float64],
+    frac_conn: npt.NDArray[np.int64],
+    phi_sign: npt.NDArray[np.float64],
+    tol: float = 1e-8,
+) -> list[list[int]]:
+    """Match one fracture's elements to their neighboring positive/negative matrix
+    elements. `conn`/`matrix_nodes`/`node_to_elems`/`phi_sign` must all correspond to
+    the same (final) matrix element numbering.
+    """
+    ne_f = np.size(frac_conn, 0)
+    frac_matrix_conn: list[list[int]] = []
     for e_f in range(ne_f):
         f_coords = frac_nodes[frac_conn[e_f, :]]
 
-        # For each node of the fracture element, find the coincident matrix-side
-        # nodes on the positive (phi_sign > 0) and negative (phi_sign < 0) side,
-        # then intersect the sets of elements touching those nodes across all
-        # nodes of the fracture element. Since a fracture element's face is only
-        # ever shared by a single positive-side and a single negative-side matrix
-        # element, each intersection collapses to exactly one element.
         pos_candidates: set[int] | None = None
         neg_candidates: set[int] | None = None
 
@@ -1416,22 +1726,60 @@ def _create_global_fracture_connectivities(  # noqa
         pos_elem = pos_candidates.pop() if pos_candidates else None
         neg_elem = neg_candidates.pop() if neg_candidates else None
 
-        if neg_elem is None and pos_elem is None:
-            debugging_mesh_plot(mesh["nodes"], conn)
-            raise ValueError(f"Failed to find corresponding matrix element for fracture element {e_f}.")
-        elif neg_elem is None or pos_elem is None:
+        if pos_elem is not None and neg_elem is not None:
+            # append to frac_matrix_conn as [positive side, negative side]
+            frac_matrix_conn.append([pos_elem, neg_elem])
+        elif pos_elem is None and neg_elem is None:
+            debugging_mesh_plot_matrix_and_fracture(matrix_nodes, conn, frac_nodes, frac_conn, True)
+            xbar = np.mean(f_coords, axis=0)
+            raise ValueError(
+                f"Failed to find corresponding matrix element for fracture element located at {xbar}."
+            )
+        else:
             found_elem = pos_elem if pos_elem is not None else neg_elem
+            assert found_elem is not None
             warnings.warn(
                 f"Only one matrix element (of positive/negative side) found for fracture "
                 f"element {e_f}; appending single-element matrix connectivity."
             )
             frac_matrix_conn.append([found_elem])
-        else:
-            # append to frac_matrix_conn as [positive side, negative side]
-            frac_matrix_conn.append([pos_elem, neg_elem])
 
-    frac_mesh["matrix_conn"].extend(frac_matrix_conn)
+    return frac_matrix_conn
 
+
+def _assemble_fracture_matrix_conn(mesh: dict[str, Any]) -> dict[str, Any]:
+    """Match every fracture's elements to their parent matrix element(s), once, after
+    every fracture has been cut.
+    """
+    frac_mesh = mesh["fracture_mesh"]
+    conn = mesh["conn"]
+    matrix_nodes = mesh["nodes"]
+    phi_sign_history = mesh["phi_sign_history"]
+
+    # Build the node -> matrix-element lookup once for all fractures, rather than
+    # once per fracture as before.
+    node_to_elems: dict[int, set[int]] = {}
+    for e, enodes in enumerate(conn):
+        for node in enodes:
+            node_to_elems.setdefault(node, set()).add(e)
+
+    matrix_conn: list[list[int]] = []
+    for i, region in enumerate(frac_mesh["region_lists"]):
+        # frac_mesh["conn"] is already offset into the accumulated frac_mesh["nodes"]
+        # array, so this fracture's slice of it can be used directly.
+        frac_conn_i = frac_mesh["conn"][region]
+        matrix_conn.extend(
+            _find_fracture_matrix_conn(
+                matrix_nodes,
+                conn,
+                node_to_elems,
+                frac_mesh["nodes"],
+                frac_conn_i,
+                phi_sign_history[:, i],
+            )
+        )
+
+    frac_mesh["matrix_conn"] = matrix_conn
     return mesh
 
 
@@ -1441,33 +1789,141 @@ def _local_element_scale(
     center: npt.NDArray[np.float64],
     half_length: float,
     u: npt.NDArray[np.float64],
+    n: npt.NDArray[np.float64],
     pad: float,
+    percentile: float = 1.0,
 ) -> float | None:
-    """Minimum edge length among elements near a fracture's bounding box.
+    """Low-percentile edge length among elements near a fracture's line.
 
-    Used to scale the node-snapping tolerance to the local mesh resolution rather than
-    the overall domain size, which matters for meshes graded finer around fractures.
-    Returns None if no element centroids fall within the padded bounding box.
+    Elements are selected via a bounding box aligned to the fracture's own
+    tangent/normal axes.Uses a low percentile rather than the strict minimum,
+    to prevent sliver elements from creating more slivers.
+
+    Used to scale the node-snapping tolerance to local mesh resolution rather than
+    overall domain size. Returns None if no element centroids fall within the strip.
     """
-    tip_a = center + half_length * u
-    tip_b = center - half_length * u
-    bbox_min = np.minimum(tip_a, tip_b) - pad
-    bbox_max = np.maximum(tip_a, tip_b) + pad
-
-    min_edge_sq = np.inf
+    edge_lengths = []
     for elem in conn:
         coords = nodes[elem]
         centroid = coords.mean(axis=0)
-        if np.any(centroid < bbox_min) or np.any(centroid > bbox_max):
+        rel = centroid - center
+        s = rel @ u  # tangential coordinate along the fracture
+        d = rel @ n  # normal (perpendicular) distance from the fracture line
+        if abs(s) > half_length + pad or abs(d) > pad:
             continue
         n_nodes = len(elem)
         for i in range(n_nodes):
-            d = coords[(i + 1) % n_nodes] - coords[i]
-            min_edge_sq = min(min_edge_sq, float(d @ d))
+            edge = coords[(i + 1) % n_nodes] - coords[i]
+            edge_lengths.append(float(np.sqrt(edge @ edge)))
 
-    if not np.isfinite(min_edge_sq):
+    if not edge_lengths:
         return None
-    return float(np.sqrt(min_edge_sq))
+    return float(np.percentile(edge_lengths, percentile))
+
+
+def _node_to_elem_lookup(conn: list[list[int]]) -> dict[int, set[int]]:
+    # Build a node -> matrix-element lookup
+    node_to_elems: dict[int, set[int]] = {}
+    for e, enodes in enumerate(conn):
+        for node in enodes:
+            node_to_elems.setdefault(node, set()).add(e)
+
+    return node_to_elems
+
+
+def _insert_fracture_junctions(
+    mesh: dict[str, Any], fracture_specs: list[dict[str, Any]], tol: float
+) -> dict[str, Any]:
+    """Loop through the fractures and detect any crossings.
+
+    If crossings exist, check if it intersects any existing nodes.
+    If not, add new node and split the element.
+    """
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
+    node_to_elems = _node_to_elem_lookup(conn)
+    n_fractures = len(fracture_specs)
+    elements_to_delete = []
+
+    for indx_1 in range(n_fractures - 1):
+        fracture_1 = fracture_specs[indx_1]
+        center_1, half_length_1, _, u_1, _ = _get_fracture_geometry_2D(fracture_1)
+
+        for indx_2 in range(indx_1 + 1, n_fractures):
+            new_elem = []
+
+            fracture_2 = fracture_specs[indx_2]
+            center_2, half_length_2, _, u_2, _ = _get_fracture_geometry_2D(fracture_2)
+
+            # Check for intersections
+            Px1 = center_1[0]
+            Py1 = center_1[1]
+            ux1 = u_1[0]
+            uy1 = u_1[1]
+
+            Px2 = center_2[0]
+            Py2 = center_2[1]
+            ux2 = u_2[0]
+            uy2 = u_2[1]
+
+            s = ((Px2 - Px1) * uy1 - (Py2 - Py1) * ux1) / (uy2 * ux1 - uy1 * ux2)
+
+            junction = center_2 + u_2 * s
+            L1 = np.linalg.norm(junction - center_1)
+            L2 = np.linalg.norm(junction - center_2)
+            if half_length_1 < L1 or half_length_2 < L2:
+                # The fractures do not intersect
+                continue
+
+            d = np.linalg.norm(nodes - junction, axis=1)
+            # 1. Check if the fracture exists in the mesh already
+            if np.any(d < tol):
+                continue
+
+            # 2. Find which element it is in. A single nearest node isn't a reliable
+            # proxy once an earlier junction has fan-triangulated the area: the true
+            # containing element can belong to a slightly-farther node whose own
+            # untouched wedge happens to cover this point. Search a small neighbourhood
+            # of nearby nodes instead of just the closest one.
+            k = min(5, len(nodes))
+            nearby_nodes = np.argsort(d)[:k]
+            candidate_elems: set[int] = set()
+            for nn in nearby_nodes:
+                candidate_elems |= node_to_elems[int(nn)]
+
+            e_m = None
+            for e in candidate_elems:
+                enodes = conn[e]
+                xI = nodes[enodes, :]
+
+                hull = sp.spatial.ConvexHull(xI)
+                A, b = (
+                    hull.equations[:, :-1],
+                    hull.equations[:, -1:],
+                )  # extract the equations defining the 0-level set
+                # The level set defines the hull such that all points Ax + b = 0 form the shell of the hull.
+                # If Ax + b < 0, then the point is within the polyhedron.
+                if np.all(junction @ A.T + b.T < 1e-8):
+                    e_m = e  # The junction is in this element
+                    break
+
+            if e_m is None:
+                # No element neighbouring the k nearest nodes to the junction was found
+                # to contain it, therefore the junction must be outside the domain.
+                continue
+
+            # Otherwise, insert the node and split the element.
+            nodes = np.vstack((nodes, junction))
+            added_elem = _triangulate_node_groups([enodes + [np.size(nodes, 0) - 1]], nodes, True)
+            new_elem.extend(added_elem)
+            elements_to_delete = [e_m]
+            conn = _replace_cut_elements(conn, elements_to_delete, np.empty(0, dtype=np.int64), new_elem)
+            node_to_elems = _node_to_elem_lookup(conn)
+
+    mesh["nodes"] = nodes
+    mesh["conn"] = conn
+
+    return mesh
 
 
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
@@ -1494,15 +1950,30 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     tol_domain = L * 0.005
     tol_floor = L * 1.0e-9
 
+    # Insert junction nodes before beginning the cutting
+    mesh = _insert_fracture_junctions(mesh, fracture_specs, tol_domain)
+    mesh = _extract_key_mesh_values(mesh)
+
+    # Geometry (center_2d, n, tol) of every fracture processed so far -- used only to
+    # evaluate phi_sign_history for brand-new nodes as they're created mid-cut.
+    frac_geoms: list[FracGeom] = []
+    # phi_sign of every current node against every fracture processed so far. This is
+    # carried forward as-is (never re-evaluated from coordinates) because nodes split
+    # into a coincident +1/-1 pair along an earlier fracture sit exactly on that
+    # fracture's line.
+    phi_sign_history = np.empty((mesh["nn"], 0))
+
     # Loop through each fracture specification
     for fracture in fracture_specs:
-        center_2d, half_length, _, u, _ = _get_fracture_geometry_2D(fracture)
-        h_local = _local_element_scale(nodes, mesh["conn"], center_2d, half_length, u, pad=tol_domain)
-        tol = min(tol_domain, 0.2 * h_local) if h_local is not None else tol_domain
+        center_2d, half_length, _, u, n = _get_fracture_geometry_2D(fracture)
+        h_local = _local_element_scale(
+            mesh["nodes"], mesh["conn"], center_2d, half_length, u, n, pad=tol_domain
+        )
+        tol = min(tol_domain, 0.5 * h_local) if h_local is not None else tol_domain
         tol = max(tol, tol_floor)
 
         # Compute fracture geometry and nodal level sets once, shared by both helpers below
-        frac_ls = _build_fracture_level_set(nodes, fracture, tol)
+        frac_ls = _build_fracture_level_set(mesh["nodes"], fracture, phi_sign_history, frac_geoms, tol)
 
         # Create fracture nodes and connectivity
         frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
@@ -1512,6 +1983,14 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
 
         # Assemble global fracture connectivity and matrix-fracture connectivity
         mesh = _create_global_fracture_connectivities(mesh, frac_ls, frac_nodes, frac_conn)
+        mesh = _extract_key_mesh_values(mesh)
+
+        # This fracture is now part of the history every subsequent fracture (and
+        # every node it creates) gets checked against. phi_sign_history is taken
+        # straight from mesh -- it's already been resolved through this fracture's
+        # dedup pass and is authoritative for the next iteration.
+        frac_geoms.append((frac_ls.center_2d, frac_ls.n, frac_ls.tol))
+        phi_sign_history = mesh["phi_sign_history"]
 
     if len(mesh["fracture_mesh"]["conn"]) == 0:
         raise ValueError(
@@ -1519,8 +1998,19 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
             Try changing the fracture definitions or use a different mesh."""
         )
 
+    # Match every fracture element to its parent matrix element(s) now that
+    # mesh["conn"] has its final, stable numbering -- see _assemble_fracture_matrix_conn.
+    mesh = _assemble_fracture_matrix_conn(mesh)
+
+    # Deduplicate any fracture nodes
+    fmesh = mesh["fracture_mesh"]
+    fmesh["nodes"], fmesh["conn"], _ = _deduplicate_split_nodes(
+        fmesh["nodes"], np.zeros((fmesh["nn"], 1)), fmesh["conn"], nsd
+    )
+    # conn_global is fracture connectivity in combined matrix+fracture global numbering.
+    fmesh["conn_global"] = [[node + mesh["nn"] for node in elem] for elem in fmesh["conn"]]
+
     # Re-evaluate key values
-    mesh = _extract_key_mesh_values(mesh)
     mesh["fracture_mesh"] = _extract_key_mesh_values(mesh["fracture_mesh"])
     mesh["nn_total"] = mesh["nn"] + mesh["fracture_mesh"]["nn"]
     mesh["nodes_total"] = np.vstack([mesh["nodes"], mesh["fracture_mesh"]["nodes"]])
@@ -1590,6 +2080,19 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     return mesh
 
 
+def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
+    """For each boundary's exterior element list, add the corresponding list of element regions."""
+    regions = np.asarray(mesh["regions"])
+    boundaries = mesh["boundaries"]
+
+    elems_keys = [key for key in boundaries if key.endswith("_elems")]
+    for elems_key in elems_keys:
+        region_key = elems_key.replace("_elems", "_regions")
+        boundaries[region_key] = regions[boundaries[elems_key]]
+
+    return mesh
+
+
 def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
@@ -1615,6 +2118,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
 
     # Extract sets of exterior nodes
     mesh = _extract_exterior(mesh)
+
+    # Assign exterior element regions
+    mesh = _assign_exterior_element_regions(mesh)
 
     if verbose:
         # Join multiple element types with commas
