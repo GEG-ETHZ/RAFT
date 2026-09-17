@@ -1,20 +1,3 @@
-# Copyright 2026 The RAFT Community
-#
-# This file is part of RAFT.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Check FEM test cases."""
 
 from pathlib import Path
@@ -25,15 +8,6 @@ import numpy as np
 import numpy.typing as npt
 
 from raft.preprocessing import load_config
-
-
-def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
-    """Return values[0] of the nth BC group whose `field` spec is of type `bc_type`."""
-    groups = config["boundary_conditions"]
-    matches = [
-        group[field]["values"] for group in groups if field in group and group[field]["type"] == bc_type
-    ]
-    return float(matches[index][0])
 
 
 def check_patch_test(
@@ -47,7 +21,7 @@ def check_patch_test(
 ) -> bool:
     """Check patch test. Result should be an exact linear solution."""
     # Set tolerance
-    tol = 1.0e-7
+    tol = 1.0e-9
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -97,8 +71,8 @@ def check_patch_test(
 
     # check temperature
 
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     T = results["T"][:, 0]
 
@@ -125,8 +99,8 @@ def check_patch_test(
     err_ex += sum((_lin_exact(T0, T1, d_4, L) - T[line_4]) ** 2)
 
     # check pressure
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    p1 = _bc_value(config, "hydraulics", "pressure", 1)
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
 
     p = results["p"][:, 0]
 
@@ -199,8 +173,8 @@ def check_patch_test_flux(
 
     # check temperature
 
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    q = _bc_value(config, "thermal", "flux", 0)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
     k = config["material"]["solid"]["therm_cond"]
 
     # define exact solution - linear
@@ -229,8 +203,8 @@ def check_patch_test_flux(
     err_ex += sum((_lin_exact(T0, m, d_2) - T[line_2]) ** 2) / mean_val
 
     # check pressure
-    p1 = _bc_value(config, "hydraulics", "pressure", 0)
-    q = _bc_value(config, "hydraulics", "flux", 0)
+    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
     k = config["material"]["solid"]["permeability"]
     mu = config["material"]["fluid"]["viscosity"]
 
@@ -273,7 +247,7 @@ def check_advection(
 ) -> bool:
     """Check advection against analytical solution."""
     # Set tolerance
-    tol = 1.0e-3
+    tol = 1.0e-4
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -289,8 +263,8 @@ def check_advection(
     # Define analytical solution
     mat = config["material"]
     # flux
-    p0 = _bc_value(config, "hydraulics", "pressure", 1)
-    p1 = _bc_value(config, "hydraulics", "pressure", 0)
+    p0 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    p1 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
     kf = mat["solid"]["permeability"]
     mu = mat["fluid"]["viscosity"]
     q = kf / mu * (p1 - p0) / L
@@ -308,8 +282,8 @@ def check_advection(
     x = np.linspace(0, L, 100) / L
     T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
 
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     # extract T and normalize
     T = (results["T"][:, 0] - T0) / (T1 - T0)
@@ -344,7 +318,7 @@ def check_buoyancy(
 ) -> bool:
     """Check buoyancy against analytical solution."""
     # Set tolerance
-    tol = 1.0e-5
+    tol = 1.0e-6
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -361,21 +335,17 @@ def check_buoyancy(
     mat = config["material"]
 
     g = -9.81
-    rho0 = mat["fluid"]["density"]
+    rho_f = mat["fluid"]["density"]
     alpha_f = mat["fluid"]["therm_expansion"]
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
     dT = T0 - T1
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    p1 = _bc_value(config, "hydraulics", "pressure", 1)
+
+    beta = rho_f * alpha_f * g * dT * L / 2
 
     # analytical solution
     x = np.linspace(0, L, 100) / L
-    A = alpha_f * dT
-    B = rho0 * g * L
-    p_exact = p0 + B * (
-        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
-    )
+    p_exact = beta * (x**2 - x)
 
     # extract T and normalize
     p = results["p"][:, 0]
@@ -387,27 +357,77 @@ def check_buoyancy(
         plt.ylabel("p")
         plt.title(test_name)
 
-        # mu = mat["fluid"]["viscosity"]
-        # k = mat["solid"]["permeability"]
-        # q_exact = -k/mu * (2*beta * x - beta * L + p1/L)*x
-        # indx = np.argsort(d_1)
-        # dx = d_1[2]*np.ones(np.shape(d_1))
-        # #dx[0] = 0.5*dx[0]
-        # #dx[-1] = 0.5*dx[-1]
-        # p_num = p[line_1][indx]
-        # q_num = -k/mu * np.gradient(p_num) / dx
-        # plt.figure()
-        # plt.plot(x, q_exact, "r--")
-        # plt.plot(d_1/L, q_num, "ko")
-        # plt.ylabel("q")
-
     # calculate error
     x = d_1 / L
-    p_exact = p0 + B * (
-        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
-    )
-    err_ex = sum((p_exact - p[line_1]) ** 2) / sum(p_exact**2)
-    # The error here is calculated based on the nodal solutions.
+    p_exact = beta * (x**2 - x)
+    err_ex = sum((p_exact - p[line_1]) ** 2)
+    # The error here is calculated pased on the nodal solutions.
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_pressurization(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check pressurization against analytical solution."""
+    # Set tolerance
+    tol = 1.0e-6
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes"]
+    line_1 = np.where((nodes[:, 0] == 0) & (nodes[:, 1] == 0))[0]
+
+    L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[0, :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+
+    # ----- material properties
+    kf = mat["solid"]["permeability"]
+    mu = mat["fluid"]["viscosity"]
+    alpha_s = mat["solid"]["therm_expansion"]
+    alpha_f = mat["fluid"]["therm_expansion"]
+    phi = mat["solid"]["porosity"]
+    biot = mat["solid"]["biot_coeff"]
+
+    # effective expansion modulus
+    alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
+
+    dT = -config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
+
+    beta = alpha_e * dT * mu * L**2 / 6 / kf
+
+    # analytical solution
+    x = np.linspace(0, 1, 100)
+    p_exact = beta * (x**3 - x)
+
+    # extract T and normalize
+    p = results["p"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot(1 - x, p_exact, "r-")
+        plt.plot(d_1 / L, p[line_1], "ko")
+        plt.ylabel("p")
+        plt.title(test_name)
+
+    # calculate error
+    x = 1 - (d_1 / L)
+    p_exact = beta * (x**3 - x)
+    err_ex = sum((p_exact - p[line_1]) ** 2)
+    # The error here is calculated pased on the nodal solutions.
 
     test_pass = bool(err_ex < tol)
 
@@ -460,8 +480,8 @@ def check_heterogeneous(
 
     # check temperature
 
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    q = _bc_value(config, "thermal", "flux", 0)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
     A = max(mesh["nodes"][:, 0]) * max(mesh["nodes"][:, 1])
     q = -q / A * 4
 
@@ -482,11 +502,11 @@ def check_heterogeneous(
         plt.title(test_name)
 
     # calculate error
-    err_ex = sum((T_ex - T[line_1]) ** 2 / T_ex**2)
+    err_ex = sum((T_ex - T[line_1]) ** 2)
 
     # check pressure
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    q = _bc_value(config, "hydraulics", "flux", 0)
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
     q = -q / A * 4
 
     k = config["material"]["solid"]["permeability"]
@@ -506,7 +526,7 @@ def check_heterogeneous(
         plt.ylabel("p")
         plt.title(test_name)
 
-    err_ex += sum((p_ex - p[line_1]) ** 2 / p_ex**2)
+    err_ex += sum((p_ex - p[line_1]) ** 2)
 
     test_pass = bool(err_ex < tol)
 
@@ -548,20 +568,18 @@ def check_NL_viscosity(
     # Define analytical solution
     mat = config["material"]
     # flux
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    q = _bc_value(config, "hydraulics", "flux", 0)
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
 
     # temperature
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     # conductivity
     phi = mat["solid"]["porosity"]
     lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * mat["solid"]["therm_cond"]
     cp = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
-
-    q = q / rho_f
 
     # peclet number per length
     Pe = L * abs(q * cp * rho_f) / lambda_e
@@ -571,21 +589,24 @@ def check_NL_viscosity(
     T_exact = (np.exp(Pe * x) - 1) / (np.exp(Pe) - 1)
     T_exact = T0 + (T1 - T0) * T_exact
 
-    # Viscosity - real-fluid (CoolProp) viscosity. Self-consistent with the local pressure
-    # via fixed-point refinement: p_exact depends on visc_exact(p), and vice versa.
+    # Viscosity
+    visc_coeff = mat["fluid"]["viscosity"]
+    visc_exact = visc_coeff[0] * np.exp(
+        visc_coeff[1] / T_exact + visc_coeff[2] * T_exact + visc_coeff[3] * T_exact**2
+    )
+
+    # pressure
     k = mat["solid"]["permeability"]
+    p_exact = np.empty(100)
+    p_exact[0] = p0
     dx = x[1] * L
-    p_exact = np.full(100, config["initial_conditions"]["p_ini"])
-    for _ in range(3):
-        visc_exact = get_viscosity(T_exact, p_exact, mat["fluid"]).value
-        p_exact[0] = p0
-        for i in range(1, 100):
-            p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
+    for i in range(1, 100):
+        p_exact[i] = p_exact[i - 1] + dx * q / k * 0.5 * (visc_exact[i - 1] + visc_exact[i])
 
     # extract results
     p = results["p"][:, 0]
     T = results["T"][:, 0]
-    visc_approx = get_viscosity(T[line_1], p[line_1], mat["fluid"]).value
+    visc_approx, _ = get_viscosity(T[line_1], visc_coeff)
 
     if plot_on:
         plt.figure()
@@ -650,8 +671,8 @@ def check_axisymmetry(
 
     # check temperature
 
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    q = _bc_value(config, "thermal", "flux", 0)
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["temperature_flux"][0]["values"][0]
     k = config["material"]["solid"]["therm_cond"]
 
     # define exact solution
@@ -681,8 +702,8 @@ def check_axisymmetry(
     err_ex += sum((_y_exact(d_2, T0, q, k, Ri, Ro) - T[line_2]) ** 2) / mean_val**2
 
     # check pressure
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    q = _bc_value(config, "hydraulics", "flux", 0)
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    q = config["boundary_conditions"]["fluid_flux"][0]["values"][0]
     k = config["material"]["solid"]["permeability"] / config["material"]["fluid"]["viscosity"]
 
     # define exact solution
@@ -798,10 +819,10 @@ def check_fracture_perpendicular_patch(
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
 
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    p1 = _bc_value(config, "hydraulics", "pressure", 1)
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
+    p0 = config["boundary_conditions"]["pressure_fixed"][0]["values"][0]
+    p1 = config["boundary_conditions"]["pressure_fixed"][1]["values"][0]
+    T0 = config["boundary_conditions"]["temperature_fixed"][0]["values"][0]
+    T1 = config["boundary_conditions"]["temperature_fixed"][1]["values"][0]
 
     # Gradient direction is x; extents taken from the (uncut) matrix nodes.
     nodes = mesh["nodes"]
@@ -839,106 +860,3 @@ def check_fracture_perpendicular_patch(
     test_pass = bool(err_p < tol and err_T < tol)
 
     return test_pass
-
-
-def check_fracture_advection_bounded(
-    config_name: str,
-    config_dir: Path,
-    results: dict[str, Any],
-    mesh: dict[str, Any],
-    test_name: str,
-    plot_on: bool,
-) -> bool:
-    """Check maximum-principle boundedness for an angled (non-perpendicular) fracture with
-    advective leak-off turned on.
-
-    With advection_on and no internal sources, steady p/T have no interior extrema: every
-    node - including the fracture's own leak-off nodes and both sides of the matrix - must
-    stay within the range spanned by the imposed boundary values. A sign error in the
-    fracture-matrix coupling's advective tangent (`_integrate_fracture_matrix_coupling_tangent`
-    in matrixassembly.py) or a wrong upwind branch tends to show up as overshoot beyond this
-    envelope rather than a subtly wrong interior profile, so this is a cheap discriminating
-    check even without an analytical reference solution.
-    """
-    tol_rel = 1.0e-6
-
-    config = load_config(config_name, config_dir, verbose=False)
-
-    p0 = _bc_value(config, "hydraulics", "pressure", 0)
-    p1 = _bc_value(config, "hydraulics", "pressure", 1)
-    T0 = _bc_value(config, "thermal", "temperature", 0)
-    T1 = _bc_value(config, "thermal", "temperature", 1)
-
-    p_lo, p_hi = min(p0, p1), max(p0, p1)
-    T_lo, T_hi = min(T0, T1), max(T0, T1)
-
-    p = results["p"][:, 0]
-    T = results["T"][:, 0]
-
-    if plot_on:
-        nodes_total = mesh["nodes_total"]
-        plt.figure()
-        plt.scatter(nodes_total[:, 0], nodes_total[:, 1], c=T)
-        plt.colorbar(label="T")
-        plt.title(test_name)
-
-    p_bounded = bool(
-        np.all(p >= p_lo - tol_rel * (p_hi - p_lo)) and np.all(p <= p_hi + tol_rel * (p_hi - p_lo))
-    )
-    T_bounded = bool(
-        np.all(T_lo - tol_rel * (T_hi - T_lo) <= T) and np.all(T_hi + tol_rel * (T_hi - T_lo) >= T)
-    )
-
-    return p_bounded and T_bounded
-
-
-def check_enthalpy_bndry_bounded(
-    config_name: str,
-    config_dir: Path,
-    results: dict[str, Any],
-    mesh: dict[str, Any],
-    test_name: str,
-    plot_on: bool,
-) -> bool:
-    """Check the outlet's temperature against the exact solution for an outlet with no
-    thermal BC of its own.
-
-    The outlet's temperature is free, advected out through
-    `integrate_enthlpy_bndry_residual`/`integrate_enthlpy_bndry_tangent` in matrixassembly.py
-    rather than fixed by a Dirichlet condition, and (for a pressure-type outlet) also picks up
-    the `fully_coupled` Kpp/KpT cross-term there. With a single Dirichlet inlet value, no
-    sources, and steady, divergence-free flow, the uniform field T = T_in exactly satisfies
-    the advection-diffusion equation everywhere (both the diffusive and advective terms vanish
-    identically for a spatially constant field) and the natural BCs elsewhere - so T should
-    equal T_in to within discretization error, not just fall inside some broad envelope.
-    Missing or sign-flipped advective outflow would instead let heat build up at the outlet,
-    pushing T away from T_in.
-    """
-    tol_rel = 1.0e-3
-
-    config = load_config(config_name, config_dir, verbose=False)
-
-    p_in = _bc_value(config, "hydraulics", "pressure", 0)
-    T_in = _bc_value(config, "thermal", "temperature", 0)
-    p_ini = float(config["initial_conditions"]["p_ini"])
-    T_ini = float(config["initial_conditions"]["T_ini"])
-
-    p = results["p"][:, 0]
-    T = results["T"][:, 0]
-
-    if plot_on:
-        nodes_total = mesh["nodes_total"]
-        plt.figure()
-        plt.scatter(nodes_total[:, 0], nodes_total[:, 1], c=T)
-        plt.colorbar(label="T")
-        plt.title(test_name)
-
-    T_scale = abs(T_in - T_ini)
-    T_bounded = bool(np.all(np.abs(T - T_in) <= tol_rel * T_scale))
-
-    # p isn't pinned at the outlet in the flux-type variant, so there's no simple a-priori
-    # bound to check it against; just guard against the field blowing up or going non-physical.
-    p_scale = max(abs(p_in), abs(p_ini))
-    p_sane = bool(np.all(np.isfinite(p)) and np.all(p > 0) and np.all(np.abs(p) < 10 * p_scale))
-
-    return T_bounded and p_sane

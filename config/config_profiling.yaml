@@ -16,44 +16,43 @@ material:
 
   # Fluid parameters
   fluid:
-      density: 925            # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
-      reference_temperature: 400 # Reference temperature for density (K)
-      bulk_mod: 2.10e+9       # Pa
-      therm_expansion: 200.0e-6 # 1/K
-      specific_heat: 4200     # J/kgK
-      therm_cond: 0.6         # W/mK
-      viscosity: 0.7e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      bulk_mod: 2.10e+9         # Pa
+      density:      925         # kg/m^3
+      therm_cond:   0.6         # W/mK
+      therm_expansion: 200.0e-4 # 1/K
+      specific_heat: 4200       # J/kgK
+      viscosity: 0.7e-3         # m^2 (permeability)
 
 initial_conditions:
-  T_ini: 400                  # deg C
+  T_ini: 200                  # deg C
   p_ini: 1.0e+5
 
 
 boundary_conditions:
-  - faces: [y_min]
-    hydraulics:
-      values: [1e5]
-      type: pressure
-  - nodes: [4]
-    hydraulics:
-      values: [0.001]
-      type: flux
-    thermal:
-      values: [300]
-      type: temperature
-  - faces: [y_max]
-    hydraulics:
-      values: [0.001]
-      type: flux
-    thermal:
-      values: [350]
-      type: temperature
+  pressure_fixed:
+      - nodes: [0, 1, 2, 3, 7, 8, 9, 10]
+        values: [1e5]
 
+  temperature_fixed:
+      - nodes: [4]
+        values: [10]
+      - nodes: [13]
+        values: [100]
+
+  fluid_flux:
+      - nodes: [4]
+        values: [0.1]
+      - nodes: [13]
+        values: [0.5]
+
+  temperature_flux:
+      - nodes: []
+        values: []
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 1.0e+6
+  t_end: 3.0e+5
   timestep: 1.0e+3
   timestep_min: 1.0e+3
   timestep_max: 1.0e+4
@@ -62,14 +61,12 @@ simulation:
   output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
-  output_viscosity: 1
-  output_density: 1
-  output_porosity: 1
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
-  gravity: -9.81    # m/s^2
+  pressurization_on: 1
+  buoyancy_on: 1
 
   # Numerical controls
   rel_error_T: 5.0e-1 # Relative error for extrapolation

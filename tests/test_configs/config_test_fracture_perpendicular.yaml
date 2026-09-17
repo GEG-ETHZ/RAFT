@@ -6,22 +6,22 @@ mesh:
 
 material:
   solid:
-      bulk_mod: 20.0e+19        # Pa
+      bulk_mod: 20.0e+9        # Pa
       density: 2600.0          # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 800.0     # J/kgK
-      therm_expansion: 0.0e-6 # 1/K
+      therm_expansion: 12.0e-6 # 1/K
       porosity: 0.1            # -
       biot_coeff: 0.5          # -
       permeability: 1.0e-14    # m^2
 
   fluid:
-      density: 1000.0         # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
-      bulk_mod: 2.0e+19       # Pa
-      therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 4180.0   # J/kgK
-      therm_cond: 0.6         # W/mK
-      viscosity: 1.0e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      bulk_mod: 2.0e+9         # Pa
+      density: 1000.0          # kg/m^3
+      therm_cond: 0.6          # W/mK
+      therm_expansion: 200.0e-6 # 1/K
+      specific_heat: 4180.0    # J/kgK
+      viscosity: 1.0e-3        # Pa-s
 
   # Fracture parameters
   fracture:
@@ -34,22 +34,17 @@ initial_conditions:
   p_ini: 1.5e+5
 
 boundary_conditions:
-  - faces: [x_min]
-    hydraulics:
-      values: [200000.0]
-      type: pressure
-  - faces: [x_max]
-    hydraulics:
-      values: [100000.0]
-      type: pressure
-  - faces: [x_min]
-    thermal:
-      values: [350]
-      type: temperature
-  - faces: [x_max]
-    thermal:
-      values: [300]
-      type: temperature
+  pressure_fixed:
+      - faces: [x_min]
+        values: [2.0e+5]
+      - faces: [x_max]
+        values: [1.0e+5]
+
+  temperature_fixed:
+      - faces: [x_min]
+        values: [350]
+      - faces: [x_max]
+        values: [300]
 
 simulation:
   # Time
@@ -58,19 +53,20 @@ simulation:
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1
-  output_vtk: 1
+  output_vtk: 0
 
   # Physical controls
   rate_order: 1
   advection_on: 0
-  gravity: 0.0    # m/s^2
+  pressurization_on: 0
+  buoyancy_on: 0
   steady_pressure: 1
   steady_temperature: 1
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "linearized"
   rel_error_T: 1.0e-2
