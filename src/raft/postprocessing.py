@@ -1,3 +1,20 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Postprocessing of FEM file."""
 
 import bisect
@@ -8,13 +25,57 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matprops import get_viscosity
-from .shapefunctions import getB
+from .matprops import get_EOS, get_porosity, get_viscosity
+from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
 # (two levels up from /main_folder/src/postprocessing.py)
 _DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "outputs"
+
+# Mesh quality metrics are evaluated on each element's corner nodes only, using the
+# linear (corner-only) counterpart of its element type - i.e. quadratic elements
+# (Q9, B27) are assessed via the linear shape functions of their corner subset
+# (Q4, B27's corner subset -> B8), since their first nc nodes are the corners.
+_QUALITY_LINEAR_TYPE = {"T3": "T3", "Q4": "Q4", "Q9": "Q4", "T4": "T4", "B8": "B8", "B27": "B8"}
+
+# Local corner-to-corner edges, by linear element type - used for aspect ratio and skewness.
+_QUALITY_EDGES: dict[str, list[tuple[int, int]]] = {
+    "T3": [(0, 1), (1, 2), (2, 0)],
+    "Q4": [(0, 1), (1, 2), (2, 3), (3, 0)],
+    "T4": [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)],
+    "B8": [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ],
+}
+
+# Ideal (equiangular) corner angle, by linear element type - triangular-faced
+# elements (T3, T4) are compared against an equilateral 60 degrees, quad-faced
+# elements (Q4, B8) against a square 90 degrees.
+_QUALITY_IDEAL_ANGLE = {"T3": 60.0, "Q4": 90.0, "T4": 60.0, "B8": 90.0}
+
+# Number of corner nodes, by linear element type.
+_QUALITY_NUM_CORNERS = {"T3": 3, "Q4": 4, "T4": 4, "B8": 8}
+
+# Parametric (parent) coordinates of the element centroid, by linear element type -
+# used as the single evaluation point for the scaled Jacobian.
+_QUALITY_CENTER = {
+    "T3": np.array([1 / 3, 1 / 3]),
+    "Q4": np.array([0.0, 0.0]),
+    "T4": np.array([0.25, 0.25, 0.25]),
+    "B8": np.array([0.0, 0.0, 0.0]),
+}
 
 
 def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
@@ -81,15 +142,17 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
 
 def compute_fluid_flux(  # noqa
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     isfracture: bool,
+    gravity: float = 0.0,
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
     Returns nsd x nn array of fluxes at each node.
     """
+    from .matrixassembly import _get_gravity
     from .shapefunctions import GNMATRIX_FUNCS
 
     nn = mesh["nn"]
@@ -102,35 +165,37 @@ def compute_fluid_flux(  # noqa
     region_lists = mesh["region_lists"]
     if isfracture:
         num_regions = len(region_lists)
-        nsd -= 1  # reduce dofs
+        nsd_B = nsd - 1  # reduce dofs
         nodes_global = nodes
     else:
         num_regions = mesh["num_regions"]
+        nsd_B = nsd
 
     # Initialize output arrays
     q = np.zeros((nsd, nn))
     count = np.zeros(nn)
 
     # Material properties - fluid
-    mu = mat["fluid"]["viscosity"]
-    mu_nonlinear = False
-    if isinstance(mu, np.ndarray):
-        mu_nonlinear = True
-        mu_coeff = mu
+    fluid = material["fluid"]
+    mu = fluid["viscosity"]
+    mu_nonlinear = mu <= 0
+    g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
 
     for r in range(num_regions):
         if isfracture:
-            w = mat["fracture"]["aperture"][r]
-            kf = w**3 / 12  # longitudinal permeability
-            isotropic = True
+            w = material["fracture"]["aperture"][r]
             u = mesh["fracture_tangent"][r]
+            kf = w**3 / 12 * u  # longitudinal permeability
+            isotropic = True
             # Project the mesh nodes into local coordinates
             nodes = (nodes_global @ u).reshape(-1, 1)
+            g_r = u @ g  # gravity projected onto the fracture's tangential coordinate
         else:
             # solid properties - by region
-            kf = mat["solid"]["permeability_eff"][r]
+            kf = material["solid"]["permeability_eff"][r]
             # Check for region isotropy
             isotropic = bool(isinstance(kf, (float, int)))
+            g_r = g.reshape(1, -1)  # broadcast against nne x nsd gradients
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -149,17 +214,20 @@ def compute_fluid_flux(  # noqa
 
             enodes = conn[e]  # element nodes
 
-            xI = nodes[enodes, :nsd]  # element physical coordinates
-            B_q = getB(GN_q, xI, nsd)[0]
+            xI = nodes[enodes, :nsd_B]  # element physical coordinates
+            B_q = getB(GN_q, xI, nsd_B)[0]
 
             pe = p[enodes]  # element nodal pressures
+            Te = T[enodes]
             if mu_nonlinear:
-                Te = T[enodes]
-                mu, _ = get_viscosity(Te, mu_coeff)
+                mu = get_viscosity(Te, pe, fluid).value
                 mu = mu[:, None]
 
+            rho_e = get_EOS(Te, Te, pe, fluid, want_density=True)[0].value
+
             gradp_all = B_q @ pe
-            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ kf.T) / mu
+            gradp_mod = gradp_all - rho_e[:, None] * g_r  # buoyancy-corrected pressure gradient
+            flux_e = -(kf / mu) * gradp_mod if isotropic else -(gradp_mod @ kf.T) / mu
 
             q[:, enodes] += flux_e.T
             count[enodes] += 1
@@ -211,28 +279,17 @@ def _export_flow_logs(
     n: int,
     primary_variables: dict[str, Any],
     controls: dict[str, Any],  # noqa
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     io_path: str,
     t: float,
 ) -> None:
-    """Export flow logs from BC groups.
-
-    Loops over the Neumann and Dirichlet boundary conditions on the flow
-    problem and exports pressure, flow rate, and temperature associated with
-    each tagged BC group. Only exports tagged groups. Flows and pressures are
-    summed over the group and temperatures are taken as a flow weighted mean.
-    """
+    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
     # ---- Collect tagged groups
-    bc_types_to_log = ("pressure_fixed", "fluid_flux")
-    tagged_groups: list[dict[str, Any]] = []
-    for bc_type in bc_types_to_log:
-        for entry in BC_config.get(bc_type, []):
-            if "tag" in entry:
-                tagged_groups.append(entry)
+    tagged_groups = [group for group in BC_config if "tag" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -281,7 +338,7 @@ def _sanitize(data: npt.NDArray[np.float64], threshold: float = 1e-15) -> npt.ND
     return data
 
 
-def _prepare_output_directory(controls: dict[str, Any]) -> str:
+def prepare_output_directory(controls: dict[str, Any]) -> str:
     """Resolve this run's output directory, creating it if needed, and record it on config."""
     base_path = controls.get("output_directory", _DEFAULT_OUTPUT_DIR)
     config_stem = Path(controls["config_name"]).stem
@@ -297,7 +354,7 @@ def _prepare_output_directory(controls: dict[str, Any]) -> str:
 def _build_point_scalars(
     controls: dict[str, Any],
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
 ) -> list[dict[str, Any]]:
@@ -306,26 +363,63 @@ def _build_point_scalars(
         {"name": "T", "data": _sanitize(T.copy())},
         {"name": "p", "data": _sanitize(p.copy())},
     ]
+
+    fluid = material["fluid"]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
-            mu, _ = get_viscosity(T, mat["fluid"]["viscosity"])
+            mu = get_viscosity(T, p, fluid).value
         else:
-            mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
+            mu = fluid["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
+    if controls["output_density"]:
+        rho = get_EOS(T, T, p, fluid, want_density=True)[0].value
+        scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
+
     return scalardata_point
+
+
+def _build_cell_scalars(
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],  # noqa
+) -> list[dict[str, Any]]:
+    """Build the per-cell scalar fields (temperature, pressure, optional viscosity) for VTK export."""
+    scalardata_cell = []
+
+    if controls["output_porosity"]:
+        ne = mesh["ne"]
+        conn = mesh["conn"]
+        solid = material["solid"]
+        porosity = np.empty(mesh["ne"])
+        p_0 = material["p_0"]
+        for e in range(ne):
+            enodes = conn[e]
+            region = mesh["regions"][e]
+            phi_0 = np.atleast_1d(solid["porosity"])[region]
+            K_d = np.atleast_1d(solid["drained_bulk_mod"])[region]
+            p_e = np.atleast_1d(np.mean(p[enodes]))
+            p0_e = np.atleast_1d(np.mean(p_0[enodes]))
+            porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d).value[0]
+
+        scalardata_cell.append({"name": "porosity", "data": _sanitize(porosity.copy())})
+
+    return scalardata_cell
 
 
 def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     """Build one indicator scalar field per named BC group, for the initial-condition VTK snapshot.
 
-    Skips any group whose name ends in "_conn", since those are connectivity bookkeeping
-    entries rather than physical boundary groups and shouldn't be exported as fields.
+    Skips any group whose name ends in "_conn", "_elems", or "_regions", since those are
+    connectivity/element bookkeeping entries rather than node-index sets and shouldn't be
+    exported as fields.
     """
     scalardata_point = []
     BCgroups = mesh["boundaries"]
     for name in BCgroups:
-        if name.endswith("_conn"):
+        if name.endswith(("_conn", "_elems", "_regions")):
             continue
         label = "boundary_" + name
         data = np.zeros(mesh["nn"])
@@ -333,6 +427,34 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
         scalardata_point.append({"name": label, "data": data})
 
     return scalardata_point
+
+
+def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a single indicator field marking every node involved in any line boundary condition."""
+    data = np.zeros(mesh["nn"])
+    for group in BC_config:
+        line_nodes = group.get("line_nodes")
+        if line_nodes:
+            data[np.asarray(line_nodes)] = 1
+
+    return [{"name": "line_BC_nodes", "data": data}]
+
+
+def _build_phi_sign_point_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build one point-scalar field per fracture holding its phi_sign level set.
+
+    `mesh["phi_sign_history"]` has one column per fracture (in creation order),
+    with rows corresponding to matrix nodes; missing entirely when fracturing
+    is off.
+    """
+    phi_sign_history = mesh.get("phi_sign_history")
+    if phi_sign_history is None:
+        return []
+
+    return [
+        {"name": f"signed_normal_level_set_fracture_{i}", "data": phi_sign_history[:, i].copy()}
+        for i in range(phi_sign_history.shape[1])
+    ]
 
 
 def _build_initial_cell_data(
@@ -419,6 +541,99 @@ def _build_fracture_cell_data(
     ]
 
 
+def _element_scaled_jacobian(xI: npt.NDArray[np.float64], linear_etype: str) -> float:
+    """Scaled Jacobian of one element, evaluated once at the parametric cell center."""
+    getGN = GNMATRIX_FUNCS[linear_etype]
+    GN = getGN(_QUALITY_CENTER[linear_etype])
+    J = GN @ xI
+    detJ = np.linalg.det(J)
+    norm_prod = np.prod(np.linalg.norm(J, axis=1))
+    return float(detJ / norm_prod) if norm_prod > 1e-300 else 0.0
+
+
+def _element_aspect_ratio_and_skewness(
+    xI: npt.NDArray[np.float64], edges: list[tuple[int, int]], ideal_angle: float
+) -> tuple[float, float]:
+    """Aspect ratio (longest/shortest edge) and equiangular skewness of one element.
+
+    Skewness compares the largest and smallest angles formed by each pair of edges
+    meeting at a corner against the ideal (equilateral/square) corner angle.
+    """
+    lengths = []
+    vectors_from: dict[int, list[npt.NDArray[np.float64]]] = {}
+    for a, b in edges:
+        v = xI[b] - xI[a]
+        lengths.append(np.linalg.norm(v))
+        vectors_from.setdefault(a, []).append(v)
+        vectors_from.setdefault(b, []).append(-v)
+
+    lengths_arr = np.array(lengths)
+    aspect_ratio = float(lengths_arr.max() / lengths_arr.min())
+
+    theta_min = np.inf
+    theta_max = -np.inf
+    for vecs in vectors_from.values():
+        for i in range(len(vecs)):
+            for j in range(i + 1, len(vecs)):
+                cos_theta = np.dot(vecs[i], vecs[j]) / (np.linalg.norm(vecs[i]) * np.linalg.norm(vecs[j]))
+                theta = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                theta_min = min(theta_min, theta)
+                theta_max = max(theta_max, theta)
+
+    skewness = max(
+        (theta_max - ideal_angle) / (180.0 - ideal_angle),
+        (ideal_angle - theta_min) / ideal_angle,
+    )
+    return aspect_ratio, skewness
+
+
+def _build_mesh_quality_cell_data(mesh: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build per-element mesh quality metrics: scaled Jacobian, skewness, and aspect ratio.
+
+    Elements are processed in the contiguous per-type blocks recorded in `elem_indx`.
+    Quadratic element types (Q9, B27) are assessed via the linear shape functions of
+    their corner subset, since their first nc nodes are the corners (see
+    `_QUALITY_LINEAR_TYPE`); unsupported types (e.g. L2 fracture-line elements) are
+    left at zero.
+    """
+    nsd = mesh["nsd"]
+    nodes = mesh["nodes"]
+    conn = mesh["conn"]
+    etype_list = mesh["element_type"]
+    elem_indx = mesh["elem_indx"]
+    ne = len(conn)
+
+    scaled_jacobian = np.zeros(ne)
+    aspect_ratio = np.zeros(ne)
+    skewness = np.zeros(ne)
+
+    start = 0
+    for etype, end in zip(etype_list, elem_indx, strict=True):
+        linear_etype = _QUALITY_LINEAR_TYPE.get(etype)
+        if linear_etype is None:
+            start = end + 1
+            continue
+
+        edges = _QUALITY_EDGES[linear_etype]
+        ideal_angle = _QUALITY_IDEAL_ANGLE[linear_etype]
+        nc = _QUALITY_NUM_CORNERS[linear_etype]
+
+        for e in range(start, end + 1):
+            enodes = conn[e][:nc]
+            xI = nodes[enodes, :nsd]
+
+            scaled_jacobian[e] = _element_scaled_jacobian(xI, linear_etype)
+            aspect_ratio[e], skewness[e] = _element_aspect_ratio_and_skewness(xI, edges, ideal_angle)
+
+        start = end + 1
+
+    return [
+        {"name": "scaled_jacobian", "data": scaled_jacobian},
+        {"name": "skewness", "data": skewness},
+        {"name": "aspect_ratio", "data": aspect_ratio},
+    ]
+
+
 def _write_matrix_output(
     n: int,
     io_path: str,
@@ -433,7 +648,6 @@ def _write_matrix_output(
         print("     Writing matrix to output file...")
 
     nn = mesh["nn"]
-    nsd = mesh["nsd"]
     filename = os.path.join(io_path, f"Matrix.vtk.{n}")
 
     # ----- Extract primary variables
@@ -441,16 +655,13 @@ def _write_matrix_output(
     T = primary_variables["T"][0:nn, 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh, material, p, T, False)
+    flux = compute_fluid_flux(mesh, material, p, T, False, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
-    if n == 0:  # In the initial condition, also export BC groups
-        scalardata_point += _build_boundary_group_scalars(mesh)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
 
-    # In the initial condition, also export material properties and regions
-    scalardata_cell = _build_initial_cell_data(mesh, material, nsd) if n == 0 else []
+    scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T)
 
     write_mesh2vtk(
         filename,
@@ -485,7 +696,7 @@ def _write_fracture_output(
     T = primary_variables["T"][nn:(nn_tot), 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True)
+    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
 
@@ -504,12 +715,51 @@ def _write_fracture_output(
     )
 
 
+def export_domain_properties(
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+) -> None:
+    """Export the matrix domain's static properties to a standalone VTK file.
+
+    Writes "domain.vtk", containing the per-element material property fields
+    and the per-node boundary group indicators (see `_build_initial_cell_data`
+    and `_build_boundary_group_scalars`), a combined indicator for all line
+    boundary condition nodes (see `_build_lineBC_scalars`), plus per-element
+    mesh quality metrics (scaled Jacobian, skewness, aspect ratio - see
+    `_build_mesh_quality_cell_data`) and, when fracturing is on, one
+    phi_sign level-set field per fracture (see
+    `_build_phi_sign_point_scalars`).
+    """
+    io_path = prepare_output_directory(controls)
+    filename = os.path.join(io_path, "domain.vtk")
+
+    scalardata_point = (
+        _build_boundary_group_scalars(mesh)
+        + _build_phi_sign_point_scalars(mesh)
+        + _build_lineBC_scalars(mesh, BC_config)
+    )
+    scalardata_cell = _build_initial_cell_data(mesh, material, mesh["nsd"]) + _build_mesh_quality_cell_data(
+        mesh
+    )
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        mesh["nodes"],
+        mesh["conn"],
+        scalar_data_point=scalardata_point,
+        scalar_data_cell=scalardata_cell,
+    )
+
+
 def postprocessing(
     n: int,
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,
@@ -518,7 +768,7 @@ def postprocessing(
 
     Calculates fluxes, stresses,and Peclet numbers, then exports the results to a VTK file.
     """
-    io_path = _prepare_output_directory(controls)
+    io_path = prepare_output_directory(controls)
     output_now = (n % controls["output_frequency"]) == 0
 
     if output_now and controls["output_vtk"]:
