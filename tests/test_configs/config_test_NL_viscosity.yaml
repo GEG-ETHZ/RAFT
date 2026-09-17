@@ -6,49 +6,47 @@ material:
   # Rock mass parameters
   solid:
       bulk_mod:  20.0e+9        # Pa
-      density: 2.0             # kg/m^3
+      density: 2000.0             # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 1000        # J/kgK
-      therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
-      porosity: 0.0                # -
+      therm_expansion: 0.0e-6  # 1/K  (3 * 4e-6)
+      porosity: 0.01                # -
       biot_coeff: 0.5               # -
       permeability: 5.0e-13         # m^2
   # Fluid parameters
   fluid:
-      bulk_mod: 2.10e+9         # Pa
-      density:      10         # kg/m^3
-      therm_cond:   3         # W/mK
+      density: 1000           # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      bulk_mod: 2.10e+30      # Pa
       therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 30       # J/kgK
-      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]        # m^2 (permeability)
+      specific_heat: 4000     # J/kgK
+      therm_cond: 3           # W/mK
+      viscosity: 0            # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
 
 
 initial_conditions:
   assignment: "BC_compatible"
   T_ini: 286
-  p_ini: 1.0e+5
+  p_ini: 8.0e+7
   T_grad: 0.1
   p_grad: 1.0e+3
 
 
 boundary_conditions:
-  pressure_fixed:
-      - faces: [z_min]
-        values: [0]
+  - faces: [z_min]
+    hydraulics:
+      values: [8000000.0]
+      type: pressure
+    thermal:
+      values: [340]
+      type: temperature
+  - faces: [z_max]
+    hydraulics:
+      values: [-0.0007]
+      type: flux
+    thermal:
+      values: [410]
+      type: temperature
 
-  temperature_fixed:
-      - faces: [z_min]
-        values: [290]
-      - faces: [z_max]
-        values: [360]
-
-  fluid_flux:
-     - faces: [z_max]
-       values: [-0.0007]
-
-  temperature_flux:
-      - faces: []
-        values: []
 
 simulation:
   # Time
@@ -67,8 +65,7 @@ simulation:
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
-  pressurization_on: 0
-  buoyancy_on: 0
+  gravity: 0.0    # m/s^2
   steady_pressure: 1
   steady_temperature: 1
 
