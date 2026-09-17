@@ -2477,7 +2477,7 @@ def integrate_enthlpy_bndry_residual(
     node_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
 
     for group in BC_config:
-        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
+        if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
@@ -2538,7 +2538,7 @@ def integrate_enthlpy_bndry_tangent(
     node_diag_value: dict[int, float] = {}  # keyed by node so shared nodes aren't double-counted
 
     for group in BC_config:
-        if "hydraulics" in group and "thermal" not in group and "_conn" in group:
+        if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
