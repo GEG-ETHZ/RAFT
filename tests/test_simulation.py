@@ -1,20 +1,3 @@
-# Copyright 2026 The RAFT Community
-#
-# This file is part of RAFT.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Test subsurface simulator for TANGO."""
 
 import sys
@@ -30,123 +13,6 @@ from raft.subsurface import main
 def _test_data_dir() -> Path:
     """Provides the absolute path to the test data directory."""
     return Path(__file__).parent / "test_configs"
-
-
-def test_fracture_advection_bounded() -> None:
-    """Check p/T stay within the boundary-value envelope for a fracture angled into the
-    pressure/temperature gradient, with advective leak-off turned on."""
-    case_dir = _test_data_dir()
-    test_name = "Fracture Advection - Boundedness"
-    config_filename = "config_test_fracture_advection_bounded.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_fracture_advection_bounded(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_enthalpy_bndry_pressure() -> None:
-    """Check the advective enthalpy boundary vector/tangent at a pressure-type outlet with
-    no thermal BC of its own (also exercises the fully_coupled Kpp/KpT cross-term)."""
-    case_dir = _test_data_dir()
-    test_name = "Enthalpy Boundary Flux - Pressure Outlet"
-    config_filename = "config_test_enthalpy_bndry_pressure.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_enthalpy_bndry_bounded(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_enthalpy_bndry_flux() -> None:
-    """Same as test_enthalpy_bndry_pressure, but with a flux-type outlet, which should not
-    pick up the fully_coupled Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
-    never a function of p/T)."""
-    case_dir = _test_data_dir()
-    test_name = "Enthalpy Boundary Flux - Flux Outlet"
-    config_filename = "config_test_enthalpy_bndry_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_enthalpy_bndry_bounded(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_patch_anisotropy() -> None:
-    """Check exact linear approximation in anisotropy."""
-    case_dir = _test_data_dir()
-    test_name = "Patch Test - Anisotropy"
-    config_filename = "config_test_anisotropic.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
-    plot_on = False
-    test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_buoyancy() -> None:
-    """Test buoyancy against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Buoyancy Test"
-    config_filename = "config_test_buoyancy.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_buoyancy(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_advection() -> None:
-    """Test advection against analytical solutions."""
-    case_dir = _test_data_dir()
-    test_name = "Advection Test"
-    config_filename = "config_test_advection.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_advection(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_heterogeneous() -> None:
-    """Verify solution of heterogeneous properties against analytical solution."""
-    case_dir = _test_data_dir()
-    test_name = "Heterogeneous Test"
-    config_filename = "config_test_heterogeneous.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    plot_on = False
-    test_pass = test_checks.check_heterogeneous(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_nonlinear_viscosity() -> None:
-    """Check exactness of non-linear viscosity"""
-    case_dir = _test_data_dir()
-    test_name = "Non-linear Viscosity"
-    config_filename = "config_test_NL_viscosity.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
-
-    plot_on = False
-    test_pass = test_checks.check_NL_viscosity(
-        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
-    )
-    assert test_pass
 
 
 def test_axisymmetry() -> None:
@@ -193,12 +59,40 @@ def test_patch_y_flux_2D() -> None:
     assert test_pass
 
 
+def test_pressurization() -> None:
+    """Test pressurization against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Pressurization Test"
+    config_filename = "config_test_pressurization.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_pressurization(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_nonlinear_viscosity() -> None:
+    """Check exactness of non-linear viscosity"""
+    case_dir = _test_data_dir()
+    test_name = "Non-linear Viscosity"
+    config_filename = "config_test_NL_viscosity.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+
+    plot_on = False
+    test_pass = test_checks.check_NL_viscosity(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_patch_z_flux() -> None:
     """Check exact linear approximation in Z."""
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z - flux"
     config_filename = "config_test_patchZ_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     dimension = 2
     plot_on = False
@@ -283,6 +177,20 @@ def test_patch_x_T4() -> None:
     assert test_pass
 
 
+def test_heterogeneous() -> None:
+    """Verify solution of heterogeneous properties against analytical solution."""
+    case_dir = _test_data_dir()
+    test_name = "Heterogeneous Test"
+    config_filename = "config_test_heterogeneous.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_heterogeneous(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_regions() -> None:
     """Verify assignment of regions against a known list."""
     case_dir = _test_data_dir()
@@ -291,6 +199,49 @@ def test_regions() -> None:
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
 
     test_pass = test_checks.check_regions(case_dir, mesh)
+    assert test_pass
+
+
+def test_patch_anisotropy() -> None:
+    """Check exact linear approximation in anisotropy."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Anisotropy"
+    config_filename = "config_test_anisotropic.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    plot_on = False
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_buoyancy() -> None:
+    """Test buoyancy against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Buoyancy Test"
+    config_filename = "config_test_buoyancy.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_buoyancy(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_advection() -> None:
+    """Test advection against analytical solutions."""
+    case_dir = _test_data_dir()
+    test_name = "Advection Test"
+    config_filename = "config_test_advection.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_advection(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
     assert test_pass
 
 
@@ -334,21 +285,6 @@ def test_patch_z() -> None:
     dimension = 2
     plot_on = False
     test_pass = test_checks.check_patch_test(
-        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
-    )
-    assert test_pass
-
-
-def test_line_bc_patch_flux_2D() -> None:
-    """Check exact linear approximation when x_min/x_max are specified as line BCs instead of faces."""
-    case_dir = _test_data_dir()
-    test_name = "Patch Test - Line BC - flux - 2D Q4"
-    config_filename = "config_test_line_bc.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
-
-    dimension = 0
-    plot_on = False
-    test_pass = test_checks.check_patch_test_flux(
         config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
     )
     assert test_pass

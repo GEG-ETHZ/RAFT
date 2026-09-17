@@ -1,6 +1,5 @@
 mesh:
-  file: 2D_example.msh
-  dimensions: 2
+  file: square2D.msh
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -11,48 +10,44 @@ mesh:
       - shape: "polyhedron"
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 2
+  dimensions: 2
   fractures:
-         - values: [[27, 53], [20], [20]]
-         - values: [[45.5, 41], [22], [130]]
-         - values: [[13, 33, 0.0], [20], [100]]
+        - values: [[22.5, 59, 0.0], [42.5], [11]]
 
 
 material:
   # Rock mass parameters - define lists with properties corresponding to each region
   solid:
       bulk_mod:  [20.0e+9, 20.0e+9, 20.0e+9]        # Pa
-      density: [2000, 2000, 2000]             # kg/m^3
+      density: [20, 20, 20]             # kg/m^3
       therm_cond: [3.0, 3.0, 3.0]          # W/mK
-      specific_heat: [800, 800, 800]        # J/kgK
+      specific_heat: [80, 80, 10]        # J/kgK
       therm_expansion: [12.0e-6, 13.0e-6, 12.0e-6]  # 1/K  (3 * 4e-6)
-      porosity: [0.01, 0.01, 0.01]                # -
+      porosity: [0.01, 0.05, 0.01]                # -
       biot_coeff: [0.5, 0.9, 0.5]               # -
-      permeability: [[5.0e-15, 5.0e-16],   1.0e-18, 1.0e-17]       # m^2
-      rotation_x: [0.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
-      rotation_y: [30.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
-      rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
+      permeability: [[1.0e-16, 1.0e-14],   1.0e-19, 1.0e-17]       # m^2
+      rotation_x: [-50.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
+      rotation_y: [0.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_z: [40.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
 
   # Fluid parameters - single phase flow is assumed
   fluid:
-      fluid_type: "Water"     # "Water" or "CO2"
-      density: 1000           # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
-      reference_temperature: 293 # Reference temperature for density (K)
-      reference_pressure: 1.0e+5 # Reference pressure for density (Pa)
-      bulk_mod: 2.10e+9       # Pa
+      bulk_mod: 2.10e+9         # Pa
+      density:      925         # kg/m^3
+      therm_cond:   0.6         # W/mK
       therm_expansion: 200.0e-6 # 1/K
-      specific_heat: 4200     # J/kgK
-      therm_cond: 0.6         # W/mK
-      viscosity: -1           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      specific_heat: 4250       # J/kgK
+      viscosity: [1.856e-14, 4209, 0.04527, -3.376e-5]         # Pa-s
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-4, 1.0e-4, 1.1e-4]
-    nusselt: [2, 2, 2]
+    aperture: [1.0e-3]
+    nusselt: [5.0]
 
 initial_conditions:
-  assignment: "constant"
-  T_ini: 410
-  p_ini: 6.0e+6
+  assignment: "BC_compatible"
+  T_ini: 286
+  p_ini: 1.0e+5
   T_grad: 0.1
   p_grad: 1.0e+3
   grad_direction_T: [0,1,-1]
@@ -61,78 +56,65 @@ initial_conditions:
 
 
 boundary_conditions:
-        # Inlet/outlet example: a rate-controlled well, switching to a pressure
-        # limit if it would otherwise exceed the given bounds.
-        - lines: [[[43.4, 20.0], [45, 30]]]
-          tag: "inlet"
-          hydraulics:
-              type: "flux"
-              values: [[0, 0.01], 1000]
-              function: "ramp"
-              constraints:
-                  maximum_pressure: 3.0e+7
-                  minimum_pressure: 1.0e+5
-          thermal:
-              type: "temperature"
-              values: [330]
-
-        - lines: [[[0, 40.0], [-20, 25]]]
-          tag: "outlet"
-          hydraulics:
-              type: "flux"
-              values: [[0, -0.01], 1000]
-              function: "ramp"
-              constraints:
-                  maximum_pressure: 3.0e+7
-                  minimum_pressure: 1.0e+5
-
-        - faces: [y_max]
-          hydraulics:
-              type: "pressure"
-              values: [6.0e+6]
-          thermal:
-              type: "temperature"
-              values: [410]
-
+  pressure_fixed:
         - faces: [y_min]
-          hydraulics:
-              type: "pressure"
-              values: [6.0e+6]
-          thermal:
-              type: "temperature"
-              values: [410]
+          values: [2.0e5]
+          tag: "inflow"
+        - faces: [y_max]
+          values: [1.0e5]
+
+
+
+  temperature_fixed:
+      - faces: [y_max]
+        values: [473]
+      - faces: [y_min]
+        values: [500]
+      - coords: [[22.5, 37.5]]
+        function: "ramp"
+        values: [[487, 343], 10]
+
+
+  fluid_flux:
+        - coords: [[22.5, 37.5]]
+          values: [[0, 0.001], 10]
+          function: "ramp"
+          tag: "inlet"
+        - coords: [[40, 41]]
+          values: [[0, -0.001], 10]
+          function: "ramp"
+          tag: "outlet"
+
+  temperature_flux:
 
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 3.0e+7
+  t_end: 50000.0
   timestep: 10.0
-  timestep_min: 1.0
-  timestep_max: 6.0e+5
+  timestep_min: 10.0
+  timestep_max: 100.0
+  solver_type: "linearized"
 
   # Output
   output_frequency: 1
   output_vtk: 1        # turn vtk output on/off
-  output_log: 1        # log console output to file
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
   output_viscosity: 1
-  output_density: 1
-  output_porosity: 1
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
-  gravity: 0    # m/s^2
+  pressurization_on: 0
+  buoyancy_on: 0
   steady_pressure: 0
   steady_temperature: 0
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "fully_coupled"
-  rel_error_T: 5.0e-2 # Relative error for extrapolation
+  rel_error_T: 1.0e-2 # Relative error for extrapolation
   iterative_controls:
-      NR_tol: 2.0e-5 # Newton-Raphson residual tolerance
+      NR_tol: 1.0e-5 # Newton-Raphson residual tolerance
       iter_max: 50 # Maximum number of iterations
-      NR_step: 1
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

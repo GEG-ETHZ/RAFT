@@ -5,7 +5,7 @@ mesh:
 material:
   # Rock mass parameters
   solid:
-      bulk_mod:  20.0e+19        # Pa
+      bulk_mod:  20.0e+9        # Pa
       density: 613.0             # kg/m^3
       therm_cond: 3.0          # W/mK
       specific_heat: 7829.0        # J/kgK
@@ -16,67 +16,59 @@ material:
 
   # Fluid parameters
   fluid:
-      density: 613.0          # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
-      reference_temperature: 11 # Reference temperature for density (K)
-      bulk_mod: 2.10e+30      # Pa
+      bulk_mod: 2.10e+9         # Pa
+      density:      613.0         # kg/m^3
+      therm_cond:   3         # W/mK
       therm_expansion: 200.0e-6 # 1/K
-      specific_heat: 7829.0   # J/kgK
-      therm_cond: 3           # W/mK
-      viscosity: 0.7e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      specific_heat: 7829.0       # J/kgK
+      viscosity: 0.7e-3         # Pa-s
 
 
 
 initial_conditions:
   geothermal_gradient: 0.0      # deg C/m
-  T_ini: 11                   # deg C
+  T_surf: 11                   # deg C
   pressure_gradient: 0.0        # Pa/m
-  p_ini: 1.0
+  p_surf: 1.0
 
 
 boundary_conditions:
-  - nodes: [0, 1, 2, 3]
-    hydraulics:
-      values: [1000.0]
-      type: pressure
-  - nodes: [4, 5, 6, 7]
-    hydraulics:
-      values: [0]
-      type: pressure
-  - nodes: []
-    hydraulics:
-      values: []
-      type: flux
-  - nodes: [0, 1, 2, 3]
-    thermal:
-      values: [41]
-      type: temperature
-  - nodes: [4, 5, 6, 7]
-    thermal:
-      values: [11]
-      type: temperature
-  - nodes: []
-    thermal:
-      values: []
-      type: flux
+  pressure_fixed:
+      - nodes: [0, 1, 2, 3, 4, 5, 6, 7]
+        values: [0]
+
+  temperature_fixed:
+      - nodes: [0, 1, 2, 3]
+        values: [80]
+      - nodes: [4, 5, 6, 7]
+        values: [11]
+
+  fluid_flux:
+      - nodes: []
+        values: []
+
+  temperature_flux:
+      - nodes: []
+        values: []
 
 simulation:
   # Time
   t_start: 0.0
-  t_end: 2.0
+  t_end: 1.0
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0
 
   # Output
   output_frequency: 1
-  output_vtk: 1        # turn vtk output on/off
-  output_density: 1
+  output_vtk: 0        # turn vtk output on/off
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 0
-  gravity: -9.81    # m/s^2
+  pressurization_on: 0
+  buoyancy_on: 1
   steady_pressure: 1
   steady_temperature: 1
 
