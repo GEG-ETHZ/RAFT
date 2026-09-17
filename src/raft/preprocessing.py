@@ -1,35 +1,13 @@
-# Copyright 2026 The RAFT Community
-#
-# This file is part of RAFT.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Import mesh, calculate material properties, apply defaults."""
 
-import warnings
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-import scipy.sparse
 import yaml
-from scipy.sparse.csgraph import dijkstra
 
-from .matprops import create_abstract_state
-from .matrixassembly import integrate_boundary_flux_matrices
-from .meshprocessing import _get_element_face_lists, load_mesh
+from .meshprocessing import load_mesh
 
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
@@ -55,11 +33,8 @@ DEFAULTS: dict[str, Any] = {
             "rotation_z": 0.0,  # rotation of local coordinates around z-axis (degrees)
         },
         "fluid": {
-            "fluid_type": "WATER",  # Fluid name for property lookup
             "bulk_mod": 2.0e9,  # Pa
             "density": 1000,  # kg/m^3
-            "reference_temperature": 293,  # K
-            "reference_pressure": 1.0e5,  # K
             "therm_cond": 0.6,  # W/mK
             "therm_expansion": 200.0e-6,  # 1/K
             "specific_heat": 4180.0,  # J/kgK
@@ -77,7 +52,12 @@ DEFAULTS: dict[str, Any] = {
         "grad_direction_p": [0, 0, -1],  # unit vector in gradient direction
     },
     # ---- boundary conditions -------------------------------------------------
-    "boundary_conditions": [],
+    "boundary_conditions": {
+        "pressure_fixed": [{"nodes": [], "values": []}],
+        "temperature_fixed": [{"nodes": [], "values": []}],
+        "fluid_flux": [{"nodes": [], "values": []}],
+        "temperature_flux": [{"nodes": [], "values": []}],
+    },
     # ---- simulation ----------------------------------------------------------
     "simulation": {
         "t_start": 0.0,
@@ -88,14 +68,12 @@ DEFAULTS: dict[str, Any] = {
         "solver_type": "linearized",
         "output_frequency": 1,
         "output_vtk": 0,
-        "output_log": 0,
         "output_viscosity": 0,
-        "output_density": 0,
-        "output_porosity": 0,
         "rate_order": 1,
+        "fully_coupled": 0,
         "advection_on": 0,
-        "volumetric_strain_on": 1,
-        "gravity": 0.0,
+        "pressurization_on": 0,
+        "buoyancy_on": 0,
         "steady_pressure": 0,
         "steady_temperature": 0,
         "axisymmetric_on": 0,
@@ -104,7 +82,6 @@ DEFAULTS: dict[str, Any] = {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
             "iter_max": 100,  # Maximum number of iterations
             "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
-            "NR_step": 1,  # Newton-Raphson line step size
         },
     },
 }
@@ -130,65 +107,44 @@ def _apply_defaults(
     return config
 
 
-def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
+def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:
     """Determine physics controls that are controlled through implicit inputs.
 
     This primarily includes non-constant material properties, but also includes
     non-feasible combinations of settings.
     """
-    fluid_name = config["material"]["fluid"]["fluid_type"]
-    controls = config["simulation"]
     # Viscosity
     mu = config["material"]["fluid"]["viscosity"]
-    if not isinstance(mu, (int, float)):
+    if isinstance(mu, float):  # constant
+        config["simulation"]["viscosity_nonconstant"] = 0
+    elif not isinstance(mu, list) or len(mu) < 1:  # not a list
         raise ValueError(f"Incompatible viscosity format: {mu}")
-    elif mu <= 0:  # non-constant: real-fluid viscosity from CoolProp or only temperature-dependent
-        controls["viscosity_nonconstant"] = 1
+    elif len(mu) == 1:  # single list -> transfer to float
+        config["material"]["fluid"]["viscosity"] = mu[0]
+        config["simulation"]["viscosity_nonconstant"] = 0
+    else:  # non-constant function
+        coeff = np.zeros((4,))
+        for i in range(len(mu)):
+            coeff[i] = mu[i]
         if verbose:
-            print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
-    else:  # constant
-        controls["viscosity_nonconstant"] = 0
+            print(
+                f"""\nViscosity = {coeff[0]:.2e} * exp({coeff[1]:.2e} / T
+                + {coeff[2]:.2e} * T + {coeff[3]:.2e} * T^2 )"""
+            )
+            print("T is assumed in K.")
 
-    # Density
-    rho = config["material"]["fluid"]["density"]
-    if not isinstance(rho, (int, float)):
-        raise ValueError(f"Incompatible density format: {rho}")
-    elif rho == 0:  # non-constant: real-fluid density from CoolProp
-        controls["density_nonconstant"] = 1
-        if verbose:
-            print(f"\nDensity computed from CoolProp ({fluid_name}) as a function of T and p.")
-    else:  # constant
-        controls["density_nonconstant"] = 0
+        config["material"]["fluid"]["viscosity"] = coeff
+        config["simulation"]["viscosity_nonconstant"] = 1
 
     # Axisymmetry
-    axisymmetric_on = controls["axisymmetric_on"]
+    axisymmetric_on = config["simulation"]["axisymmetric_on"]
     if axisymmetric_on and config["mesh"]["dimensions"] == 3:
-        controls["axisymmetric_on"] = 0
+        config["simulation"]["axisymmetric_on"] = 0
         if verbose:
             print("Axisymmetry turned off, not valid in 3D analysis.")
 
     # Fractures
-    controls["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
-
-    # CoolProp AbstractState, reused across all property lookups instead of
-    # re-initializing it on every matprops call.
-    if controls["viscosity_nonconstant"] or controls["density_nonconstant"]:
-        config["material"]["fluid"]["abstract_state"] = create_abstract_state(fluid_name)
-    else:
-        config["material"]["fluid"]["abstract_state"] = None
-
-    # One-pass linearized?
-    # If using the boussinesq approximation (rho !=0), the flow properties are not functions of pressure
-    # (mu or kf), and using the linearized solver, the linearized
-    # pressure and temperature solves are both linear, so we can save the second residual calc.
-    if rho != 0 and mu != 0 and controls["solver_type"] == "linearized":
-        controls["iterative_controls"]["one_pass"] = True
-        if verbose:
-            print(
-                "\nUsing the linearized solver with Boussinesq EOS and pressure-independent flow properties. One-pass solve enabled."  # noqa
-            )
-    else:
-        controls["iterative_controls"]["one_pass"] = False
+    config["simulation"]["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
 
     return config
 
@@ -222,12 +178,12 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     return config
 
 
-def _check_region_properties(max_region: int, material: dict[str, Any]) -> None:
+def _check_region_properties(max_region: int, mat: dict[str, Any]) -> None:
     """Check that the correct number of properties are included."""
     missing_props = []
-    for mat_prop in material:
-        if isinstance(material[mat_prop], list):  # noqa
-            if len(material[mat_prop]) < (max_region + 1):
+    for mat_prop in mat:
+        if isinstance(mat[mat_prop], list):  # noqa
+            if len(mat[mat_prop]) < (max_region + 1):
                 missing_props.append(mat_prop)
 
     if len(missing_props) > 0:
@@ -262,42 +218,41 @@ def rotation_matrices(
     return Rx, Ry, Rz
 
 
-def _get_region_value(val: Any, r: int) -> Any:
+def _get_region_value(val: Any, region_idx: int) -> Any:
     """Return value for region, handling both scalar and list cases.
 
     Fallback for homogeneous cases defined as scalars instead of lists.
     """
-    return val[r] if isinstance(val, list) else val
+    return val[region_idx] if isinstance(val, list) else val
 
 
-def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]) -> dict[str, Any]:
+def _calculate_derived_properties(mesh: dict[str, Any], mat: dict[str, Any]) -> dict[str, Any]:
     """Calculate properties derived from other primary properties."""
     nsd = mesh["nsd"]
     num_regions = max(mesh["regions"]) + 1
 
     # Initialize derived properties storage
-    material["solid"]["storage_mod"] = [None] * num_regions
-    material["solid"]["therm_cond_eff"] = [None] * num_regions
-    material["solid"]["therm_expansion_eff"] = [None] * num_regions
-    material["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
-    material["solid"]["permeability_eff"] = [None] * num_regions
-    material["solid"]["drained_bulk_mod"] = [None] * num_regions
+    mat["solid"]["storage_mod"] = [None] * num_regions
+    mat["solid"]["therm_cond_eff"] = [None] * num_regions
+    mat["solid"]["therm_expansion_eff"] = [None] * num_regions
+    mat["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
+    mat["solid"]["permeability_eff"] = [None] * num_regions
 
     for r in range(num_regions):
         # ----- material properties
-        alpha_s = _get_region_value(material["solid"]["therm_expansion"], r)
-        alpha_f = material["fluid"]["therm_expansion"]
-        phi = _get_region_value(material["solid"]["porosity"], r)
-        biot = _get_region_value(material["solid"]["biot_coeff"], r)
-        Kf = material["fluid"]["bulk_mod"]
-        Ks = _get_region_value(material["solid"]["bulk_mod"], r)
-        lambda_s = _get_region_value(material["solid"]["therm_cond"], r)
-        kf = _get_region_value(material["solid"]["permeability"], r)
+        alpha_s = _get_region_value(mat["solid"]["therm_expansion"], r)
+        alpha_f = mat["fluid"]["therm_expansion"]
+        phi = _get_region_value(mat["solid"]["porosity"], r)
+        biot = _get_region_value(mat["solid"]["biot_coeff"], r)
+        Kf = mat["fluid"]["bulk_mod"]
+        Ks = _get_region_value(mat["solid"]["bulk_mod"], r)
+        lambda_s = _get_region_value(mat["solid"]["therm_cond"], r)
+        kf = _get_region_value(mat["solid"]["permeability"], r)
 
         # physical properties
-        angle_x = _get_region_value(material["solid"]["rotation_x"], r)
-        angle_y = _get_region_value(material["solid"]["rotation_y"], r)
-        angle_z = _get_region_value(material["solid"]["rotation_z"], r)
+        angle_x = _get_region_value(mat["solid"]["rotation_x"], r)
+        angle_y = _get_region_value(mat["solid"]["rotation_y"], r)
+        angle_z = _get_region_value(mat["solid"]["rotation_z"], r)
 
         Rx, Ry, Rz = rotation_matrices(angle_x, angle_y, angle_z)
         R = Rx @ Ry @ Rz  # general 3D rotation matrix (always orthogonal)
@@ -319,363 +274,53 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             lambda_s.append(0.0) if len(lambda_s) < 3 else lambda_s
             # anisotropic case
             lambda_e = (
-                phi * material["fluid"]["therm_cond"] * np.eye(nsd)
+                phi * mat["fluid"]["therm_cond"] * np.eye(nsd)
                 + (1 - phi) * (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
             )
-            material["solid"]["therm_cond"][r] = (R @ np.diag(lambda_s) @ R.T)[:nsd, :nsd]
         else:
             # isotropic case
-            lambda_e = phi * material["fluid"]["therm_cond"] + (1 - phi) * lambda_s
+            lambda_e = phi * mat["fluid"]["therm_cond"] + (1 - phi) * lambda_s
 
         # effective volumetric heat capacity
-        cp_s = _get_region_value(material["solid"]["specific_heat"], r)
-        rho_s = _get_region_value(material["solid"]["density"], r)
-        m_e = (
-            phi * material["fluid"]["specific_heat"] * material["fluid"]["density"] + (1 - phi) * cp_s * rho_s
-        )
+        cp_s = _get_region_value(mat["solid"]["specific_heat"], r)
+        rho_s = _get_region_value(mat["solid"]["density"], r)
+        m_e = phi * mat["fluid"]["specific_heat"] * mat["fluid"]["density"] + (1 - phi) * cp_s * rho_s
 
         # store derived properties for future use
-        material["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
-        material["solid"]["storage_mod"][r] = M
-        material["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
-        material["solid"]["therm_expansion_eff"][r] = alpha_e
-        material["solid"]["volumetric_heat_capacity_eff"][r] = m_e
-        material["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
+        mat["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
+        mat["solid"]["storage_mod"][r] = M
+        mat["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
+        mat["solid"]["therm_expansion_eff"][r] = alpha_e
+        mat["solid"]["volumetric_heat_capacity_eff"][r] = m_e
 
-    return material
-
-
-def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
-    # Local node-index pairs for each element edge (distinct from face lists:
-    # for 3D solids a face has >2 nodes, an edge always has 2).
-    if nne == 8:  # B8
-        edges = {
-            "edge0": [0, 1],
-            "edge1": [1, 2],
-            "edge2": [2, 3],
-            "edge3": [3, 0],
-            "edge4": [4, 5],
-            "edge5": [5, 6],
-            "edge6": [6, 7],
-            "edge7": [7, 4],
-            "edge8": [0, 4],
-            "edge9": [1, 5],
-            "edge10": [2, 6],
-            "edge11": [3, 7],
-        }
-    elif nne == 4 and nsd == 3:  # T4
-        edges = {
-            "edge0": [0, 1],
-            "edge1": [0, 2],
-            "edge2": [0, 3],
-            "edge3": [1, 2],
-            "edge4": [1, 3],
-            "edge5": [2, 3],
-        }
-    elif nsd == 2:  # Q4 / T3 -- edges coincide with the face (boundary-segment) list
-        return _get_element_face_lists(nne, nsd)
-    else:
-        raise NotImplementedError(f"Edge extraction for {nne}-node elements in {nsd} dimensions.")
-    return edges
+    return mat
 
 
-def _build_edge_element_map(mesh: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
-    """Map each unique mesh edge (sorted node pair) to the elements that contain it."""
-    conn = mesh["conn"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
-    nsd = mesh["nsd"]
-    elem_indx = mesh["elem_indx"]
-
-    edge_to_elems: dict[tuple[int, int], list[int]] = {}
-    edge_lists = _get_element_edge_lists(nne[0], nsd)
-    counter = 0
-
-    for elem in range(ne):
-        if elem > elem_indx[counter]:
-            counter += 1
-            edge_lists = _get_element_edge_lists(nne[counter], nsd)
-
-        elem_conn = conn[elem]
-        for local_edge in edge_lists.values():
-            n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
-            key = (n1, n2) if n1 < n2 else (n2, n1)
-            edge_to_elems.setdefault(key, []).append(elem)
-
-    return edge_to_elems
-
-
-def _build_mesh_edge_graph(
-    mesh: dict[str, Any], edge_to_elems: dict[tuple[int, int], list[int]]
-) -> scipy.sparse.csr_matrix:
-    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
-    nodes = mesh["nodes"]
-
-    row, col, weight = [], [], []
-    for n1, n2 in edge_to_elems:
-        d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
-        row += [n1, n2]
-        col += [n2, n1]
-        weight += [d, d]
-
-    return scipy.sparse.csr_matrix((weight, (row, col)), shape=(mesh["nn"], mesh["nn"]))
-
-
-_LINE_DEVIATION_TOL = 1.0e-3  # 1 mm; assumes mesh coordinates are in meters
-
-
-def _clip_line_to_domain(
-    A: npt.NDArray[np.float64],
-    B: npt.NDArray[np.float64],
-    mins: npt.NDArray[np.float64],
-    maxs: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Clip segment A-B to the mesh's axis-aligned bounding box (slab method)."""
-    d = B - A
-    t0, t1 = 0.0, 1.0
-    for axis in range(len(A)):
-        if abs(d[axis]) < 1e-14:
-            if A[axis] < mins[axis] or A[axis] > maxs[axis]:
-                raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
-            continue
-        t_near = (mins[axis] - A[axis]) / d[axis]
-        t_far = (maxs[axis] - A[axis]) / d[axis]
-        t_low, t_high = min(t_near, t_far), max(t_near, t_far)
-        t0 = max(t0, t_low)
-        t1 = min(t1, t_high)
-        if t0 > t1:
-            raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
-
-    return A + t0 * d, A + t1 * d
-
-
-def _find_lineBC_connectivity(
-    mesh: dict[str, Any], line: list[list[float]], edge_to_elems: dict[tuple[int, int], list[int]]
-) -> tuple[list[int], list[list[int]]]:
-    """Find the line boundary condition connectivity.
-    Line boundary conditions find the shortest path between the start and
-    end points following pre-existing nodes and edges in the mesh.
-
-    Throws a warning if the deviation is large.
-    """
-    nodes = mesh["nodes"]
-    nsd = mesh["nsd"]
-
-    # Calculate line direction vector
-    A = np.asarray(line[0], dtype=float)[:nsd]
-    B = np.asarray(line[1], dtype=float)[:nsd]
-    length_AB = float(np.linalg.norm(B - A))
-
-    if length_AB == 0.0:
-        raise RuntimeError("Line boundary condition start and end points are identical.")
-
-    u = (B - A) / length_AB  # tangent vector
-
-    # Clip to the domain so points prescribed outside the mesh snap to the
-    # nearest node at the line/boundary intersection, not to some arbitrary
-    # far-off corner node.
-    mins = nodes[:, :nsd].min(axis=0)
-    maxs = nodes[:, :nsd].max(axis=0)
-    A_clipped, B_clipped = _clip_line_to_domain(A, B, mins, maxs)
-
-    start_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - A_clipped, axis=1)))
-    end_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - B_clipped, axis=1)))
-
-    if start_node == end_node:
-        raise RuntimeError("Line boundary condition start and end nodes snap to the same mesh node.")
-
-    # Shortest path A -> B weighted by edge length, following existing mesh edges
-    graph = _build_mesh_edge_graph(mesh, edge_to_elems)
-    dist, predecessors = dijkstra(
-        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
-    )
-    dist, predecessors = dist[0], predecessors[0]
-
-    if np.isinf(dist[end_node]):
-        raise RuntimeError(
-            "No connected path of mesh edges found between the line boundary condition endpoints."
-        )
-
-    path = [end_node]
-    node = end_node
-    while node != start_node:
-        node = int(predecessors[node])
-        path.append(node)
-    path.reverse()
-
-    line_nodes = path
-    line_conn = [[path[i], path[i + 1]] for i in range(len(path) - 1)]
-
-    # Check deviation of the snapped path from the requested line
-    rel = nodes[line_nodes, :nsd] - A
-    perp = rel - np.outer(rel @ u, u)
-    deviation = np.linalg.norm(perp, axis=1)
-
-    if np.any(deviation > _LINE_DEVIATION_TOL):
-        warnings.warn(
-            f"Exact line not found in mesh, snapping to nearest nodes. "
-            f"True line distance = {length_AB}, mesh path distance = {dist[end_node]}",
-            stacklevel=2,
-        )
-
-    return line_nodes, line_conn
-
-
-def _resolve_group_geometry(
-    mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool
-) -> None:
-    """Resolve node indices for one BC group and cache its flux-weight matrix, if needed.
-
-    Shared by "hydraulics" and "thermal" so both reuse the same geometry/weights.
-    """
-    if "nodes" not in group:
-        if "faces" in group:
-            nodes: list[int] = []
-            conn: list[Any] = []
-            elems: list[Any] = []
-            regions: list[Any] = []
-            for face in group["faces"]:
-                nodes.extend(mesh["boundaries"][face])
-                conn.extend(mesh["boundaries"][face + "_conn"])
-                elems.extend(mesh["boundaries"][face + "_elems"])
-                regions.extend(mesh["boundaries"][face + "_regions"])
-            group["nodes"], group["_conn"], group["_conn_kind"] = nodes, conn, "face"
-            # Exterior faces have exactly one owning element each, so the element
-            # at position i in "_elems" touches the face at position i in "_conn".
-            group["_elems"], group["_regions"], group["_elem_edge"] = elems, regions, list(range(len(conn)))
-        elif "lines" in group:
-            group["nodes"] = group["line_nodes"]
-            group["_conn"], group["_conn_kind"] = group["line_conn"], "line"
-            # Unlike exterior faces, an interior line edge can be touched by more
-            # than one element, so "_elem_edge" maps each "_elems"/"_regions" entry
-            # back to the index (into "_conn") of the edge it touches.
-            group["_elems"], group["_regions"], group["_elem_edge"] = (
-                group["line_elems"],
-                group["line_regions"],
-                group["line_elem_edge"],
-            )
-        else:
-            raise NotImplementedError("Invalid BC geometry specification")
-
-    nodes = group["nodes"]
-    if need_flux_integral and nodes and "_conn" in group:
-        flux_mats = integrate_boundary_flux_matrices(
-            mesh, group["_conn"], nodes, controls, group["_conn_kind"]
-        )
-        group["flux_weight_matrix"] = flux_mats["A"]
-
-
-def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
-    """Preprocessing of boundary conditions.
-
-    1. Determine if any wellbore max pressures on/off exist
-
-    2. During the preprocessing step, turn boundary condition groups
+def _convert_coordBCs_to_nodeBCs(mesh: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """During the preprocessing step, turn boundary condition groups
     defined by coordinates into node groups.
-
-    3. Line boundary conditions need to find nodes and connectivity.
     """
-    BC_groups = config["boundary_conditions"]
+    BC_dict = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
-    controls = config["simulation"]
-    controls["wellbore_check"] = 0  # Default 0
-    edge_to_elems = _build_edge_element_map(mesh) if any("lines" in group for group in BC_groups) else {}
-
     if np.size(nodes, 1) < 3:
         nodes = np.hstack((nodes, np.zeros((mesh["nn_total"], 1))))
 
-    for group in BC_groups:
-        BCnodes = []
-        # Check if wellbore restrictions exist
-        hydraulics = group.get("hydraulics")
-        if hydraulics is not None and "constraints" in hydraulics:
-            if verbose:
-                print("Wellbore group detected:")
-            config["simulation"]["wellbore_check"] += 1
+    for BC_type in BC_dict:
+        for group in BC_dict[BC_type]:
+            BCnodes = []
+            if "coords" in group:
+                for xi in group["coords"]:
+                    if np.size(xi, 0) != 3:
+                        xi.append(0.0)
+                    d = np.linalg.norm(nodes - xi, axis=1)
+                    # In the case of duplicate nodes, take the highest node number.
+                    # This prioritizes fracture nodes over matrix nodes.
+                    d_min = np.min(d)
+                    closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
+                    BCnodes.append(closest_node)
+                group["nodes"] = BCnodes
 
-            max_pressure = hydraulics["constraints"].get("maximum_pressure")
-            min_pressure = hydraulics["constraints"].get("minimum_pressure")
-
-            if max_pressure is None and min_pressure is None:
-                warnings.warn(
-                    "Wellbore boundary condition specified without maximum or minimum pressure.",
-                    stacklevel=2,
-                )
-
-            if max_pressure is None:
-                max_pressure = 1.0e100
-                hydraulics["constraints"]["maximum_pressure"] = max_pressure
-                if verbose:
-                    print("  Maximum pressure unbounded (1.0e+100).")
-            elif verbose:
-                print(f"  Maximum pressure: {max_pressure:.2e}")
-
-            if min_pressure is None:
-                min_pressure = -1.0e100
-                hydraulics["constraints"]["minimum_pressure"] = min_pressure
-                if verbose:
-                    print("  Minimum pressure unbounded (1.0e+100). \n")
-            elif verbose:
-                print(f"  Minimum pressure: {min_pressure:.2e} \n")
-
-        # Convert coordinates to node numbers
-        if "coords" in group:
-            for xi in group["coords"]:
-                if np.size(xi, 0) != 3:
-                    xi.append(0.0)
-                d = np.linalg.norm(nodes - xi, axis=1)
-                # In the case of duplicate nodes, take the highest node number.
-                # This prioritizes fracture nodes over matrix nodes.
-                d_min = np.min(d)
-                closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
-                BCnodes.append(closest_node)
-            group["nodes"] = BCnodes
-
-        if "lines" in group:
-            for line in group["lines"]:
-                line_nodes, line_conn = _find_lineBC_connectivity(mesh, line, edge_to_elems)
-
-                # Elements touching each edge of this line: on exterior lines there is
-                # exactly one element per edge, so `line_elem_edge[i]` == i naturally.
-                # Interior lines can have two or more elements per edge, so
-                # `line_elem_edge` maps each entry of `line_elems`/`line_regions` back
-                # to the index (within the group's combined `line_conn`) of the edge it touches.
-                edge_offset = len(group.get("line_conn") or [])
-                line_elems: list[int] = []
-                line_regions: list[Any] = []
-                line_elem_edge: list[int] = []
-                for local_edge_indx, edge in enumerate(line_conn):
-                    n1, n2 = sorted(edge)
-                    elems = edge_to_elems.get((n1, n2), [])
-                    line_elems.extend(elems)
-                    line_regions.extend(mesh["regions"][e] for e in elems)
-                    line_elem_edge.extend([edge_offset + local_edge_indx] * len(elems))
-
-                if group.get("line_nodes") is None:
-                    group["line_nodes"] = line_nodes
-                else:
-                    group["line_nodes"].extend(line_nodes)
-
-                if group.get("line_conn") is None:
-                    group["line_conn"] = line_conn
-                else:
-                    group["line_conn"].extend(line_conn)
-
-                if group.get("line_elems") is None:
-                    group["line_elems"] = line_elems
-                    group["line_regions"] = line_regions
-                    group["line_elem_edge"] = line_elem_edge
-                else:
-                    group["line_elems"].extend(line_elems)
-                    group["line_regions"].extend(line_regions)
-                    group["line_elem_edge"].extend(line_elem_edge)
-
-        need_flux_integral = any(
-            field in group and group[field]["type"] == "flux" for field in ("hydraulics", "thermal")
-        )
-        _resolve_group_geometry(mesh, group, controls, need_flux_integral)
-
-    config["boundary_conditions"] = BC_groups
+    config["boundary_conditions"] = BC_dict
     return config
 
 
@@ -688,7 +333,7 @@ def preprocessing(
 
     mesh = load_mesh(config["mesh"], verbose)
 
-    config = _preprocess_BCs(mesh, config, verbose)
+    config = _convert_coordBCs_to_nodeBCs(mesh, config)
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])
