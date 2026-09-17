@@ -146,11 +146,13 @@ def compute_fluid_flux(  # noqa
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     isfracture: bool,
+    gravity: float = 0.0,
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
     Returns nsd x nn array of fluxes at each node.
     """
+    from .matrixassembly import _get_gravity
     from .shapefunctions import GNMATRIX_FUNCS
 
     nn = mesh["nn"]
@@ -177,6 +179,7 @@ def compute_fluid_flux(  # noqa
     fluid = material["fluid"]
     mu = fluid["viscosity"]
     mu_nonlinear = mu <= 0
+    g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
 
     for r in range(num_regions):
         if isfracture:
@@ -186,11 +189,13 @@ def compute_fluid_flux(  # noqa
             isotropic = True
             # Project the mesh nodes into local coordinates
             nodes = (nodes_global @ u).reshape(-1, 1)
+            g_r = u @ g  # gravity projected onto the fracture's tangential coordinate
         else:
             # solid properties - by region
             kf = material["solid"]["permeability_eff"][r]
             # Check for region isotropy
             isotropic = bool(isinstance(kf, (float, int)))
+            g_r = g.reshape(1, -1)  # broadcast against nne x nsd gradients
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -213,13 +218,16 @@ def compute_fluid_flux(  # noqa
             B_q = getB(GN_q, xI, nsd_B)[0]
 
             pe = p[enodes]  # element nodal pressures
+            Te = T[enodes]
             if mu_nonlinear:
-                Te = T[enodes]
                 mu = get_viscosity(Te, pe, fluid).value
                 mu = mu[:, None]
 
+            rho_e = get_EOS(Te, Te, pe, fluid, want_density=True)[0].value
+
             gradp_all = B_q @ pe
-            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ kf.T) / mu
+            gradp_mod = gradp_all - rho_e[:, None] * g_r  # buoyancy-corrected pressure gradient
+            flux_e = -(kf / mu) * gradp_mod if isotropic else -(gradp_mod @ kf.T) / mu
 
             q[:, enodes] += flux_e.T
             count[enodes] += 1
@@ -647,7 +655,7 @@ def _write_matrix_output(
     T = primary_variables["T"][0:nn, 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh, material, p, T, False)
+    flux = compute_fluid_flux(mesh, material, p, T, False, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
 
@@ -688,7 +696,7 @@ def _write_fracture_output(
     T = primary_variables["T"][nn:(nn_tot), 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True)
+    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
 
