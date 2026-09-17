@@ -227,38 +227,16 @@ def _assign_ic_bc_compatible(  # noqa
     material["T_0"] = primary_variables["T"][:, 0]
     material["p_0"] = primary_variables["p"][:, 0]
 
-    if controls_SS["viscosity_nonconstant"]:
-        # viscosity is a function of temperature, fully coupled steady-state
-        # solution is required.
-        if verbose:
-            print("   Non-linear properties present, using iterative sequential scheme to estimate fields...")
+    if verbose:
+        print("   Using iterative sequential scheme to estimate fields...")
 
-        # Use one-pass linear to generate approximate solution.
-        primary_variables_ini = copy.deepcopy(primary_variables)
-        tries = [1, 3, 5, 10]
-        for num_passes in tries:
-            primary_variables = copy.deepcopy(primary_variables_ini)
-            for i in range(num_passes):
-                primary_variables, _, _, _ = lin_extrap_time_integration(
-                    controls_SS,
-                    mesh,
-                    material,
-                    primary_variables,
-                    boundary_conditions,
-                    BC_config,
-                    [1, 1, 1],
-                    n,
-                    verbose,
-                )
-                primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
-                # For debugging
-                postprocessing(n + i, mesh, controls, material, BC_config, primary_variables, 0, verbose)  # noqa
-            # Perform fully coupled solution
-            if verbose:
-                print("   Solving for fully-coupled steady-state condition...")
-
-            controls_SS["fully_coupled"] = True
-            primary_variables, _, converged, _ = fully_coupled_time_integration(
+    # Use one-pass linear to generate approximate solution.
+    primary_variables_ini = copy.deepcopy(primary_variables)
+    tries = [1, 3, 5, 10]
+    for num_passes in tries:
+        primary_variables = copy.deepcopy(primary_variables_ini)
+        for i in range(num_passes):
+            primary_variables, _, _, _ = lin_extrap_time_integration(
                 controls_SS,
                 mesh,
                 material,
@@ -269,19 +247,15 @@ def _assign_ic_bc_compatible(  # noqa
                 n,
                 verbose,
             )
-            if converged:
-                break
-            else:
-                print(
-                    "   Unable to find compatible boundary condition, trying again with more sequential iterations."  # noqa
-                )
-        if not converged:
-            raise RuntimeError("Failed to converge during assignment of initial conditions.")
-    else:
-        # viscosity is a constant.
-        # This reduces the problem to a one-way p -> T, just like in
-        # our linearized extrapolation.
-        primary_variables, _, _, _ = lin_extrap_time_integration(
+            primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
+            # For debugging
+            postprocessing(n + i, mesh, controls, material, BC_config, primary_variables, 0, verbose)  # noqa
+        # Perform fully coupled solution
+        if verbose:
+            print("   Solving for fully-coupled steady-state condition...")
+
+        controls_SS["fully_coupled"] = True
+        primary_variables, _, converged, _ = fully_coupled_time_integration(
             controls_SS,
             mesh,
             material,
@@ -292,6 +266,14 @@ def _assign_ic_bc_compatible(  # noqa
             n,
             verbose,
         )
+        if converged:
+            break
+        else:
+            print(
+                "   Unable to find compatible boundary condition, trying again with more sequential iterations."  # noqa
+            )
+    if not converged:
+        raise RuntimeError("Failed to converge during assignment of initial conditions.")
 
     p = primary_variables["p"][:, 0]
     T = primary_variables["T"][:, 0]

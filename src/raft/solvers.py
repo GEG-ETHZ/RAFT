@@ -371,7 +371,7 @@ def _newton_raphson_loop(  # noqa
     NR_tol = controls["iterative_controls"]["NR_tol"]
     aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     NR_step = controls["iterative_controls"]["NR_step"]
-    one_pass = controls["iterative_controls"]["one_pass"]
+    one_pass = controls["iterative_controls"]["one_pass"] and temperature_only
     converged = False
 
     if one_pass:
