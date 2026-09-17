@@ -1,3 +1,20 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Import mesh, assign regions, extract relevant mesh properties."""
 
 import warnings
@@ -313,8 +330,9 @@ def _get_all_edges(
                 # Increment count
                 face_tracker[sorted_face][0] += 1
             else:
-                # Store count and original
-                face_tracker[sorted_face] = [1, original_face]
+                # Store count, original face, and originating element id
+                # (only meaningful for faces that stay boundary, i.e. count == 1)
+                face_tracker[sorted_face] = [1, original_face, elem]
     return face_tracker
 
 
@@ -334,8 +352,10 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     # then find unique faces.
     face_tracker = _get_all_edges(conn, ne, nne, nsd, elem_indx)
 
-    # sort through the faces and extract all unique faces
-    boundary_faces = [data[1] for data in face_tracker.values() if data[0] == 1]
+    # sort through the faces and extract all unique faces (and their owning element)
+    boundary_data = [data for data in face_tracker.values() if data[0] == 1]
+    boundary_faces = [data[1] for data in boundary_data]
+    boundary_elems = [data[2] for data in boundary_data]
 
     # Loop through boundary faces, calculate the normal of each face and sort it based on its closest axis
     boundaries: dict[str, Any] = {}
@@ -353,7 +373,15 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     boundaries["z_min_conn"] = []
     boundaries["z_max_conn"] = []
 
-    for face in boundary_faces:
+    # Element id attached to each face in the corresponding "*_conn" list, same order/index.
+    boundaries["x_min_elems"] = []
+    boundaries["x_max_elems"] = []
+    boundaries["y_min_elems"] = []
+    boundaries["y_max_elems"] = []
+    boundaries["z_min_elems"] = []
+    boundaries["z_max_elems"] = []
+
+    for face, elem in zip(boundary_faces, boundary_elems):
         # calculate plane normal
         xI = nodes[face, :]
         if nsd == 3:
@@ -381,6 +409,7 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
 
         boundaries[f"{max_component}_{side}"].update(face)
         boundaries[f"{max_component}_{side}_conn"].append(list(face))
+        boundaries[f"{max_component}_{side}_elems"].append(elem)
 
     # Remove fracture faces from exterior sets
     if "fracture_mesh" in mesh:
@@ -405,11 +434,16 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         for key in ("x", "y", "z"):
             for side in ("min", "max"):
                 conn_key = f"{key}_{side}_conn"
+                elems_key = f"{key}_{side}_elems"
                 if conn_key not in boundaries:
                     continue
-                boundaries[conn_key] = [
-                    face for face in boundaries[conn_key] if tuple(sorted(face)) not in fracture_faces
+                kept = [
+                    (face, elem)
+                    for face, elem in zip(boundaries[conn_key], boundaries[elems_key])
+                    if tuple(sorted(face)) not in fracture_faces
                 ]
+                boundaries[conn_key] = [face for face, _ in kept]
+                boundaries[elems_key] = [elem for _, elem in kept]
                 boundaries[f"{key}_{side}"] = {n for face in boundaries[conn_key] for n in face}
 
     # Combine boundary sets
@@ -430,6 +464,8 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
         mesh["boundaries"].pop("z_min")
         mesh["boundaries"].pop("z_max_conn")
         mesh["boundaries"].pop("z_min_conn")
+        mesh["boundaries"].pop("z_max_elems")
+        mesh["boundaries"].pop("z_min_elems")
         mesh["boundaries"].pop("z_all")
 
     return mesh
@@ -2044,6 +2080,19 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     return mesh
 
 
+def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
+    """For each boundary's exterior element list, add the corresponding list of element regions."""
+    regions = np.asarray(mesh["regions"])
+    boundaries = mesh["boundaries"]
+
+    elems_keys = [key for key in boundaries if key.endswith("_elems")]
+    for elems_key in elems_keys:
+        region_key = elems_key.replace("_elems", "_regions")
+        boundaries[region_key] = regions[boundaries[elems_key]]
+
+    return mesh
+
+
 def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
@@ -2069,6 +2118,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
 
     # Extract sets of exterior nodes
     mesh = _extract_exterior(mesh)
+
+    # Assign exterior element regions
+    mesh = _assign_exterior_element_regions(mesh)
 
     if verbose:
         # Join multiple element types with commas

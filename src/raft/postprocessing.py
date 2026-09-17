@@ -1,3 +1,20 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Postprocessing of FEM file."""
 
 import bisect
@@ -8,7 +25,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .matprops import get_viscosity
+from .matprops import get_EOS, get_porosity, get_viscosity
 from .shapefunctions import GNMATRIX_FUNCS, getB
 from .writevtk import write_mesh2vtk
 
@@ -125,15 +142,17 @@ def _get_nodal_parents_coords(etype: str) -> npt.NDArray[np.float64]:
 
 def compute_fluid_flux(  # noqa
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     isfracture: bool,
+    gravity: float = 0.0,
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
     Returns nsd x nn array of fluxes at each node.
     """
+    from .matrixassembly import _get_gravity
     from .shapefunctions import GNMATRIX_FUNCS
 
     nn = mesh["nn"]
@@ -157,25 +176,26 @@ def compute_fluid_flux(  # noqa
     count = np.zeros(nn)
 
     # Material properties - fluid
-    mu = mat["fluid"]["viscosity"]
-    mu_nonlinear = False
-    if isinstance(mu, np.ndarray):
-        mu_nonlinear = True
-        mu_coeff = mu
+    fluid = material["fluid"]
+    mu = fluid["viscosity"]
+    mu_nonlinear = mu <= 0
+    g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
 
     for r in range(num_regions):
         if isfracture:
-            w = mat["fracture"]["aperture"][r]
+            w = material["fracture"]["aperture"][r]
             u = mesh["fracture_tangent"][r]
             kf = w**3 / 12 * u  # longitudinal permeability
             isotropic = True
             # Project the mesh nodes into local coordinates
             nodes = (nodes_global @ u).reshape(-1, 1)
+            g_r = u @ g  # gravity projected onto the fracture's tangential coordinate
         else:
             # solid properties - by region
-            kf = mat["solid"]["permeability_eff"][r]
+            kf = material["solid"]["permeability_eff"][r]
             # Check for region isotropy
             isotropic = bool(isinstance(kf, (float, int)))
+            g_r = g.reshape(1, -1)  # broadcast against nne x nsd gradients
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -198,13 +218,16 @@ def compute_fluid_flux(  # noqa
             B_q = getB(GN_q, xI, nsd_B)[0]
 
             pe = p[enodes]  # element nodal pressures
+            Te = T[enodes]
             if mu_nonlinear:
-                Te = T[enodes]
-                mu, _ = get_viscosity(Te, mu_coeff)
+                mu = get_viscosity(Te, pe, fluid).value
                 mu = mu[:, None]
 
+            rho_e = get_EOS(Te, Te, pe, fluid, want_density=True)[0].value
+
             gradp_all = B_q @ pe
-            flux_e = -(kf / mu) * gradp_all if isotropic else -(gradp_all @ kf.T) / mu
+            gradp_mod = gradp_all - rho_e[:, None] * g_r  # buoyancy-corrected pressure gradient
+            flux_e = -(kf / mu) * gradp_mod if isotropic else -(gradp_mod @ kf.T) / mu
 
             q[:, enodes] += flux_e.T
             count[enodes] += 1
@@ -256,28 +279,17 @@ def _export_flow_logs(
     n: int,
     primary_variables: dict[str, Any],
     controls: dict[str, Any],  # noqa
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     io_path: str,
     t: float,
 ) -> None:
-    """Export flow logs from BC groups.
-
-    Loops over the Neumann and Dirichlet boundary conditions on the flow
-    problem and exports pressure, flow rate, and temperature associated with
-    each tagged BC group. Only exports tagged groups. Flows and pressures are
-    summed over the group and temperatures are taken as a flow weighted mean.
-    """
+    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
     # ---- Collect tagged groups
-    bc_types_to_log = ("pressure_fixed", "fluid_flux", "wellbore")
-    tagged_groups: list[dict[str, Any]] = []
-    for bc_type in bc_types_to_log:
-        for entry in BC_config.get(bc_type, []):
-            if "tag" in entry:
-                tagged_groups.append(entry)
+    tagged_groups = [group for group in BC_config if "tag" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -342,7 +354,7 @@ def prepare_output_directory(controls: dict[str, Any]) -> str:
 def _build_point_scalars(
     controls: dict[str, Any],
     mesh: dict[str, Any],
-    mat: dict[str, Any],
+    material: dict[str, Any],
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
 ) -> list[dict[str, Any]]:
@@ -351,26 +363,63 @@ def _build_point_scalars(
         {"name": "T", "data": _sanitize(T.copy())},
         {"name": "p", "data": _sanitize(p.copy())},
     ]
+
+    fluid = material["fluid"]
     if controls["output_viscosity"]:
         if controls["viscosity_nonconstant"]:
-            mu, _ = get_viscosity(T, mat["fluid"]["viscosity"])
+            mu = get_viscosity(T, p, fluid).value
         else:
-            mu = mat["fluid"]["viscosity"] * np.ones(mesh["nn"])
+            mu = fluid["viscosity"] * np.ones(mesh["nn"])
         scalardata_point.append({"name": "viscosity", "data": _sanitize(mu.copy())})
 
+    if controls["output_density"]:
+        rho = get_EOS(T, T, p, fluid, want_density=True)[0].value
+        scalardata_point.append({"name": "fluid_density", "data": _sanitize(rho.copy())})
+
     return scalardata_point
+
+
+def _build_cell_scalars(
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],  # noqa
+) -> list[dict[str, Any]]:
+    """Build the per-cell scalar fields (temperature, pressure, optional viscosity) for VTK export."""
+    scalardata_cell = []
+
+    if controls["output_porosity"]:
+        ne = mesh["ne"]
+        conn = mesh["conn"]
+        solid = material["solid"]
+        porosity = np.empty(mesh["ne"])
+        p_0 = material["p_0"]
+        for e in range(ne):
+            enodes = conn[e]
+            region = mesh["regions"][e]
+            phi_0 = np.atleast_1d(solid["porosity"])[region]
+            K_d = np.atleast_1d(solid["drained_bulk_mod"])[region]
+            p_e = np.atleast_1d(np.mean(p[enodes]))
+            p0_e = np.atleast_1d(np.mean(p_0[enodes]))
+            porosity[e] = get_porosity(p_e, p0_e, phi_0, K_d).value[0]
+
+        scalardata_cell.append({"name": "porosity", "data": _sanitize(porosity.copy())})
+
+    return scalardata_cell
 
 
 def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     """Build one indicator scalar field per named BC group, for the initial-condition VTK snapshot.
 
-    Skips any group whose name ends in "_conn", since those are connectivity bookkeeping
-    entries rather than physical boundary groups and shouldn't be exported as fields.
+    Skips any group whose name ends in "_conn", "_elems", or "_regions", since those are
+    connectivity/element bookkeeping entries rather than node-index sets and shouldn't be
+    exported as fields.
     """
     scalardata_point = []
     BCgroups = mesh["boundaries"]
     for name in BCgroups:
-        if name.endswith("_conn"):
+        if name.endswith(("_conn", "_elems", "_regions")):
             continue
         label = "boundary_" + name
         data = np.zeros(mesh["nn"])
@@ -380,14 +429,13 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     return scalardata_point
 
 
-def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: dict[str, Any]) -> list[dict[str, Any]]:
+def _build_lineBC_scalars(mesh: dict[str, Any], BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build a single indicator field marking every node involved in any line boundary condition."""
     data = np.zeros(mesh["nn"])
-    for bc_type in BC_config:
-        for group in BC_config[bc_type]:
-            line_nodes = group.get("line_nodes")
-            if line_nodes:
-                data[np.asarray(line_nodes)] = 1
+    for group in BC_config:
+        line_nodes = group.get("line_nodes")
+        if line_nodes:
+            data[np.asarray(line_nodes)] = 1
 
     return [{"name": "line_BC_nodes", "data": data}]
 
@@ -607,11 +655,13 @@ def _write_matrix_output(
     T = primary_variables["T"][0:nn, 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh, material, p, T, False)
+    flux = compute_fluid_flux(mesh, material, p, T, False, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
+
+    scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T)
 
     write_mesh2vtk(
         filename,
@@ -620,6 +670,7 @@ def _write_matrix_output(
         mesh["conn"],
         scalardata_point,
         vectordata_point,
+        scalardata_cell,
     )
 
 
@@ -645,7 +696,7 @@ def _write_fracture_output(
     T = primary_variables["T"][nn:(nn_tot), 0]
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True)
+    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
 
@@ -668,7 +719,7 @@ def export_domain_properties(
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
 ) -> None:
     """Export the matrix domain's static properties to a standalone VTK file.
 
@@ -708,7 +759,7 @@ def postprocessing(
     mesh: dict[str, Any],
     controls: dict[str, Any],
     material: dict[str, Any],
-    BC_config: dict[str, Any],
+    BC_config: list[dict[str, Any]],
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,

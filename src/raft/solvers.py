@@ -1,3 +1,20 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Time integration solvers for subsurface systems."""
 
 from typing import Any, cast
@@ -9,8 +26,11 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
 from .matrixassembly import (
-    integrate_NLpressure_matrices,
-    integrate_nonlinear_matrices,
+    integrate_enthlpy_bndry_residual,
+    integrate_enthlpy_bndry_tangent,
+    integrate_residuals,
+    integrate_tangent_matrices,
+    warn_nonmonotone_pressure_diffusion,
 )
 
 
@@ -46,12 +66,12 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
 def _check_convergence_extrap(
     T: npt.NDArray[np.float64],
     T_extrap: npt.NDArray[np.float64],
-    sim_control: dict[str, Any],
+    controls: dict[str, Any],
     n: int,
 ) -> tuple[bool, float]:
     """Check convergence for the linear extrapolation."""
-    rate_order = sim_control["rate_order"]
-    rel_tol_T = sim_control["rel_error_T"]
+    rate_order = controls["rate_order"]
+    rel_tol_T = controls["rel_error_T"]
 
     converged = True  # default to converged, and only break if not converged
 
@@ -83,181 +103,163 @@ def _unpack_boundary_conditions(
 ]:
     """Parse Dirichlet and Neumann BCs into fixed dofs/values and force vectors."""
     T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
-    T_bar = boundary_conditions["T_dirichlet"][:, 1]
+    T_bar = boundary_conditions["T_dirichlet"][:, 1:2]
     p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-    p_bar = boundary_conditions["p_dirichlet"][:, 1]
+    p_bar = boundary_conditions["p_dirichlet"][:, 1:2]
 
     F_extT = np.zeros((len(T_dofs), 1))
     F_extp = np.zeros((len(p_dofs), 1))
-    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][
-        :, 1
-    ].reshape(-1, 1)
-    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][
-        :, 1
-    ].reshape(-1, 1)
+    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][:, 1:2]
+    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][:, 1:2]
     return T_fix, T_bar, p_fix, p_bar, F_extT, F_extp
+
+
+def compute_residuals_comp(
+    F_vec: dict[str, Any],
+    F_extp: npt.NDArray[np.float64],
+    F_extT: npt.NDArray[np.float64],
+    *,
+    fully_coupled: bool = False,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Assemble integrated residuals alongside external force vectors."""
+    if pressure_only or fully_coupled:
+        F_Pstorage = F_vec["F_Pstorage"]
+        F_Pdiffusion = F_vec["F_Pdiffusion"]
+
+        R = {"p": F_Pstorage - F_Pdiffusion - F_extp}
+
+    if temperature_only or fully_coupled:
+        F_Tstorage = F_vec["F_Tstorage"]
+        F_Tdiffusion = F_vec["F_Tdiffusion"]
+        F_Tadvection = F_vec["F_Tadvection"]
+        F_Tstab = F_vec["F_Tstab"]
+        F_enth_bnd = F_vec.get("F_enth_bnd", 0)
+        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT - F_enth_bnd
+
+        if fully_coupled:
+            R["T"] = RT
+        else:
+            R = {"T": RT}
+
+    return R
+
+
+def compute_residuals(
+    F_vec: dict[str, Any],
+    F_ext: dict[str, Any],
+    *,
+    fully_coupled: bool = False,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
+) -> dict[str, npt.NDArray[np.float64]]:
+    """Assemble integrated residuals alongside external force vectors."""
+    if pressure_only or fully_coupled:
+        F_Pstorage = F_vec["F_Pstorage"]
+        F_Pdiffusion = F_vec["F_Pdiffusion"]
+
+        R = {"p": F_Pstorage - F_Pdiffusion - F_ext["p"]}
+
+    if temperature_only or fully_coupled:
+        F_Tstorage = F_vec["F_Tstorage"]
+        F_Tdiffusion = F_vec["F_Tdiffusion"]
+        F_Tadvection = F_vec["F_Tadvection"]
+        F_Tstab = F_vec["F_Tstab"]
+        F_enth_bnd = F_vec.get("F_enth_bnd", 0)
+        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_ext["T"] - F_enth_bnd
+
+        if fully_coupled:
+            R["T"] = RT
+        else:
+            R = {"T": RT}
+
+    return R
 
 
 def _partition_and_solve_matrix(
     A: sp.csc_matrix[Any],
     b: npt.NDArray[np.float64],
-    dofs_all: npt.NDArray[np.float64],
-    nE: npt.NDArray[np.float64],  # essential DoF indices
-    dE: npt.NDArray[np.float64],  # essential DoF values
+    dofs_all: npt.NDArray[np.int_],
+    nE: npt.NDArray[np.int_],  # essential DoF indices
 ) -> npt.NDArray[np.float64]:
     """Partitions and solves a matrix given a set of essential DoFs. Returns full vector of DoFs."""
     nF = np.setdiff1d(dofs_all, nE)  # free DoFs
 
     KFF = A[np.ix_(nF, nF)]  # type: ignore[index]
-    KFE = A[np.ix_(nF, nE)]  # type: ignore[index]
+    # KFE = A[np.ix_(nF, nE)]  # type: ignore[index]
 
-    dF = spsolve(KFF, (b[nF] - KFE @ dE.reshape(-1, 1)).ravel())
+    dF = spsolve(KFF, (b[nF]))
 
-    d = np.empty((len(dofs_all), 1))
-    d[nE, 0] = dE
+    d = np.zeros((len(dofs_all), 1))
     d[nF, 0] = dF.ravel()
 
     return d.ravel()
 
 
-# ------------------------ Primary time integration function with linearized extrapoloation --------
-def lin_extrap_time_integration(
-    sim_control: dict[str, Any],
-    mesh: dict[str, Any],
-    material: dict[str, Any],
-    matrices_linear: dict[str, Any],
-    primary_variables: dict[str, Any],
-    boundary_conditions: dict[str, Any],
-    dt: list[float],
-    n: int,
-    verbose: bool,
-) -> tuple[dict[str, Any], list[float], bool, float]:
-    """Assemble FEM matrices and vectors and solve for solution at next timestep.
-
-    Solution uses a linearized extrapoloation which lags temperature. Error
-    is calculated between the predicted and calculated temperatures for convergence.
-    """
-    # extract vectors of nodal dofs
-    p = primary_variables["p"]
-    T = primary_variables["T"]
-    p_dofs = primary_variables["p_dofs"]
-    T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    adv_on = sim_control["advection_on"]
-    prez_on = sim_control["pressurization_on"]
-    buoy_on = sim_control["buoyancy_on"]
-    steady_pres = sim_control["steady_pressure"]
-    steady_temp = sim_control["steady_temperature"]
-    mu_nonlinear = sim_control["viscosity_nonconstant"]
-    # extract mesh characteristics
-    nn = mesh["nn_total"]
-
-    # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
-
-    # unpack boundary conditions
-    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
-        boundary_conditions, p_dofs, T_dofs
-    )
-
-    # Begin the one-pass extrapolated linearization by solving pressure
-    # first using an extrapolated pressure
-    # One-pass update: solve pressure, then temperature
-
-    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]  # Extrapolated temperature
-    T_dot = cv[0] * T_extrap + cv[1] * T[:, 1] + cv[2] * T[:, 2]  # Rate of temperature change
-
-    KM = matrices_linear["KM"] * (1 - steady_pres)  # Pressure storage matrix
-    KpT = matrices_linear["KpT"]  # Pressurization matrix
-
-    if mu_nonlinear:
-        print("     Assembling non-linear pressure matrices...")
-        matrices_pressure_nonlinear = integrate_NLpressure_matrices(
-            mesh, material, primary_variables, sim_control
-        )
-        Kpp = matrices_pressure_nonlinear["Kpp"]  # Pressure conductance matrix
-        KbT = matrices_pressure_nonlinear["KbT"]  # Buoyancy matrix
-    else:
-        Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
-        KbT = matrices_linear["KbT"]  # Buoyancy matrix
-
-    if verbose:
-        print("     Solving pressure equations...")
-    F_pT = prez_on * (KpT @ T_dot).reshape(-1, 1)  # Pressurization force vector
-    F_bT = buoy_on * (KbT @ (T_extrap - material["T_0"])).reshape(-1, 1)  # Buoyancy force vector
-
-    # Assemble combined matrices
-    A = (cv[0] * KM) + Kpp
-    pdot = (cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
-    b = -KM @ pdot + F_extp + F_bT + F_pT
-
-    nE = p_fix.astype(int)  # essential DoFs
-    nF = np.setdiff1d(p_dofs, nE).astype(int)  # free DoFs
-    p[:, 0] = _partition_and_solve_matrix(A, b, p_dofs, nE, p_bar)
-
-    # Calculate reaction flow rates at prescribed DoFs
-    KEE = A[np.ix_(nE, nE)]
-    KEF = A[np.ix_(nE, nF)]
-    pF = p[nF, 0]
-    q = np.zeros((nn, 1))
-    q[p_fix] = KEE @ p_bar.reshape(-1, 1) + KEF @ pF.reshape(-1, 1) - b[nE]
-    q = q + F_extp
-
-    # Update nonlinear matrices with new pressure
-    if verbose:
-        print("     Assembling non-linear temperature matrices...")
-    matrices_non_linear = integrate_nonlinear_matrices(mesh, material, primary_variables, sim_control)
-
-    KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
-    KTT = matrices_linear["KTT"]  # thermal conduction matrix
-    C = matrices_linear["C"] * (1 - steady_temp)  # thermal storage matrix
-
-    if verbose:
-        print("     Solving temperature equations...")
-    A = (cv[0] * C) + KTA + KTT
-    Tdot = (cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-    b = -C @ Tdot + F_extT
-
-    T[:, 0] = _partition_and_solve_matrix(A, b, T_dofs, T_fix, T_bar)
-
-    # Check for extrapolation error
-    converged, timestep_error = _check_convergence_extrap(T, T_extrap, sim_control, n)
-
-    primary_variables["p"] = p
-    primary_variables["T"] = T
-    primary_variables["q"] = q  # outlet flow rates
-    return primary_variables, dt, converged, timestep_error
-
-
-def _check_convergence_fullycoupled(
+def _check_convergence_NR(
     R: dict[str, Any],
     fixed_dofs: dict[str, Any],
     NR: dict[str, Any],
     mesh: dict[str, Any],
     iteration: int,
-    tolerance: float,
+    NR_tol: float,
 ) -> tuple[bool, float]:
+    """Check residual norms against convergence tolerance.
 
+    Normalize each key's free-dof residual norm against the norm of that same key's
+    reaction flux at its own Dirichlet dofs - a physical flux scale for the system (how
+    much is actually flowing through the domain), rather than a raw per-element residual
+    that can't tell a genuinely small residual from a tiny fraction of a much larger one.
+    """
     n_DoFs = np.arange(0, mesh["nn_total"])  # number of DoFs
-    ne = mesh["ne"]
+    nn = mesh["nn_total"]
 
     for key in R:
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
-        normalizer = 1 if iteration < 4 else np.max(NR[key][0:4])
         numerator = np.linalg.norm(R[key][nF])
+        flux_scale = max(float(np.linalg.norm(R[key][fixed_dofs[key]])), 1.0)
 
-        NR[key][iteration] = np.min(
-            (numerator / ne, numerator / ne / normalizer)
-        )  # norm of the residual per element
+        NR[key][iteration] = numerator / flux_scale / nn
         NR["all"][iteration] += NR[key][iteration] ** 2
 
     NR["all"][iteration] = NR["all"][iteration] ** 0.5
 
-    converged = bool(NR["all"][iteration] < tolerance)
+    converged = bool(NR["all"][iteration] < NR_tol)
 
     return converged, NR["all"][iteration]
+
+
+def _plot_nr_residuals(
+    NR: dict[str, Any],
+    aitken_state: dict[str, Any],
+    iteration: int,
+    iter_max: int,
+    residual_keys: list[str],
+) -> None:
+    """Plot Newton-Raphson residual history and Aitken damping coefficients."""
+    labels = {"T": "Temperature", "p": "Pressure"}
+    styles = {"T": "r-", "p": "b-"}
+
+    fig, ax1 = plt.subplots(figsize=(8, 8))
+    ax2 = ax1.twinx()
+
+    for key in residual_keys:
+        ax1.semilogy(np.arange(1, iteration + 1), NR[key][range(0, iteration)], styles[key])
+    ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
+    plt.ylabel("residual")
+    plt.legend([labels[key] for key in residual_keys] + ["Combined"])
+
+    ax2.plot(
+        np.arange(1, iteration + 1),
+        np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
+        "go-",
+    )
+    plt.ylabel("damping coefficient")
+
+    plt.xlim([0, iter_max])
+    plt.xlabel("iteration")
 
 
 def _aitken_relax(
@@ -291,7 +293,7 @@ def _aitken_relax(
         Relaxation parameter bounds (min_relax, max_relax). Defaults to (0.001, 1.0).
     """
     if bounds is None:
-        min_relax = 0.001
+        min_relax = 0.01
         max_relax = 10.0
     else:
         min_relax, max_relax = bounds
@@ -340,166 +342,209 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
-# --------------- Fully coupled time integration with Newton-Raphson iterations.
-def fully_coupled_time_integration(  # noqa
-    sim_control: dict[str, Any],
-    mesh: dict[str, Any],
+def _newton_raphson_loop(  # noqa
+    controls: dict[str, Any],
     material: dict[str, Any],
-    matrices_linear: dict[str, Any],
+    mesh: dict[str, Any],
     primary_variables: dict[str, Any],
-    boundary_conditions: dict[str, Any],
-    dt: list[float],
-    n: int,  # noqa
+    BC_config: list[dict[str, Any]],
+    T_flow: npt.NDArray[np.float64],
+    cv: npt.NDArray[np.float64],  # rate coefficients
+    keys: list[str],
+    fixed_dofs: dict[str, Any],
+    F_ext: dict[str, Any],
     verbose: bool,
-) -> tuple[dict[str, Any], list[float], bool, float]:
-    """Assemble FEM matrices and vectors and solve for solution at next timestep.
+    debug_plot_on: bool,
+    *,
+    pressure_only: bool = False,
+    temperature_only: bool = False,
+    fully_coupled: bool = False,
+) -> tuple[dict[str, Any], bool, float]:
+    """Perform non-linear Newton-Raphson iterations.
 
-    This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
-    and pressure monolithically.
+    `T_flow` must be the SAME array object as `primary_variables["T"]` when
+    `fully_coupled=True` (so it tracks the in-loop updates below); for
+    `temperature_only`/`pressure_only` it should be a separate frozen/lagged copy.
     """
-    # extract vectors of nodal dofs
-    primary_variables_iteration = primary_variables.copy()
-    p = primary_variables_iteration["p"]
-    T = primary_variables_iteration["T"]
-    p_dofs = primary_variables["p_dofs"]
-    T_dofs = primary_variables["T_dofs"]
-    # extract controls and tolerances
-    rate_order = sim_control["rate_order"]
-    iter_max = sim_control["iterative_controls"]["iter_max"]
-    NR_tol = sim_control["iterative_controls"]["NR_tol"]
-    aitken_on = sim_control["iterative_controls"]["aitken_relaxation"]
-
-    adv_on = sim_control["advection_on"]
-    prez_on = sim_control["pressurization_on"]
-    buoy_on = sim_control["buoyancy_on"]
-    steady_pres = sim_control["steady_pressure"]
-    steady_temp = sim_control["steady_temperature"]
-    mu_nonlinear = sim_control["viscosity_nonconstant"]
-
-    # extract mesh characteristics
-    nn = mesh["nn_total"]  # noqa
-    T_dofs = T_dofs + nn  # shift for combined p-T vector
-
-    # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
-
-    # parse boundary conditions
-    # unpack boundary conditions
-    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
-        boundary_conditions, p_dofs, T_dofs
-    )
-
-    # fixed dofs for error calculation
-    fixed_dofs = {}
-    fixed_dofs["p"] = p_fix
-    fixed_dofs["T"] = T_fix
-
-    # free and fixed dofs for partitioning with combined [p;T] vector
-    nE = np.hstack((p_fix, T_fix + nn))  # fixed DoFs
-    nF = np.setdiff1d(np.arange(0, 2 * nn), nE).astype(int)  # free DoFs
-
-    # Apply fixed boundary conditions
-    p[p_fix, :] = p_bar.reshape(-1, 1)
-    T[T_fix, :] = T_bar.reshape(-1, 1)
-
-    # Extract linear matrices
-    KM = sp.csc_matrix((nn, nn)) if steady_pres else matrices_linear["KM"]  # Pressure storage matrix
-    C = sp.csc_matrix((nn, nn)) if steady_temp else matrices_linear["C"]  # thermal storage matrix
-    KpT = matrices_linear["KpT"]  # Pressurization matrix
-    KTT = matrices_linear["KTT"]  # thermal conduction matrix
-
-    # Begin Newton-Raphson iterative solver
+    # Newton-Raphson controls
+    iter_max = controls["iterative_controls"]["iter_max"]
+    NR_tol = controls["iterative_controls"]["NR_tol"]
+    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
+    NR_step = controls["iterative_controls"]["NR_step"]
+    one_pass = controls["iterative_controls"]["one_pass"] and temperature_only
     converged = False
-    iteration = 0  # noqa
-    # Store iteration residuals for debugging
-    NR = {}
+
+    if one_pass:
+        # Overwrite bad input when doing a one-pass solve
+        aitken_on = False
+        NR_step = 1.0
+
+    # Initaliaze
+    iteration = 0
+    NR = {"all": np.zeros(iter_max + 1)}  # Store iteration residuals for debugging
     R = {}
-    NR["all"] = np.zeros(iter_max + 1)
-    NR["T"] = np.zeros(iter_max + 1)
-    NR["p"] = np.zeros(iter_max + 1)
-    # Initialize relaxation
-    aitken_state = {}
+    aitken_state: dict[str, Any] = {}
+    fixed_dofs_global = {}
+    vars_orig = {}
+    key_dofs = {}  # key -> that key's global indices (in d_n/d_new) for its dofs
+    nn_all = 0  # Running total of dof offset
+    d_n = np.empty((0, 1))
+    nE: npt.NDArray[np.int_] = np.empty((0, 1), dtype=int)
+    aitken_state["variables_km1"] = np.empty((0, 1))
+    aitken_state["relax_dofs"] = np.empty((0,), dtype=int)
+    for key in keys:
+        # Initialize residuals
+        NR[key] = np.zeros(iter_max + 1)
+        d_n = np.vstack((d_n, primary_variables[key][:, 0:1]))
+        vars_orig[key] = primary_variables[key].copy()
+
+        local_dofs = primary_variables[key + "_dofs"]
+        key_dofs[key] = nn_all + np.arange(len(local_dofs))
+        fixed_dofs_global[key] = fixed_dofs[key] + nn_all
+        nE = np.vstack((nE, fixed_dofs_global[key].reshape(-1, 1)))
+        nn_all += len(local_dofs)
+
+        # Initialize relaxation
+        free_dofs_key = np.setdiff1d(local_dofs, fixed_dofs[key]).astype(int) + key_dofs[key][0]
+        aitken_state["variables_km1"] = np.vstack(
+            (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
+        )
+        aitken_state["relax_dofs"] = np.concatenate((aitken_state["relax_dofs"], free_dofs_key))
+
+    nE = nE.ravel()
     aitken_state["aitken_coefficient"] = np.ones((iter_max + 2, 1))
-    aitken_state["variables_km1"] = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
-    aitken_state["delta_variables_km1"] = np.zeros((2 * nn, 1))
-    aitken_state["relax_dofs"] = nF
+    aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
+
+    # Run-type labels
+    if fully_coupled:
+        label = "FULLY COUPLED"
+
+        # Indexing for updating reaction fluxes each iteration
+        p_dofs_local = primary_variables["p_dofs"]
+        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
+    elif pressure_only:
+        label = "ITERATIVE PRESSURE"
+    else:
+        label = "ITERATIVE TEMPERATURE"
 
     if verbose:
-        print("      FULLY COUPLED NEWTON RAPHSON: ITERATION   ", end="")
-
+        print(f"      {label} NEWTON RAPHSON: ITERATION   ", end="")
     while True:
         if verbose:
-            print(f"\r     FULLY COUPLED NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
+            print(f"\r     {label} NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
-        # Compute residual vectors
-        matrices_non_linear = integrate_nonlinear_matrices(
-            mesh, material, primary_variables_iteration, sim_control
+        # Integrate residual vectors
+        F_vec = integrate_residuals(
+            mesh,
+            material,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
         )
 
-        if mu_nonlinear:
-            Kpp = matrices_non_linear["Kpp"]  # Pressure conductance matrix
-            KbT = matrices_non_linear["KbT"]  # Buoyancy matrix
-            KpT_mu_b = matrices_non_linear["KpT_mu_b"]
-            KpT_mu_p = matrices_non_linear["KpT_mu_p"]
-            KTA_mu = matrices_non_linear["KATT_mu"] + matrices_non_linear["K_stab_TT_mu"]
-        else:
-            Kpp = matrices_linear["Kpp"]  # Pressure conductance matrix
-            KbT = matrices_linear["KbT"]  # Buoyancy matrix
-            KpT_mu_b = sp.csc_matrix((nn, nn))
-            KpT_mu_p = sp.csc_matrix((nn, nn))
-            KTA_mu = sp.csc_matrix((nn, nn))
+        # Update reaction flow rates (fully-coupled only)
+        if fully_coupled:
+            q = np.zeros((len(p_dofs_local), 1))
+            R_p = compute_residuals(F_vec, F_ext, pressure_only=True)["p"]
+            q[fixed_dofs["p"]] = R_p[fixed_dofs["p"]]
+            q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
+            primary_variables["q"] = q
 
-        Tdot = (cv[0] * T[:, 0] + cv[1] * T[:, 1] + cv[2] * T[:, 2]).reshape(-1, 1)
-        pdot = (cv[0] * p[:, 0] + cv[1] * p[:, 1] + cv[2] * p[:, 2]).reshape(-1, 1)
-        T_n = T[:, 0].reshape(-1, 1)
-        p_n = p[:, 0].reshape(-1, 1)
+        # Calculate enthalpy boundary fluxes using reaction flow rates
+        if temperature_only or fully_coupled:
+            F_enth_bnd = integrate_enthlpy_bndry_residual(
+                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=temperature_only
+            )
+            F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
 
-        F_bT = (
-            (KbT @ (T[:, 0] - material["T_0"])).reshape(-1, 1) if buoy_on else np.zeros((nn, 1))
-        )  # Buoyancy force vector
-        F_pT = (KpT @ Tdot).reshape(-1, 1) if prez_on else np.zeros((nn, 1))  # Pressurization force vector
-
-        KTA = (matrices_non_linear["KATT"] + matrices_non_linear["K_stab_TT"]) * adv_on  # advection matrix
-
-        # Pressure residual
-        R["p"] = -KM @ pdot - Kpp @ p_n + F_extp + F_bT + F_pT
-        # Temperature residual
-        R["T"] = -C @ Tdot - (KTT + KTA) @ T_n + F_extT
+        # Compuate residuals
+        R = compute_residuals(
+            F_vec,
+            F_ext,
+            pressure_only=pressure_only,
+            temperature_only=temperature_only,
+            fully_coupled=fully_coupled,
+        )
 
         # Check convergence
-        converged, iteration_error = _check_convergence_fullycoupled(
-            R, fixed_dofs, NR, mesh, iteration, NR_tol
-        )
+        converged, iteration_error = _check_convergence_NR(R, fixed_dofs, NR, mesh, iteration, NR_tol)
 
-        if converged and iteration > 1:
+        if converged and iteration > 0:
             if verbose:
                 print(" - CONVERGED")
             break
         else:  # Update iteration
-            # Diagonal matrices
+            # Integrate Jacobian
+            jacobian = integrate_tangent_matrices(
+                mesh,
+                material,
+                primary_variables,
+                controls,
+                cv,
+                T_flow,
+                pressure_only=pressure_only,
+                temperature_only=temperature_only,
+                fully_coupled=fully_coupled,
+                # T_flow is a frozen copy (not the unknown T) only in the
+                # temperature-only lin-extrap loop; for fully_coupled it is
+                # aliased to the actual unknown, so its derivative must flow through.
+                T_flow_lagged=temperature_only,
+            )
 
-            KATp = matrices_non_linear["KATp"]
-            K_stab_Tp = matrices_non_linear["K_stab_Tp"]
+            # Warnings for poor conditioning
+            if iteration == 0 and (fully_coupled or pressure_only):
+                warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
-            # Assemble Jacobian matrix
-            App = -KM * cv[0] - Kpp  # correct
-            ApT = prez_on * (cv[0] * KpT) + buoy_on * (KbT + KpT_mu_b) + KpT_mu_p
-            ATp = -(KATp + K_stab_Tp) * adv_on  # correct
-            ATT = -cv[0] * C - (KTT + KTA) + KTA_mu  # correct
+            # Assemble Jacobian - different by case
+            if pressure_only:
+                A = jacobian["Kpp"]
+                b = R["p"]
+            elif temperature_only:
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
+                )
+                A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
+                b = R["T"]
+            else:  # fully_coupled
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    T_flow,
+                    BC_config,
+                    fully_coupled=True,
+                    Kpp=jacobian["Kpp"],
+                    KpT=jacobian["KpT"],
+                )
 
-            # Total combined matrix
-            d = np.vstack((p[:, 0].reshape(-1, 1), T[:, 0].reshape(-1, 1)))
-            A = cast(sp.csc_matrix[Any], sp.bmat([[App, ApT], [ATp, ATT]], format="csc"))
+                # Total combined matrix
+                A = cast(
+                    sp.csc_matrix[Any],
+                    sp.bmat(
+                        [
+                            [jacobian["Kpp"], jacobian["KpT"]],
+                            [
+                                jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
+                                jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
+                            ],
+                        ],
+                        format="csc",
+                    ),
+                )
 
-            b = np.vstack((R["p"], R["T"]))
+                b = np.vstack((R["p"], R["T"]))
 
-            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, 2 * nn), nE, np.zeros(np.size(nE, 0)))
+            # Solve system of equations
+            delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
 
-            NR_step = 0.5
-            d += NR_step * delta_var.reshape(-1, 1)
+            d_n = d_n + NR_step * delta_var.reshape(-1, 1)
 
             # Check for nan or inf data and break
-            if np.any(np.isnan(d)) or np.any(np.isinf(d)):
+            if np.any(np.isnan(d_n)) or np.any(np.isinf(d_n)):
                 if verbose:
                     print(" - Nan or Inf detected, CONVERGENCE FAILED. Resetting timestep.")
                 break
@@ -513,54 +558,208 @@ def fully_coupled_time_integration(  # noqa
                     aitken_state["variables_km1"],
                 ) = _aitken_relax(
                     iteration,
-                    d,
+                    d_n,
                     aitken_state["variables_km1"],
                     aitken_state["relax_dofs"],
                     aitken_state["delta_variables_km1"],
                     aitken_state["aitken_coefficient"][iteration],
                 )
             else:
-                d_new = d
+                d_new = d_n
 
-            p[:, 0] = d_new[p_dofs, 0]
-            T[:, 0] = d_new[T_dofs, 0]
+            d_n = d_new
+            # Write the updated global vector back into each key's primary variable.
+            # Uses in-place slice assignment (not a new array) so that a `T_flow`
+            # passed in as the SAME object as primary_variables["T"] (fully_coupled
+            # case) stays aliased and reflects this update automatically.
+            for key in keys:
+                primary_variables[key][:, 0:1] = d_n[key_dofs[key]]
+
             iteration += 1
+
+        if one_pass:
+            converged = True
+            if verbose:
+                print(" - CONVERGED IN ONE PASS")
+            break
 
         if iteration >= iter_max:
             if verbose:
                 print(" - CONVERGENCE FAILED")
             break
 
-    # Calculate reaction flow rates at prescribed DoFs
-    q = np.zeros((nn, 1))
-    q[p_fix] = R["p"][p_fix]
-    # save variables
-    if converged:
-        primary_variables["p"] = p
-        primary_variables["T"] = T
-        primary_variables["q"] = q  # outlet flow rates
+    # Revert the keys if not converged
+    if not converged:
+        for key in keys:
+            primary_variables[key] = vars_orig[key]
+    # Caclulate reaction fluxes
+    if pressure_only:
+        # Reaction fluxes only need computing once. Fully_coupled is calculated in-loop.
+        p_dofs_local = primary_variables["p_dofs"]
+        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
+        q = np.zeros((len(p_dofs_local), 1))
+        q[fixed_dofs["p"]] = R["p"][fixed_dofs["p"]]
+        q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
+        primary_variables["q"] = q
 
-    if verbose:
-        print()  # new line for that output doesn't get overwritten
-        # Plot residuals
-        fig, ax1 = plt.subplots(figsize=(8, 8))
-        ax2 = ax1.twinx()
+    if debug_plot_on or iteration >= iter_max:
+        _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
 
-        ax1.semilogy(np.arange(1, iteration + 1), NR["T"][range(0, iteration)], "r-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["p"][range(0, iteration)], "b-")
-        ax1.semilogy(np.arange(1, iteration + 1), NR["all"][range(0, iteration)], "ko-")
-        plt.ylabel("residual")
-        plt.legend(["Temperature", "Pressure", "Combined"])
+    return primary_variables, converged, iteration_error
 
-        ax2.plot(
-            np.arange(1, iteration + 1),
-            np.array(aitken_state["aitken_coefficient"])[range(0, iteration)],
-            "go-",
+
+# ------------------------ Primary time integration function with linearized extrapoloation --------
+def lin_extrap_time_integration(  # noqa
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+    dt: list[float],
+    n: int,
+    verbose: bool,
+) -> tuple[dict[str, Any], list[float], bool, float]:
+    """Assemble FEM matrices and vectors and solve for solution at next timestep.
+
+    Solution uses a linearized extrapoloation which lags temperature. Error
+    is calculated between the predicted and calculated temperatures for convergence.
+    """
+    debug_pressure_plot_on = False
+    debug_temperature_plot_on = False
+    # extract vectors of nodal dofs
+    p = primary_variables["p"]
+    T = primary_variables["T"]
+    p_orig = primary_variables["p"].copy()
+    T_orig = primary_variables["T"].copy()
+    p_dofs = primary_variables["p_dofs"]
+    T_dofs = primary_variables["T_dofs"]
+    rate_order = controls["rate_order"]
+
+    # calculate rate coefficients
+    cv, cx = rate_coefficients(dt, rate_order)
+
+    # unpack boundary conditions
+    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
+        boundary_conditions, p_dofs, T_dofs
+    )
+    fixed_dofs = {"p": p_fix, "T": T_fix}
+    F_ext = {"p": F_extp, "T": F_extT}
+
+    # Apply fixed boundary conditions
+    p[p_fix, :] = p_bar
+    T[T_fix, :] = T_bar
+    nF_T = np.setdiff1d(T_dofs, T_fix).astype(int)  # free temperature DoFs
+
+    # Extrapolate temperature for free Dofs
+    T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
+    T[nF_T, 0] = T_extrap[nF_T]
+
+    # Frozen snapshot for flow-property evaluations: column 0 is the extrapolated/fixed
+    # guess (kept constant through the temperature Newton loop, unlike T itself), columns
+    # 1-3 are the real time history, needed as-is by the mass-storage rate terms.
+    T_flow = T.copy()
+
+    # Update pressure with extrapolated temperature
+    primary_variables, p_converged, _ = _newton_raphson_loop(
+        controls,
+        material,
+        mesh,
+        primary_variables,
+        BC_config,
+        T_flow,  # Extrapolated tempearture
+        cv,
+        ["p"],
+        fixed_dofs,
+        F_ext,
+        verbose,
+        debug_pressure_plot_on,
+        pressure_only=True,
+    )
+
+    # Update temperature only if pressure converged
+    if p_converged:
+        # Update temperature. Use extrapolated temperature for property evaluation,
+        # for consistency with pressure.
+        primary_variables, T_converged, _ = _newton_raphson_loop(
+            controls,
+            material,
+            mesh,
+            primary_variables,
+            BC_config,
+            T_flow,
+            cv,
+            ["T"],
+            fixed_dofs,
+            F_ext,
+            verbose,
+            debug_temperature_plot_on,
+            temperature_only=True,
         )
-        plt.ylabel("damping coefficient")
 
-        plt.xlim([0, iter_max])
-        # plt.ylim([1e-15, 1e2])
-        plt.xlabel("iteration")
+    # ---- Check for extrapolation error
+    if p_converged and T_converged:
+        # Check for extrapolation timestep error
+        converged, timestep_error = _check_convergence_extrap(primary_variables["T"], T_extrap, controls, n)
+    else:
+        primary_variables["p"] = p_orig.copy()
+        primary_variables["T"] = T_orig.copy()
+        converged = False
+        timestep_error = -1  # flag for Newton-Raphson failure
 
-    return primary_variables, dt, converged, NR["all"][iteration - 1]
+    return primary_variables, dt, converged, timestep_error
+
+
+# --------------- Fully coupled time integration with Newton-Raphson iterations.
+def fully_coupled_time_integration(  # noqa
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    boundary_conditions: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+    dt: list[float],
+    n: int,  # noqa
+    verbose: bool,
+) -> tuple[dict[str, Any], list[float], bool, float]:
+    """Assemble FEM matrices and vectors and solve for solution at next timestep.
+
+    This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
+    and pressure monolithically.
+    """
+    debug_plot_on = False
+    p_dofs = primary_variables["p_dofs"]
+    T_dofs = primary_variables["T_dofs"]
+    rate_order = controls["rate_order"]
+
+    # calculate rate coefficients
+    cv, cx = rate_coefficients(dt, rate_order)
+
+    # unpack boundary conditions
+    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
+        boundary_conditions, p_dofs, T_dofs
+    )
+    fixed_dofs = {"p": p_fix, "T": T_fix}
+    F_ext = {"p": F_extp, "T": F_extT}
+
+    # Apply fixed boundary conditions
+    primary_variables["p"][p_fix, :] = p_bar
+    primary_variables["T"][T_fix, :] = T_bar
+
+    primary_variables, converged, iteration_error = _newton_raphson_loop(
+        controls,
+        material,
+        mesh,
+        primary_variables,
+        BC_config,
+        primary_variables["T"],  # T_flow must alias primary_variables["T"] for fully_coupled
+        cv,
+        ["p", "T"],
+        fixed_dofs,
+        F_ext,
+        verbose,
+        debug_plot_on,
+        fully_coupled=True,
+    )
+
+    return primary_variables, dt, converged, iteration_error

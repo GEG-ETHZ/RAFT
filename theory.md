@@ -1,10 +1,13 @@
 # Theory — Governing Equations and Numerical Methods
 
-RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem. This section summarizes the strong and weak forms, spatial and temporal discretization, stabilization, and the linearized solution scheme actually implemented by the solvers in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py) and [`src/raft/solvers.py`](src/raft/solvers.py).
+RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a **compressible, pressure- and temperature-dependent fluid equation of state (EOS)**: density, internal energy, enthalpy, and viscosity are functions of $(p,T)$, from either a closed-form weakly-compressible relation or real-fluid CoolProp lookups. This section presents the strong and weak forms, the fluid EOS, spatial and temporal discretization, stabilization, and the solution scheme.
 
 ## Table of Contents
 - [Symbol Glossary](#symbol-glossary)
 - [Strong Form Governing Equations](#strong-form-governing-equations)
+    - [Conservation of Mass](#conservation-of-mass)
+    - [Conservation of Energy](#conservation-of-energy)
+    - [Fluid Equation of State](#fluid-equation-of-state)
 - [Weak Form and Finite Element Discretization](#weak-form-and-finite-element-discretization)
 - [Fracture Coupling](#fracture-coupling)
 - [Fracture Mesh Cutting Algorithm](#fracture-mesh-cutting-algorithm)
@@ -18,100 +21,138 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 | Symbol | Definition | Unit | Type |
 |---|---|---|---|
 | $p$ | Fluid pressure | $Pa$ | Primary variable |
-| $T$ | Temperature | $^\circ C$ | Primary variable |
-| $\rho_f$ | Fluid density | $kg/m^3$ | Material property |
+| $T$ | Temperature | $^\circ K$ | Primary variable |
+| $T_{flow}$ | Temperature at which $\rho_f$ (and $\mu$) is evaluated | same as $T$ | Auxiliary field, see [T_flow vs. T](#tflow-vs-t) |
+| $\rho_f$ | Fluid density | $kg/m^3$ | EOS output, $\rho_f(p,T_{flow})$ |
+| $u_f$ | Fluid specific internal energy | $J/kg$ | EOS output, $u_f(p,T)$ |
+| $h_f$ | Fluid specific enthalpy, $h_f=u_f+p/\rho_f$ | $J/kg$ | EOS output |
+| $c_{pf}$ | Fluid specific heat capacity at constant pressure, $(\partial h_f/\partial T)_p$ | $J/kg/^\circ K$ | EOS-derived (SUPG use only) |
+| $\alpha_f$ | Instantaneous fluid thermal expansion, $-\frac{1}{\rho_f}\frac{\partial \rho_f}{\partial T}$ | $^\circ K^{-1}$ | EOS-derived |
 | $\rho_s$ | Rock matrix density | $kg/m^3$ | Material property |
-| $M$ | Biot storage modulus | $Pa$ | Derived property |
-| $\boldsymbol{k}$ | Permeability tensor | $m^2$ | Material property |
-| $\mu$ | Viscosity | $Pa\cdot s$ | Material property |
+| $\boldsymbol{k}_f$ | Permeability tensor | $m^2$ | Material property |
+| $\mu$ | Fluid viscosity | $Pa\cdot s$ | EOS output, $\mu(p,T_{flow})$ |
 | $\vec{g}$ | Gravity vector | $m/s^2$ | Boundary condition |
-| $\alpha_f$ | Volumetric coefficient of thermal fluid expansion | $^\circ C^{-1}$ | Material property |
-| $\alpha_s$ | Volumetric coefficient of thermal matrix expansion | $^\circ C^{-1}$ | Material property |
-| $\alpha_e$ | Effective coefficient of pressurization | $^\circ C^{-1}$ | Derived property |
-| $\phi$ | Porosity | - | Material property |
-| $\beta$ | Biot effective pressure coefficient | - | Material/derived property |
+| $\alpha_s$ | Volumetric coefficient of thermal matrix expansion | $^\circ K^{-1}$ | Material property |
+| $\phi$ | Eulerian porosity | - | Derived property, $\phi(p)$ |
+| $\phi_L$ | Lagrangian porosity, $\phi_L=\phi(1+\epsilon)$ | - | Derived property |
+| $\epsilon$ | Volumetric strain (skeleton, non-mechanical) | - | Derived property |
+| $\beta$ | Biot effective pressure coefficient, $1-K_d/K_s$ | - | Material/derived property |
 | $K_d$ | Drained bulk modulus of porous media | $Pa$ | Material/derived property |
 | $K_s$ | Bulk modulus of solid matrix | $Pa$ | Material property |
-| $K_f$ | Bulk modulus of fluid | $Pa$ | Material property |
+| $K_f$ | Fluid bulk modulus (closed-form EOS only) | $Pa$ | Material property |
 | $Q_i$ | Volumetric fluid injection per injection point | $m^n/s$ | Boundary condition |
-| $\vec{q}$ | Darcy flux | $m^3/s/m^2$ | Derived property |
-| $c_{pf}$ | Specific heat capacity of fluid | $J/kg/^\circ C$ | Material property |
-| $c_{ps}$ | Specific heat capacity of matrix | $J/kg/^\circ C$ | Material property |
-| $m_e$ | Effective heat capacity | $J/m^3/^\circ C$ | Derived property |
-| $\boldsymbol{\lambda}_f$ | Fluid thermal conductivity tensor | $W/m/^\circ C$ | Material property |
-| $\boldsymbol{\lambda}_s$ | Matrix thermal conductivity tensor | $W/m/^\circ C$ | Material property |
-| $\boldsymbol{\lambda}_e$ | Effective thermal conductivity tensor | $W/m/^\circ C$ | Derived property |
+| $\vec{q}$ | Darcy (volumetric) flux | $m^3/s/m^2$ | Derived property |
+| $\vec{q}_D$ | Mass flux, $\rho_f\vec{q}$ | $kg/s/m^2$ | Derived property |
+| $c_{ps}$ | Specific heat capacity of matrix | $J/kg/^\circ K$ | Material property |
+| $\boldsymbol{\lambda}_f$ | Fluid thermal conductivity tensor | $W/m/^\circ K$ | Material property |
+| $\boldsymbol{\lambda}_s$ | Matrix thermal conductivity tensor | $W/m/^\circ K$ | Material property |
+| $\boldsymbol{\lambda}_e$ | Effective thermal conductivity tensor | $W/m/^\circ K$ | Derived property |
 | $\Omega$ | Domain | | Domain |
 | $\Gamma$ | Boundary | | Boundary |
 
 ## Strong Form Governing Equations
-Flow is governed by conservation of mass with Darcy's law, assuming a fully-saturated, single-phase medium:
+#### Conservation of Mass
+Flow is governed by conservation of mass with Darcy's law, assuming a fully-saturated, single-phase medium, idealized as a continuous porous medium:
 
-$$\frac{1}{M}\dot{p} = \nabla\cdot\left(-\frac{\boldsymbol{k}_f}{\mu}(\nabla p + \rho_f \vec{g})\right) + \alpha_e \dot{T} + Q_i\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
+$$\frac{\partial}{\partial t}(\phi \rho_f) + \rho_f \phi \dot{\epsilon} = \nabla\cdot \vec{q}_D + \rho_f Q_i\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
 
-Buoyancy is introduced through a Boussinesq approximation in which the fluid density is linearized about the initial (in-situ) temperature, $\rho_f = \rho_{f0}(1-\alpha_f \Delta T)$ with $\Delta T = T - T_0$. Substituting and neglecting $\nabla\cdot\rho_{f0}\vec{g}$ (which is not a source of flow) gives the working form of conservation of mass:
+$$\vec{q}_D = \frac{\rho_f \boldsymbol{k}_f}{\mu}\left(\nabla p - \rho_f \vec{g}\right)$$
 
-$$\frac{1}{M}\dot{p} = -\nabla\cdot\left(\frac{\boldsymbol{k}_f}{\mu}\nabla p\right) + \frac{\rho_{f0}\alpha_f \boldsymbol{k}_f}{\mu}\nabla\cdot\left(\Delta T\,\vec{g}\right) + \alpha_e \dot{T} + Q_i\delta(\vec{X}_i)$$
+The first term on the left-hand side corresponds to the rate of fluid accumulation in the changing pore space, while the second term corresponds to the bulk change in the frame (the additional volume gained by or lost by changes in the frame volume). We combine these terms to define the Lagrangian porosity, $\phi_L=\phi(1+\epsilon)$. The first term on the right-hand side is the divergence of the Darcy mass flux ($\vec{q}_D$), and the last term represents point sources.
 
-The derived hydraulic (poroelastic) parameters are
+Porosity is defined neglecting deformation from external mechanical loads/equilibrium but including volumetric strain from pore-pressure and thermal changes, and assuming the matrix and solid-grain thermal expansions are approximately equal $\alpha_m\approx\alpha_s$. Thus the temperature does not itself change porosity — a linear change in all dimensions scales void and solid volume equally. The strain and porosity become
 
-$$\beta = 1-\frac{K_d}{K_s}, \qquad \alpha_e = \beta\alpha_s + \phi(\alpha_f - \alpha_s), \qquad \frac{1}{M} = \frac{\phi}{K_f} + \frac{\beta-\phi}{K_s}, \qquad K_d = (1-\beta)K_s$$
+$$\epsilon = \frac{\beta}{K_d}(p-p_0) + \alpha_s(T-T_0), \qquad \phi(p) = 1-(1-\phi_0)e^{-(p-p_0)/K_d}, \qquad \beta=1-\frac{K_d}{K_s}$$
 
-Temperature is governed by conservation of energy assuming local thermal equilibrium between rock and fluid (a single temperature field for the porous medium — not valid across highly conductive fracture apertures, where a separate fracture/matrix convective exchange is used instead, see [`fractures`](README.md#fractures-optional-field)):
+#### Conservation of Energy
+Temperature is governed by conservation of energy assuming local thermal equilibrium between rock and fluid (a single temperature field for the porous medium — not valid across highly conductive fracture apertures, where a separate fracture/matrix convective exchange is used instead, see [Fracture Coupling](#fracture-coupling)):
 
-$$m_e \dot{T} = \rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\nabla p\cdot\nabla T - \lambda_e \nabla^2 T \quad \forall \vec{X}\in\Omega$$
+$$\frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps} T + \phi_L \rho_f u_f\right] = -\nabla\cdot(\rho_f h_f \vec{q}) + \nabla\cdot(\lambda_e \nabla T) + Q_{Ti}\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
 
-with effective thermal parameters mixed by porosity
-
-$$m_e = \rho_s c_s(1-\phi) + \rho_f c_f \phi, \qquad \lambda_e = \lambda_s(1-\phi) + \lambda_f \phi$$
+with effective thermal conductivity mixed by (Lagrangian) porosity, $\lambda_e = \phi_L\lambda_f + (1-\phi_L)\lambda_s$, and work done by expansion of the solid matrix neglected relative to the temperature term.
 
 The coupled problem seeks $p(\vec{X},t)$ and $T(\vec{X},t)$ satisfying the above everywhere in $\Omega$, subject to initial conditions $p_0(\vec{X})$, $T_0(\vec{X})$, Dirichlet boundary conditions $\overline{p}(t)$, $\overline{T}(t)$ on $\Gamma_D$, and Neumann (flux) boundary conditions on $\Gamma_N$:
 
-$$\vec{q} = -\frac{\boldsymbol{k}_f}{\mu}\nabla p = \overline{\vec{q}}(t), \qquad \vec{q}_T = -\lambda_e \nabla T = \overline{\vec{q}}_T(t)$$
+$$\vec{q} = \overline{\vec{q}}(t), \qquad \vec{q}_T = -\lambda_e \nabla T = \overline{\vec{q}}_T(t)$$
 
-where $\Gamma = \Gamma_N \cup \Gamma_D$, $\Gamma_N \cap \Gamma_D = \emptyset$. These correspond directly to the `pressure_fixed`/`temperature_fixed` (Dirichlet) and `fluid_flux`/`temperature_flux` (Neumann) [boundary condition types](README.md#boundary_conditions).
+where $\Gamma = \Gamma_N \cup \Gamma_D$, $\Gamma_N \cap \Gamma_D = \emptyset$.
+
+#### Fluid Equation of State
+The mass and energy balances above are closed by a nonlinear fluid EOS providing $\rho_f$, $u_f$, $h_f$, and $\mu$ as functions of $(p,T)$. There are two mutually exclusive EOS provided in the code.
+
+**Boussinesq Approximation** evaluated about the reference state $(p_0,T_0)$:
+
+$$\rho_f(p,T) = \rho_0\left(1-\alpha(T-T_0) +\frac{p-p_0}{K_f}\right), \qquad u_f(p,T) = c_{pf}T - \frac{\alpha T p}{\rho_0} + \frac{p^2}{2K_f\rho_0}$$
+
+The Boussinesq approximation is suitable for problems with low compressibility of coefficients of expansion, which $\rho_f\approx\rho_0$, or problems with a small bound of pressure and temperature. The internal energy relation follows from integrating the differential $du_f = \left(c_{pf}-\frac{\alpha_f}{\rho_f}p\right)dT + \frac{1}{\rho_f}\left(\frac{p}{K_f}-\alpha_f T\right)dp$.
+
+**Real-fluid EOS**: $\rho_f$, $u_f$, and their $(p,T)$ derivatives come from a CoolProp Helmholtz-energy equation of state, for any CoolProp-supported `fluid_type` (e.g. water or CO2). $T$ and $p$ are clipped to $274$–$1900\,K$ and $0.1$–$700\,MPa$ before each lookup, keeping unconverged Newton iterates inside CoolProp's valid range.
+
+**Enthalpy** is reconstructed rather than queried directly, $h_f = u_f + p/\rho_f$, and $c_{pf}=(\partial h_f/\partial T)_p$ is likewise obtained by stripping the pressure-work derivative from $\partial u_f/\partial T$ rather than differentiating $h_f$ directly; $c_{pf}$ is used only to weight the SUPG stabilization (below), not in the energy residual itself.
 
 ## Weak Form and Finite Element Discretization
-Multiplying by admissible variations $\delta p$, $\delta T$, integrating over the domain, and applying the divergence theorem to the Laplacian terms (the Dirichlet contribution vanishes since $\delta p = \delta T = 0$ there, and the Neumann contribution reduces to the prescribed flux) yields the weak forms:
+To develop the weak forms, we multiply the governing equations by admissible variations $\delta p$, $\delta T$ and integrating over the domain. Applying the divergence theorem to the flux terms (the Dirichlet contribution vanishes since $\delta p=\delta T=0$ there, and the Neumann contribution reduces to the prescribed flux) gives:
 
-$$0 = -\int_\Omega \delta p\,\frac{1}{M}\dot{p}\,d\Omega + \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N + \int_\Omega \nabla\delta p\cdot\left(\frac{\boldsymbol{k}_f}{\mu}\nabla p\right)d\Omega + \int_\Omega \delta p\,\frac{\rho_{f0}\alpha_f}{\mu}\boldsymbol{k}_f\vec{g}\cdot\nabla\Delta T\,d\Omega + \int_\Omega \delta p\,\alpha_e \dot{T}\,d\Omega + \int_\Omega \delta p\,Q_i\delta(\vec{X}_i)\,d\Omega$$
+$$0 = \int_{\Omega} \delta p\, \frac{\partial}{\partial t}(\phi_L \rho_f)\,d\Omega + \int_{\Omega} \nabla\delta p\cdot \frac{\rho_f \boldsymbol{k}_f}{\mu}(\nabla p - \rho_f \vec{g})\,d\Omega + \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N - \int_{\Omega}\delta p\,\rho_f Q_i\delta(\vec{X}_i)\,d\Omega$$
 
-$$0 = -\int_\Omega \delta T\,m_e\dot{T}\,d\Omega + \int_\Omega \delta T\,\rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\nabla p\cdot\nabla T\,d\Omega + \oint_{\Gamma_N}\delta T\,\overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N + \int_\Omega \nabla\delta T\cdot\lambda_e\nabla T\,d\Omega$$
+$$0 = \int_{\Omega} \delta T\, \frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L \rho_f u_f\right] d\Omega + \int_{\Omega} \nabla\delta T \cdot \rho_f h_f \vec{q}\,d\Omega - \oint_\Gamma \delta T(\rho_f h_f \vec{q})\cdot\vec{n}\,d\Gamma \\
+- \int_{\Omega} \nabla\delta T \cdot \lambda_e \nabla T\,d\Omega - \oint_{\Gamma_N} \delta T\,\overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N - \int_{\Omega} \delta T\, Q_{Ti}\delta(\vec{X}_i)\,d\Omega$$
 
-The fields are discretized with standard isoparametric shape functions, $p^h = \textbf{N}(\vec{X})\textbf{p}(t)$ and $T^h = \textbf{N}(\vec{X})\textbf{T}(t)$, with gradients $\nabla p^h = \textbf{B}(\vec{X})\textbf{p}(t)$, $B_{ij} = \partial N_j/\partial x_i$ ([`src/raft/shapefunctions.py`](src/raft/shapefunctions.py)). Pressure and temperature may use different-order shape functions. Substituting into the weak forms gives element residual vectors $\textbf{R}_p = 0$ and $\textbf{R}_T = 0$, assembled in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py):
+Discretizing with standard isoparametric shape functions $p^h=\textbf{N}(\vec{X})\textbf{p}(t)$, $T^h=\textbf{N}(\vec{X})\textbf{T}(t)$ (gradients $\nabla p^h=\textbf{B}(\vec{X})\textbf{p}(t)$, $B_{ij}=\partial N_j/\partial x_i$) gives element residual vectors $\textbf{R}_p=0$, $\textbf{R}_T=0$:
 
-$$\textbf{R}_p = \textbf{F}_S + \textbf{F}_{\Gamma p} + \textbf{F}_k + \textbf{F}_b + \textbf{F}_z + \textbf{F}_w = 0$$
-
-| Term | Definition | Description |
-|---|---|---|
-| $\textbf{F}_S$ | $-\textbf{C}_p\dot{\textbf{p}}$, $\textbf{C}_p = \int_\Omega \textbf{N}^\top \frac{1}{M}\textbf{N}\,d\Omega$ | Storage vector |
-| $\textbf{F}_{\Gamma p}$ | $\oint_{\Gamma_N}\textbf{N}^\top \overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N$ | External flux vector |
-| $\textbf{F}_k$ | $\int_\Omega \textbf{B}^\top \frac{\boldsymbol{k}_f}{\mu}\textbf{B}\,\textbf{p}\,d\Omega$ | Pressure diffusion (Darcy) vector |
-| $\textbf{F}_b$ | $\int_\Omega \textbf{N}^\top \frac{\rho_{f0}\alpha_f}{\mu}\boldsymbol{k}_f \textbf{g}^\top \textbf{B}\,\Delta\textbf{T}\,d\Omega$ | Buoyancy vector |
-| $\textbf{F}_z$ | $\int_\Omega \textbf{N}^\top \alpha_e \textbf{N}\dot{\textbf{T}}\,d\Omega$ | Pressurization vector |
-| $\textbf{F}_w$ | $\int_\Omega \textbf{N}^\top Q_i\delta(\vec{X}_i)\,d\Omega$ | Point flux source vector |
-
-$$\textbf{R}_T = \textbf{F}_C + \textbf{F}_A + \textbf{F}_{\Gamma T} + \textbf{F}_\lambda = 0$$
+$$\textbf{R}_p = \textbf{F}_{Pstorage} - \textbf{F}_{Pdiffusion} - \textbf{F}_{ext,p} = 0$$
 
 | Term | Definition | Description |
 |---|---|---|
-| $\textbf{F}_C$ | $-\textbf{C}_T\dot{\textbf{T}}$, $\textbf{C}_T = \int_\Omega \textbf{N}^\top m_e \textbf{N}\,d\Omega$ | Heat storage vector |
-| $\textbf{F}_A$ | $\int_\Omega \textbf{N}^\top \rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\textbf{B}^\top\textbf{p}^\top\textbf{B}\textbf{T}\,d\Omega$ | Heat advection vector |
-| $\textbf{F}_{\Gamma T}$ | $\oint_{\Gamma_N}\textbf{N}^\top \overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N$ | External heat flux vector |
-| $\textbf{F}_\lambda$ | $\int_\Omega \textbf{B}^\top \lambda_e \textbf{B}\textbf{T}\,d\Omega$ | Heat conduction vector |
+| $\textbf{F}_{Pstorage}$ | $\textbf{M}_{lump}\frac{d}{dt}(\phi_L\rho_f)$ | Lumped nodal mass storage rate |
+| $\textbf{F}_{Pdiffusion}$ | $\int_\Omega \textbf{B}^\top \vec{q}_D\,d\Omega$ | Darcy mass-flux (conductance) vector; gravity is embedded in $\vec{q}_D=\rho_f\vec{q}$ |
+| $\textbf{F}_{ext,p}$ | Prescribed Neumann flux + point-source (wellbore) terms | External/source forcing |
+
+$$\textbf{R}_T = \textbf{F}_{Tstorage} + \textbf{F}_{Tdiffusion} - \textbf{F}_{Tadvection} + \textbf{F}_{Tstab} - \textbf{F}_{ext,T} - \textbf{F}_{enth,\Gamma} = 0$$
+
+| Term | Definition | Description |
+|---|---|---|
+| $\textbf{F}_{Tstorage}$ | $\textbf{M}_{lump}\frac{d}{dt}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L\rho_f u_f\right]$ | Lumped nodal energy storage rate |
+| $\textbf{F}_{Tdiffusion}$ | $\int_\Omega \textbf{B}^\top \lambda_e\textbf{B}\textbf{T}\,d\Omega$ | Heat conduction vector |
+| $\textbf{F}_{Tadvection}$ | $\int_\Omega \textbf{B}^\top h_f\vec{q}_D\,d\Omega$ | Enthalpy advection vector |
+| $\textbf{F}_{Tstab}$ | see [SUPG](#advection-stabilization-supg) | Streamline-upwind stabilization |
+| $\textbf{F}_{ext,T}$ | Prescribed Neumann heat flux | External forcing |
+| $\textbf{F}_{enth,\Gamma}$ | see below | Advective enthalpy boundary correction |
+
+$\textbf{F}_{Pstorage}$/$\textbf{F}_{Tstorage}$ use a **lumped-mass** discretization (nodal rather than quadrature-point quantities) to suppress spurious transient oscillations.
+
+**Advective enthalpy boundary correction** ($\textbf{F}_{enth,\Gamma}$) is a node-wise correction applied at an open pressure/flux (inflow or outflow) node whose temperature is otherwise unconstrained. The inflow/outflow otherwise acts as a false source of energy, and the spurious enthalpy contributions must be removed. $\textbf{F}_{enth,\Gamma}$ subtracts the enthalpy flux $q\,h_f(p,T)$ at that node - where $q$ is the node's mass flow rate and $h_f$ its current enthalpy — to impose an advective open condition on the boundary.
 
 ## Fracture Coupling
-Fractures are modelled as lower-dimensional manifolds (line elements in 2D) embedded in, and conforming to, the surrounding matrix mesh, rather than as full-dimensional low-permeability regions. Each fracture element solves a reduced-dimensional pressure/temperature system restricted to the fracture plane, and exchanges flow and heat with the matrix elements it cuts through. This is assembled as a coupled fracture/matrix system in [`src/raft/matrixassembly.py`](src/raft/matrixassembly.py) and requires a conforming cut of the bulk mesh, produced in [`src/raft/meshprocessing.py`](src/raft/meshprocessing.py) (currently 2D only — see [`fractures`](README.md#fractures-optional-field)).
+Fractures are modelled as lower-dimensional manifolds (line elements in 2D) embedded in, and conforming to, the surrounding matrix mesh, rather than as full-dimensional low-permeability regions. Each fracture element solves a reduced-dimensional pressure/temperature system restricted to the fracture plane, and exchanges flow and heat with the matrix elements it cuts through, requiring a conforming cut of the bulk mesh (currently 2D only — see [`fractures`](README.md#fractures-optional-field)).
 
-**Governing equations.** The fracture void is treated as fully fluid-filled (no solid phase), so the mass and energy balances are the [bulk equations](#strong-form-governing-equations) with the solid/Biot contributions dropped, restricted to the fracture's local tangential coordinate $s$ (i.e. $\nabla \to \partial/\partial s = \vec{u}\cdot\nabla$ for fracture tangent $\vec{u}$), an effective in-plane permeability from the cubic law, and sink/source terms exchanging flow and heat with the matrix:
+**Governing equations.** The fracture void is treated as fully fluid-filled (no solid phase) defined hydraulic aperture $w$. Conservation of mass, restricted to the fracture's local tangential coordinate $s$ ($\nabla_\parallel \to\partial/\partial s$ for fracture tangent $\vec{u}$), are:
 
-$$\frac{w}{K_f}\dot{p}_f = \frac{\partial}{\partial s}\left(\frac{w^3}{12\mu}\frac{\partial p_f}{\partial s}\right) + \frac{w^3}{12\mu}\rho_{f0}\alpha_f\,g_s\,\frac{\partial \Delta T_f}{\partial s} - \underbrace{\frac{w}{12\mu}(p_f - p_m)}_{\text{leak-off}} + Q_i\delta(\vec{X}_i)$$
+$$\frac{\partial}{\partial t}(w\rho_f) = \nabla_\parallel \cdot\left(\frac{\rho_f w \boldsymbol{k}_f}{\mu}(\nabla_\parallel p_f - \rho_f\vec{g})\right) + \rho_f Q_i\delta(\vec{X}_i) - Q_{leak}\\
+Q_{leak} = \frac{\rho_f}{\mu} h_{k\perp}(p_f-p_m) \\
+ \boldsymbol{k}_f = \frac{w^2}{12}, \quad h_{k\perp} = \frac{w}{12}$$
 
-$$w\rho_f c_f\,\dot{T}_f = w\rho_f c_f \frac{w^2}{12\mu}\frac{\partial p_f}{\partial s}\frac{\partial T_f}{\partial s} + \lambda_f \frac{\partial^2 T_f}{\partial s^2} - \underbrace{h(T_f - T_m)}_{\text{convective exchange}}$$
+in which $Q_{leak}$ is the mass exchange between matrix and fracture, $\boldsymbol{k}_f$ is the effective permeability along the fracture, and $h_{k\perp}$ is the fracture mass exchange coefficient.
 
-where $w$ is the hydraulic aperture, $K_f$ is the fluid bulk modulus (fracture storage is pure fluid compressibility — the fracture walls are treated as rigid, so there is no analogue of the matrix's Biot storage modulus $M$ or pressurization term $\alpha_e\dot T$), $g_s = \vec{g}\cdot\vec{u}$ is the gravity component along the fracture, $\lambda_f$ is the fluid thermal conductivity, and $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face. The **cubic law** gives the effective in-plane (longitudinal) permeability $k_f = w^2/12$, so in-plane Darcy flux is $\vec{q}_\parallel = -\frac{w^3}{12\mu}\nabla p$. **Leak-off** to the matrix uses the same aperture-derived permeability over the half-aperture, $q_\perp = \frac{w}{12\mu}(p_f - p_m)$. **Heat exchange** with the matrix is modeled as a convective boundary condition — rather than assuming local thermal equilibrium across the aperture, which is invalid in highly conductive fractures — as $q_{T\perp} = h(T_f - T_m)$ with $h = \frac{Nu\cdot\lambda_f}{2w}$, where $Nu$ is the Nusselt number (`material.fracture.nusselt`). Steady, fully-developed laminar flow gives $Nu \approx 3.66$–$4.36$ (Bejan, 2013), higher during the thermal transient. Local thermal equilibrium can be enforced by setting an arbitrarily high Nusselt number.
+The conservation of energy is
 
-Discretizing with the same shape functions as the bulk mesh gives fracture storage/conductance/capacity matrices analogous to $\textbf{C}_p$, $\textbf{K}_{Dp}$, $\textbf{C}_T$, $\textbf{K}_{DT}$ (using $w/K_f$, $w^3/(12\mu)$, $\rho_f c_f w$, and $\lambda_f w$ respectively in place of the bulk integrands), plus fracture–matrix coupling matrices built from the leak-off and $h$ terms above, all assembled in `integrate_linear_matrices` (`is_fracture=True` pass). Heat advection (including SUPG stabilization) is likewise assembled along the fracture. Fracture hydraulic and thermal properties (`aperture`, `nusselt`) are set per-fracture in [`material.fracture`](README.md#material).
+$$\frac{\partial}{\partial t}(w\rho_f u_f) = -\nabla_\parallel \cdot(\rho_f h_f w \vec{q}) + \nabla_\parallel \cdot(w\lambda_f\nabla T) - Q_{E}  \\
+\qquad \vec{q} = \frac{w^2}{12\mu}(\nabla_\parallel p_f-\rho_f\vec{g})$$
+
+where the total heat energy exchange rate $Q_{E}$ is:
+$$Q_{E} = \underbrace{h_c (T_f - T_m)}_{\text{Conductive Exchange}} + \underbrace{Q_{\text{leak}} h_f^*}_{\text{Advective Enthalpy Exchange}} \\
+h_c = \frac{\text{Nu} \cdot \lambda_f}{2w}$$
+
+in which $h_c$ is the conductive heat transfer coefficient and $h_f^*$ is the directional upwind enthalpy based on flow direction:
+$$h_f^* =
+    \begin{cases}
+      h_f(T_f, p_f) & \text{if } p_f \ge p_m \quad \text{(Flow from Fracture to Matrix)} \\
+      h_f(T_m, p_m) & \text{if } p_f < p_m \quad \text{(Flow from Matrix to Fracture)}
+    \end{cases}$$
+
+For evaluating the exchange direction, the pressure is lagged to the previous timestep to prevent intra-timestep oscillating.
+
+$Nu$ is the Nusselt number, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. The Nusselt number controls conductive heat transfer between the rock and fluid. In steady, fully-developed laminar flow  $Nu\approx 3.66$–$4.36$ (Bejan, 2013), higher during the thermal transient, and local thermal equilibrium can be enforced by setting an arbitrarily high Nusselt number.
 
 ## Fracture Mesh Cutting Algorithm
 Fracture coupling requires a mesh that conforms to each fracture line, so RAFT cuts an ordinary matrix mesh to fit (2D only).
@@ -126,53 +167,109 @@ Fracture coupling requires a mesh that conforms to each fracture line, so RAFT c
 ## Advection Stabilization (SUPG)
 Standard Galerkin FEM produces spurious oscillations for advection-dominated heat transport (Brooks & Hughes, 1982). RAFT applies Streamline Upwind Petrov–Galerkin (SUPG) stabilization to the temperature residual, adding
 
-$$\textbf{F}_{stab} = \int_\Omega \textbf{B}^\top\cdot \vec{a}\,\tau\,\mathcal{R}(T^h)\,d\Omega, \qquad \vec{a} = \rho_{f0} c_{pf}\frac{\boldsymbol{k}_f}{\mu}\textbf{B}\textbf{p}$$
+$$\textbf{F}_{stab} = \int_\Omega \textbf{B}^\top\cdot \vec{a}\,\tau\,\mathcal{R}(T^h)\,d\Omega, \qquad \vec{a} = c_{pf}\,\vec{q}_D$$
 
-with stabilization coefficient (Shakib, Hughes & Zohan, 1991) and element Péclet number
+with stabilization coefficient (Shakib, Hughes & Zohan, 1991) and element Péclet number:
 
-$$\tau = \frac{\ell^e}{2\lVert\vec{a}\rVert}\left(1 + \frac{9}{Pe^2} + \left(\frac{\ell^e}{2\lVert\vec{a}\rVert}h\right)^2\right)^{-0.5}, \qquad Pe = \frac{\ell^e \lVert\vec{a}\rVert}{\lambda_e}$$
+$$\tau = \frac{\ell^e}{2\lVert\vec{a}\rVert}\left(1 + \frac{9}{Pe^2}\right)^{-0.5}, \qquad Pe = \frac{\ell^e \lVert\vec{a}\rVert}{\lambda_e}$$
 
-where $\ell^e$ is the characteristic element size and $\mathcal{R}(T^h) = \rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\textbf{B}^\top\textbf{p}^\top\textbf{B}\textbf{T} - \lambda_e\textbf{G}\textbf{T} - m_e\textbf{N}\dot{\textbf{T}}$ is the strong-form residual of the discretized temperature field ($\textbf{G}$ is the matrix of second shape function derivatives, which vanishes identically for linear elements). This is enabled per-simulation via [`advection_on`](README.md#simulation).
+where $\ell^e$ is a flow-direction-weighted effective element length and $\mathcal{R}(T^h)$ is the strong-form residual of the discretized temperature field, built from the same storage/advection/conduction terms as $\textbf{R}_T$ above.
 
 ## Time Discretization and Solution Scheme
-Time derivatives use a general multistep discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$), implemented in [`rate_coefficients`](src/raft/solvers.py). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified. RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation):
+Time derivatives use a general multistep discretization backwards Euler time discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified. RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation), both of which are implicit time integration schemes.
 
-**`"linearized"` (default) — pressure-first, semi-implicit, extrapolated linearization**, in [`lin_extrap_time_integration`](src/raft/solvers.py). Nonlinear coupling terms are evaluated using a temperature extrapolated from previously-solved states, $\hat{\textbf{T}}^n$, rather than the (unknown) current-timestep temperature. The extrapolation order is the same as the time discretization order (1st linear or 2nd quadratic). In the linear case, $\hat{\textbf{T}}^n = (1+ \frac{\Delta t^n}{\Delta t^{n-1}})\textbf{T}^{n-1} - \frac{\Delta t^n}{\Delta t^{n-1}}\textbf{T}^{n-2}$. This linearizes the pressure equation, which is solved first as a single linear system:
+**`"linearized"` (default) — pressure-first, extrapolated-temperature splitting, each field solved to full nonlinear convergence.**
+A temperature $\hat{\textbf{T}}^n$ is extrapolated from previously-solved states (order matching the time-discretization order; for the linear case $\hat{\textbf{T}}^n = (1+\frac{\Delta t^n}{\Delta t^{n-1}})\textbf{T}^{n-1} - \frac{\Delta t^n}{\Delta t^{n-1}}\textbf{T}^{n-2}$) and frozen as $T_{flow}$ for the whole step. The solver then solves 2 non-linear iterative Newton-Raphson loops, first solving the conservation of mass with fixed temperature then solving the conservation of energy with fixed pressure. With the Boussinesq approximation, this decouples the problem into two linear solves. With the real non-linear EOS, this is two non-linear subproblems.
 
-$$\left[\textbf{C}_p \frac{1}{\Delta t} - \textbf{K}_{Dp}\right]\textbf{p}^n = -\textbf{C}_p c_{v1}\textbf{p}^{n-1} + \textbf{F}_{\Gamma p} + \textbf{F}_b(\hat{\textbf{T}}^n) + \textbf{F}_z(\hat{\textbf{T}}^n) + \textbf{F}_w \equiv \textbf{A}_p \textbf{p}^n = \textbf{b}_p$$
+In the pressure subproblem, the flow properties $\mu$, $\boldsymbol{k}_f$ and $\rho_f$ are evaluated at $T_{flow}$. For consistency in the temperature subproblem, these flow properties continue to be evaluated at $T_{flow}$ while internal energy is evaluated at the current temperature $T^n$. Enthalpy thus becomes a mixed-timestep term in the conservation of energy.
 
-The resulting $\textbf{p}^n$ is substituted directly into the (now-linear) temperature system, which is solved second:
+This operator splitting takes advantage of the difference in timescales in subsurface systems: pressure changes much more quickly relative to temperature. Pressure is solved first (rather than temperature) because at typical reservoir permeabilities ($k_f \gtrsim 10^{-16}\,m^2$) the characteristic timescale of pressure diffusion (hours–days) is much shorter than that of thermal transport (weeks-years), so pressure is expected to evolve faster than temperature between timesteps.
 
-$$\left[c_{v0}\textbf{C}_T - \textbf{K}_{AT}(\textbf{p}^n) - \textbf{K}_{DT} - \textbf{K}_{stabT}(\textbf{p}^n)\right]\textbf{T}^n = \textbf{F}_{\Gamma T} - c_{v1}\textbf{C}_T\textbf{T}^{n-1} \equiv \textbf{A}_T \textbf{T}^n = \textbf{b}_T$$
+After both sub-solves converge, the extrapolated temperature is checked against the actually-solved temperature and convergence is reported against [`rel_error_T`](README.md#simulation); if either sub-solve fails to converge, the whole step is treated as non-converged without even reaching the extrapolation check. If the extrapolation error is too large, the timestep is reduced in proportion to the error and the step is repeated until acceptable error is achieved or the minimum timestep is reached.
 
-Pressure is solved first (rather than temperature) because at typical reservoir permeabilities ($k_f \gtrsim 10^{-16}\,m^2$) the characteristic timescale of pressure diffusion (hours–days) is much shorter than that of thermal transport (weeks-years), so pressure is expected to evolve faster than temperature between timesteps. This is a one-pass solve. The extrapolated temperature is checked against the actually-solved temperature and convergence is reported against [`rel_error_T`](README.md#simulation). If the error between the expolated and solved temperatures is too large, the timestep is reduced in proportion to the error and the timestep is repeated until acceptable error is achieved or the minimum timestep is reached.
-
-**`"fully_coupled"` — monolithic Newton-Raphson**, in [`fully_coupled_time_integration`](src/raft/solvers.py). Pressure and temperature are assembled into a single combined system and evaluated at $t^n$ (fully implicit), then solved iteratively with Newton-Raphson using the tangent matrices below, subject to [`iterative_controls`](README.md#simulation): `NR_tol`, `iter_max`, and optional Aitken $\Delta^2$ relaxation ([`_aitken_relax`](src/raft/solvers.py)) to accelerate/stabilize convergence between iterations. If convergence is not achieved, the timestep is reduced and the non-linear solve is attempted again. If the minimum timestep is reached and the solver is unable to find a converged solution, the simulation ends.
+**`"fully_coupled"` — monolithic Newton-Raphson.**
+Pressure and temperature are assembled into a single combined system and solved iteratively with Newton-Raphson using the tangent matrices below, subject to [`iterative_controls`](README.md#simulation). The convergence can be accelerated using Aitken's $\Delta^2$ relaxation method. If convergence is not achieved, the timestep is reduced and the non-linear solve is attempted again; if the minimum timestep is reached and the solver is unable to find a converged solution, the simulation ends.
 
 ## Adaptive Timestep Control
-The timestep is adapted every step based on solution error/convergence, implemented in [`_update_time`](src/raft/subsurface.py) and driven from the main loop in [`main`](src/raft/subsurface.py). The three most recent timesteps are tracked as a rolling history $\Delta t = [\Delta t^n, \Delta t^{n-1}, \Delta t^{n-2}]$, since the second-order rate/extrapolation coefficients above need timestep history beyond just the current step.
+The timestep is adapted every step based on solution error/convergence. The three most recent timesteps are tracked as a rolling history $\Delta t = [\Delta t^n, \Delta t^{n-1}, \Delta t^{n-2}]$, since the second-order rate/extrapolation coefficients above need timestep history beyond just the current step.
 
-"Convergence" is checked differently per [`solver_type`](README.md#simulation):
-* `"linearized"`: the relative difference between the extrapolated temperature $\hat{\textbf{T}}^n$ used to solve pressure and the actual solved temperature $\textbf{T}^n$ is compared against [`rel_error_T`](README.md#simulation). This is a step-quality check on the linearization, not an iterative nonlinear solve.
-* `"fully_coupled"`: the Newton-Raphson residual norm falling below `NR_tol` within `iter_max` iterations (see [`iterative_controls`](README.md#simulation)).
+Convergence for the `fully_coupled` and `linearized` sub-problems is checked against the specified relative residual tolerance, `NR_tol`. The residuals are a measure of the magnitude of flux, and are normalized by the number of elements and the magnitude of the fluxes at fixed degrees of freedom. If any Newton-Raphson solves do not converge, the timestep is cut by a factor of $0.5$ and the solve is re-attempted. If the step does not converge and the timestep is at `timestep_min`, the simulation is aborted.
 
-If a step does not converge, and the timestep is already at `timestep_min`, the two solvers diverge in behavior: `"linearized"` accepts the step anyway (with a warning) and proceeds, since it has no iterative fallback; `"fully_coupled"` aborts the simulation. Otherwise, the timestep is cut and the step is retried at the same start time:
-* `"linearized"`: $\Delta t^n \leftarrow \max\left(0.85\,\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}}\,\Delta t^n,\ \Delta t_{min}\right)$, where $\varepsilon_T$ is the extrapolation error — an error-proportional cut (similar in form to classic embedded-RK adaptive step-size control), so a larger error produces a sharper cut.
-* `"fully_coupled"`: a fixed cut factor of $0.5$ is applied.
+The `linearized` solver has a second error checking method in which it calculates the relative difference between the expolated temperature used for evaluating properties,  $\hat{\textbf{T}}^n$, and the actual solved temperature $\textbf{T}^n$. This error is called the extrapolation error, $\varepsilon_T$. If $\varepsilon_T$ > `rel_error_T` (the user specified acceptable extrapolation convergence error), the timestep is cut and repeated. The cut factor is calculated as:
 
-If the step converges, the timestep history is shifted ($\Delta t^{n-1}\!\to\!\Delta t^{n-2}$, $\Delta t^n\!\to\!\Delta t^{n-1}$) and the timestep is grown geometrically for the next step, $\Delta t^{n+1} = \min(1.25\,\Delta t^n,\ \Delta t_{max})$ — a fixed growth factor, not error-based.
+$$\Delta t^n \leftarrow \max\left(0.85\,\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}}\,\Delta t^n,\ \Delta t_{min}\right)$$
 
-Finally, the proposed step is clamped so it never overshoots a *critical time*: any boundary-condition breakpoint (a `"table"` time or a `"ramp"` end time — see [Value Specification](README.md#boundary_conditions)) or `t_end`, collected up front by [`get_critical_times`](src/raft/subsurface.py). If $t + \Delta t^n$ would step past the next critical time, $\Delta t^n$ is shortened to land exactly on it, so boundary-condition discontinuities always fall on a solved timestep rather than being smoothed over within one.
+thus the cut is error-proportional and a larger error produces a sharper cut.
+
+If the timestep $\Delta t < \Delta t_{max}$ and the timestep converges, the timestep grows for the next step.
+* For the `linearized` solver, the timestep is proportional to the extrapolation error but capped at $2\times$:
+$$\Delta t^{n+1} = \min\left(\min\left(\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}},\ 2\right)\Delta t^n,\ \Delta t_{max}\right)$$
+
+* For the `fully_coupled` solver, the timestep increases by a static $1.5$ factor.
+$$\Delta t^{n+1} = \min(0.5\,\Delta t^n,\ \Delta t_{max})$$
+
+Finally, the proposed step is clamped so it never overshoots a *critical time*: any boundary-condition breakpoint (a `"table"` time or a `"ramp"` end time — see [Value Specification](README.md#boundary_conditions)) or `t_end`. If $t + \Delta t^n$ would step past the next critical time, $\Delta t^n$ is shortened to land exactly on it, so boundary-condition discontinuities always fall on a solved timestep rather than being smoothed over within one.
 
 ## Tangent Matrices
-The `"fully_coupled"` solver requires the Jacobian of the residuals with respect to the nodal degrees of freedom, assembled from the following blocks (mass matrices are lumped to prevent transient spurious oscillations):
+Both solvers need the Jacobian of their residual(s) with respect to the nodal degrees of freedom — the `"linearized"` solver needs $\textbf{K}_{pp}$ alone for its pressure sub-solve and $\textbf{K}_{TT}$ alone for its temperature sub-solve; `"fully_coupled"` solves the coupled system with Newton-Raphson:
 
-$$\textbf{K}_{pp} = \frac{\partial\textbf{R}_p}{\partial\textbf{p}^n} = -c_{v0}\textbf{C}_p + \textbf{K}_{Dp}, \qquad \textbf{K}_{Dp} = \int_\Omega \textbf{B}^\top \frac{\boldsymbol{k}_f}{\mu}\textbf{B}\,d\Omega \ \text{(hydraulic conductivity matrix)}$$
+$$\begin{bmatrix}\textbf{K}_{pp} & \textbf{K}_{pT} \\ \textbf{K}_{Tp} & \textbf{K}_{TT}\end{bmatrix}^{(k)}\begin{bmatrix}\Delta\textbf{p}\\ \Delta\textbf{T}\end{bmatrix} = -\begin{bmatrix}\textbf{R}_p \\ \textbf{R}_T\end{bmatrix}^{(k)}\\
+\qquad \textbf{K}_{pp}=\frac{\partial\textbf{R}_p}{\partial\textbf{p}^n}, \quad \textbf{K}_{pT}=\frac{\partial\textbf{R}_p}{\partial\textbf{T}^n}, \quad \textbf{K}_{Tp}=\frac{\partial\textbf{R}_T}{\partial\textbf{p}^n}, \quad \textbf{K}_{TT}=\frac{\partial\textbf{R}_T}{\partial\textbf{T}^n}$$
 
-$$\textbf{K}_{pT} = \frac{\partial\textbf{R}_p}{\partial\textbf{T}^n} = \textbf{K}_b + c_{v0}\textbf{K}_z, \qquad \textbf{K}_b = \int_\Omega \textbf{N}^\top \frac{\rho_{f0}\alpha_f}{\mu}\boldsymbol{k}_f\textbf{g}^\top\textbf{B}\,d\Omega \ \text{(buoyancy)}, \quad \textbf{K}_z = \int_\Omega \textbf{N}^\top \alpha_e \textbf{N}\,d\Omega \ \text{(pressurization)}$$
+where $k$ denotes the Newton-Raphson iteration index.
 
-$$\textbf{K}_{Tp} = \frac{\partial\textbf{R}_T}{\partial\textbf{p}^n} = \textbf{K}_{Ap} + \textbf{K}_{stabP}, \qquad \textbf{K}_{Ap} = \int_\Omega \textbf{N}^\top \rho_f c_f \frac{\boldsymbol{k}_f}{\mu}\textbf{B}^\top\textbf{T}^\top\textbf{B}\,d\Omega \ \text{(pressure advection tangent)}$$
+**Common derivatives.** The Darcy mass flux $\vec{q}_D$ and its tangents:
 
-$$\textbf{K}_{TT} = \frac{\partial\textbf{R}_T}{\partial\textbf{T}^n} = -c_{v0}\textbf{C}_T + \textbf{K}_{AT} + \textbf{K}_{DT} + \textbf{K}_{stabT}$$
+$$\vec{q}_D = \frac{\rho_f\boldsymbol{k}_f}{\mu}\nabla p', \qquad \nabla p' = \textbf{B}\textbf{p}^n - \rho_f\vec{g}$$
 
-where $\textbf{K}_{DT} = \int_\Omega \textbf{B}^\top \lambda_e \textbf{B}\,d\Omega$ is the heat conduction matrix, $\textbf{K}_{AT}$ the heat advection matrix, and $\textbf{K}_{stabP}$, $\textbf{K}_{stabT}$ the SUPG stabilization tangent contributions. When viscosity is temperature-dependent (see the `[A, B, C, D]` nonlinear viscosity form under [`material.fluid.viscosity`](README.md#material)), additional $\textbf{K}_{pT}^\mu$ and $\textbf{K}_{TT}^\mu$ terms are included via $\partial\mu/\partial T$.
+$$\frac{\partial\vec{q}_D}{\partial\textbf{p}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\textbf{B}+\frac{\partial\rho_f}{\partial p}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial p} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial p} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial p}\right]\nabla p'\,\textbf{N}$$
+
+$$\frac{\partial\vec{q}_D}{\partial\textbf{T}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\frac{\partial\rho_f}{\partial T}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial T} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial T} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial T}\right]\nabla p'\,\textbf{N}$$
+
+**Conservation of Mass wrt Pressure ($\textbf{K}_{pp}$):**
+
+$$\textbf{K}_{pp} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial p}\rho_f + \phi_L\frac{\partial\rho_f}{\partial p}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}_D}{\partial\textbf{p}}\,d\Omega$$
+
+**Conservation of Mass wrt Temperature ($\textbf{K}_{pT}$):**
+
+$$\textbf{K}_{pT} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial T}\rho_f + \phi_L\frac{\partial\rho_f}{\partial T}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}_D}{\partial\textbf{T}}\,d\Omega$$
+
+**Conservation of Energy wrt Pressure ($\textbf{K}_{Tp}$):**
+
+$$\textbf{K}_{Tp} = \frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_\lambda}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_{stab}}{\partial\textbf{p}^n}$$
+
+$$\frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]\textbf{N}\,d\Omega$$
+
+$$\frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial p}\vec{q}_D\textbf{N} + h_f\frac{\partial\vec{q}_D}{\partial\textbf{p}}\right)d\Omega$$
+
+$$\frac{\partial\textbf{F}_\lambda}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\frac{\partial\phi_L}{\partial p}\left(\lambda_f-\lambda_s\right)\nabla T\,\textbf{N}\,d\Omega$$
+
+$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{p}}\mathcal{R}\vec{q}_D + \tau\frac{\partial\mathcal{R}}{\partial\textbf{p}}\vec{q}_D + \tau\mathcal{R}\frac{\partial\vec{q}_D}{\partial\textbf{p}}\right]d\Omega$$
+
+Neglecting the stabilization coefficient derivative, $\partial\tau/\partial\textbf{p}\approx 0$:
+
+$$\frac{\partial\mathcal{R}}{\partial\textbf{p}} = c_{v0}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T^h\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]\textbf{N} \\
++ \left(\frac{\partial h_f}{\partial p} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial p}\right)\vec{q}_D\cdot\textbf{B} \\
++ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}_D}{\partial\textbf{p}} \\
++ \left(\frac{\partial h_f}{\partial p}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial p}\right)\cdot\vec{q}_D\textbf{N}$$
+
+**Conservation of Energy wrt Temperature ($\textbf{K}_{TT}$):**
+
+$$\textbf{K}_{TT} = \frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_\lambda}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_{stab}}{\partial\textbf{T}^n}$$
+
+$$\frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[(1-\phi_L)\rho_s c_{ps} + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right) + \frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T\right)\right]\textbf{N}\,d\Omega$$
+
+$$\frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial T}\vec{q}_D\textbf{N} + h_f\frac{\partial\vec{q}_D}{\partial\textbf{T}}\right)d\Omega$$
+
+$$\frac{\partial\textbf{F}_\lambda}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\lambda_e\textbf{B} + \frac{\partial\phi_L}{\partial T}\left(\lambda_f-\lambda_s\right)\nabla T\,\textbf{N}\right)d\Omega$$
+
+$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{T}}\mathcal{R}\vec{q}_D + \tau\frac{\partial\mathcal{R}}{\partial\textbf{T}}\vec{q}_D + \tau\mathcal{R}\frac{\partial\vec{q}_D}{\partial\textbf{T}}\right]d\Omega$$
+
+Neglecting the stabilization coefficient derivative, $\partial\tau/\partial\textbf{T}\approx 0$:
+
+$$\frac{\partial\mathcal{R}}{\partial\textbf{T}} = c_{v0}\left[\frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T^h\right) + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right)\right]\textbf{N} \\
++ \left(\frac{\partial h_f}{\partial T} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial T}\right)\vec{q}_D\cdot\textbf{B} \\
++ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}_D}{\partial\textbf{T}} \\
++ \left(\frac{\partial h_f}{\partial T}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial T}\right)\cdot\vec{q}_D\textbf{N}$$
+
+Mass matrices ($c_{v1}$/$c_{v0}$ terms above) are lumped, matching the residual storage vectors, to prevent transient spurious oscillations. The advective enthalpy boundary correction $\textbf{F}_{enth,\Gamma}$ contributes its own tangent beyond the blocks above, including (for `"fully_coupled"` only) a cross-term through $\textbf{K}_{pp}$/$\textbf{K}_{pT}$ at pressure-Dirichlet nodes, since the mass flow rate there is itself a function of $\textbf{p}^n,\textbf{T}^n$.
