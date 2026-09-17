@@ -178,14 +178,13 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
         config["material"]["fluid"]["abstract_state"] = None
 
     # One-pass linearized?
-    # If using the boussinesq approximation (rho !=0), the flow properties are not functions of pressure
-    # (mu or kf), and using the linearized solver, the linearized
-    # pressure and temperature solves are both linear, so we can save the second residual calc.
+    # If using the boussinesq approximation (rho !=0) and using the linearized solver, the linearized
+    #  temperature solves is guaranteed linear, so we can save the second residual calc.
     if rho != 0 and mu != 0 and controls["solver_type"] == "linearized":
         controls["iterative_controls"]["one_pass"] = True
         if verbose:
             print(
-                "\nUsing the linearized solver with Boussinesq EOS and pressure-independent flow properties. One-pass solve enabled."  # noqa
+                "\nUsing the linearized solver with Boussinesq EOS. One-pass solve enabled."  # noqa
             )
     else:
         controls["iterative_controls"]["one_pass"] = False
@@ -276,20 +275,14 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
     num_regions = max(mesh["regions"]) + 1
 
     # Initialize derived properties storage
-    material["solid"]["storage_mod"] = [None] * num_regions
     material["solid"]["therm_cond_eff"] = [None] * num_regions
-    material["solid"]["therm_expansion_eff"] = [None] * num_regions
-    material["solid"]["volumetric_heat_capacity_eff"] = [None] * num_regions
     material["solid"]["permeability_eff"] = [None] * num_regions
     material["solid"]["drained_bulk_mod"] = [None] * num_regions
 
     for r in range(num_regions):
         # ----- material properties
-        alpha_s = _get_region_value(material["solid"]["therm_expansion"], r)
-        alpha_f = material["fluid"]["therm_expansion"]
         phi = _get_region_value(material["solid"]["porosity"], r)
         biot = _get_region_value(material["solid"]["biot_coeff"], r)
-        Kf = material["fluid"]["bulk_mod"]
         Ks = _get_region_value(material["solid"]["bulk_mod"], r)
         lambda_s = _get_region_value(material["solid"]["therm_cond"], r)
         kf = _get_region_value(material["solid"]["permeability"], r)
@@ -308,12 +301,6 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             kf.append(0.0) if len(kf) < 3 else kf
             kf = (R @ np.diag(kf) @ R.T)[:nsd, :nsd]
 
-        # Derived properties (computed here, not stored in YAML)
-        M = Kf * Ks / (phi * Ks + (biot - phi) * Kf)  # storage modulus
-
-        # effective expansion modulus
-        alpha_e = biot * alpha_s + phi * (alpha_f - alpha_s)
-
         # effective conductivity
         if isinstance(lambda_s, list):
             lambda_s.append(0.0) if len(lambda_s) < 3 else lambda_s
@@ -327,19 +314,9 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             # isotropic case
             lambda_e = phi * material["fluid"]["therm_cond"] + (1 - phi) * lambda_s
 
-        # effective volumetric heat capacity
-        cp_s = _get_region_value(material["solid"]["specific_heat"], r)
-        rho_s = _get_region_value(material["solid"]["density"], r)
-        m_e = (
-            phi * material["fluid"]["specific_heat"] * material["fluid"]["density"] + (1 - phi) * cp_s * rho_s
-        )
-
         # store derived properties for future use
         material["solid"]["permeability_eff"][r] = kf  # list of kf_x,y,z
-        material["solid"]["storage_mod"][r] = M
         material["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
-        material["solid"]["therm_expansion_eff"][r] = alpha_e
-        material["solid"]["volumetric_heat_capacity_eff"][r] = m_e
         material["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
 
     return material

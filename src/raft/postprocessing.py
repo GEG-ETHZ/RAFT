@@ -474,18 +474,6 @@ def _build_initial_cell_data(
             "data": np.atleast_1d(np.asarray(material["solid"]["biot_coeff"]))[indx],
         },
         {
-            "name": "storage_modulus",
-            "data": np.atleast_1d(np.asarray(material["solid"]["storage_mod"]))[indx],
-        },
-        {
-            "name": "thermal_expansion_effective",
-            "data": np.atleast_1d(np.asarray(material["solid"]["therm_expansion_eff"]))[indx],
-        },
-        {
-            "name": "volumetric_heatcapacity",
-            "data": np.atleast_1d(np.asarray(material["solid"]["volumetric_heat_capacity_eff"]))[indx],
-        },
-        {
             "name": "rotation_x",
             "data": np.atleast_1d(np.asarray(material["solid"]["rotation_x"]))[indx],
         },
