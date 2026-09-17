@@ -16,13 +16,13 @@ material:
 
   # Fluid parameters
   fluid:
-      bulk_mod: 2.10e+9         # Pa
-      density:      925         # kg/m^3
-      therm_cond:   0.6         # W/mK
+      density: 925            # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      reference_temperature: 400 # Reference temperature for density (K)
+      bulk_mod: 2.10e+9       # Pa
       therm_expansion: 200.0e-6 # 1/K
-      specific_heat: 4200       # J/kgK
-      viscosity: 0.7e-3         # m^2 (permeability)
-      reference_temperature: 400
+      specific_heat: 4200     # J/kgK
+      therm_cond: 0.6         # W/mK
+      viscosity: 0.7e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
 
 initial_conditions:
   T_ini: 400                  # deg C
@@ -69,7 +69,7 @@ simulation:
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 1
-  gravity: -9.81
+  gravity: -9.81    # m/s^2
 
   # Numerical controls
   rel_error_T: 5.0e-1 # Relative error for extrapolation

@@ -37,12 +37,12 @@ material:
       rotation_z: [0.0, 0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
   # Fluid parameters
   fluid:
-      bulk_mod: 2.10e+9         # Pa
-      density:      10         # kg/m^3
-      therm_cond:   3         # W/mK
+      density: 10             # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      bulk_mod: 2.10e+9       # Pa
       therm_expansion: 00.0e-6 # 1/K
-      specific_heat: 1000       # J/kgK
-      viscosity: 0.7e-3         # m^2 (permeability)
+      specific_heat: 1000     # J/kgK
+      therm_cond: 3           # W/mK
+      viscosity: 0.7e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
 
 
 initial_conditions:
@@ -94,7 +94,7 @@ simulation:
   # Physical controls
   rate_order: 1     # order of rate of change approximation
   advection_on: 0
-  gravity: 0.0
+  gravity: 0.0    # m/s^2
   steady_pressure: 1
   steady_temperature: 1
 

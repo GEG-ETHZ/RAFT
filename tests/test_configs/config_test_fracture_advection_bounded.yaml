@@ -16,12 +16,12 @@ material:
       permeability: 1.0e-14    # m^2
 
   fluid:
-      bulk_mod: 2.0e+9         # Pa
-      density: 1000.0          # kg/m^3
-      therm_cond: 0.6          # W/mK
+      density: 1000.0         # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      bulk_mod: 2.0e+9        # Pa
       therm_expansion: 200.0e-6 # 1/K
-      specific_heat: 4180.0    # J/kgK
-      viscosity: 1.0e-3        # Pa-s
+      specific_heat: 4180.0   # J/kgK
+      therm_cond: 0.6         # W/mK
+      viscosity: 1.0e-3       # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
 
   # Fracture parameters
   fracture:
@@ -58,7 +58,6 @@ simulation:
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0
-  solver_type: "linearized"
 
   # Output
   output_frequency: 1
@@ -67,10 +66,11 @@ simulation:
   # Physical controls
   rate_order: 1
   advection_on: 1
-  gravity: 0.0
+  gravity: 0.0    # m/s^2
   steady_pressure: 1
   steady_temperature: 1
   axisymmetric_on: 0
 
   # Numerical controls
+  solver_type: "linearized"
   rel_error_T: 1.0e-2
