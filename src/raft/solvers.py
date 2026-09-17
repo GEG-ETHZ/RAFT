@@ -219,7 +219,7 @@ def _check_convergence_NR(
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
         numerator = np.linalg.norm(R[key][nF])
-        flux_scale = max(np.linalg.norm(R[key][fixed_dofs[key]]), 1)
+        flux_scale = max(float(np.linalg.norm(R[key][fixed_dofs[key]])), 1.0)
 
         NR[key][iteration] = numerator / flux_scale / nn
         NR["all"][iteration] += NR[key][iteration] ** 2
