@@ -36,7 +36,7 @@ repos:
       - id: check-added-large-files
         args: ['--maxkb=1000']
       - id: no-commit-to-branch # This perfectly replaces the custom bash script by blocking commits AND pushes to main/develop
-        args: [--branch, main, --branch, develop]
+        args: [--branch, main, --branch, development]
         stages: [pre-commit, pre-push]
 
   # Tests (run ONLY on push)
