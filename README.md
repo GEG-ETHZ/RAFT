@@ -26,6 +26,10 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [`initial_conditions`](#initial_conditions)
   - [`boundary_conditions`](#boundary_conditions)
   - [`simulation`](#simulation)
+- [Mesh generation](#mesh-generation)
+  - [`domain`](#domain)
+  - [`sizing`](#sizing)
+  - [Command line options](#command-line-options)
 - [Prerequisites](#prerequisites)
   - [Installation](#installation)
 - [Project Structure](#project-structure)
@@ -43,11 +47,11 @@ replace the config file with a specific config file name, such as:
 Run the test suite:
     `uv run pytest`
 
-Creating meshes: [GMSH](https://gmsh.info/)
+Creating meshes: [Gmsh](https://Gmsh.info/), either by hand or with the generator described under [Mesh generation](#mesh-generation). Gmsh requires a separate download and installation.
 
 Viewing results files: [Paraview](https://www.paraview.org/)
 
-Config files are read from the "config" directory. Meshes are made via [GMSH](https://gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
+Config files are read from the "config" directory. Meshes are made via [Gmsh](https://Gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
 
 ## Theory
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a compressible, pressure- and temperature-dependent fluid equation of state. The governing equations, fluid EOS, finite element discretization, fracture coupling, mesh cutting algorithm, stabilization, and time-integration schemes are documented in [theory.md](theory.md).
@@ -61,6 +65,8 @@ The simulator uses a YAML configuration file to define simulation options, mater
 * **`dimensions`** *(integer, default: `3`)*: Spatial dimensions of the analysis (`2` or `3`).
 * **`regions`** *(subcategories)*: See the `regions` section for specifying regions, or specify the subcategory `"list":` *(str)* and provide the path to a .txt file with a list of corresponding region for each element.
 * **`fractures`** *(subcategories)*: See the `fractures` section for specifications.
+* **`domain`** *(subcategories, optional)*: Outer boundary of the geometry, used only by the mesh generator (see [Mesh generation](#mesh-generation)). Ignored by the solver, which takes its domain from the mesh file.
+* **`sizing`** *(subcategories, optional)*: Element sizes for the mesh generator (see [Mesh generation](#mesh-generation)). Ignored by the solver.
 
 ### `regions`
 Regions allow you to assign different material properties to different sections of your domain. Each region is defined by a geometric shape which assign the region number to all elements whose centroids fall within the shape. Region numbers correspond to indices in the material property lists. Regions are an independent definition that does not rely on the mesh or domain, but conforming mesh boundaries are encouraged for more accurate results.
@@ -122,10 +128,10 @@ Each fracture specification requires three fields:
 * **`shape`** *(string)*: Type of geometric boundary. These shapes are only used in 3D, in 2D all fractures are represented as lines. Supported shapes:
   * `"ellipse"`
   * `"rectangle"`
-* **`values`** *(list)*: $[[x_c, y_c, z_c ], [a,b], [\theta_1, \theta_2]]$
+* **`values`** *(list)*: $[[x_c, y_c, z_c ], [a,b], [\theta_x, \theta_y, \theta_z]]$
   * $[x_c, y_c, z_c ]$ *(list[float], no default)*: coordinates of the plane center. In 2D analysis, only $x_c$ and $y_c$ are considered.
   * $[a,b]$ *(list[float], no default)*: extents. For the ellipse, $a$ = major axis distance, $b$ = minor axis distance. For the rectangle, $a$ = half-length, $b$ = half-width. In 2D, $a$ is taken as the fracture half-length.
-  * $[\theta_1, \theta_2]$ *(list[float], no default)*: plane angles. $\theta_1$ = plane angle with respect to the x-axis, $\theta_2$ = plane angle with respect to the y-axis.
+  * $[\theta_x, \theta_y, \theta_z]$ *(list[float], no default)*: plane angles in degrees. $\theta_x$ = plane angle with respect to the x-axis, $\theta_y$ = plane angle with respect to the y-axis, , $\theta_z$ = plane angle with respect to the z-axis. In 2D, only $\theta_x$ and $\theta_y$ are considered.
 
 Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
 
@@ -164,7 +170,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`viscosity`** *(float, default: `1.0e-3`)*: Fluid dynamic viscosity in $\text{Pa}\cdot\text{s}$.
     * **Default behaviour:** Viscosity is a constant set to the specific *float* value. Recommended for cases with small variations in pressure or temperature.
     * **True behaviour:** Set to `0` to instead use a temperature- and pressure-dependent, real-fluid viscosity looked up from CoolProp for the configured `fluid_type`. Recommended for super-critical CO2.
-    * **Pure thermal behabiour:** Set to `-1` to instead use a temperature-dependent viscosity with the form $\mu = A e^{-B/T + CT + DT^2}$. Curently only works for water. For water, $ A = 1.856·10−11 \text{mPa}\cdot \text{s}, B = 4209 \text{K}, C = 0.04527 \text{K}^{-1}$ and $D = -3.376\times 10^{-5} \text{K}^{-2}$.
+    * **Pure thermal behabiour:** Set to `-1` to instead use a temperature-dependent viscosity with the form $\mu = A e^{-B/T + CT + DT^2}$. Curently only works for water. For water, $ A = 1.856·10^{−11} \text{mPa}\cdot \text{s}, B = 4209 \text{K}, C = 0.04527 \text{K}^{-1}$ and $D = -3.376\times 10^{-5} \text{K}^{-2}$.
 
 
 > **IMPORTANT NOTE FOR NONLINEAR FLUID PROPERTIES**: When using non-linear material properties, the magnitude of pressure and temperature matter. Temperature __must__ be specified in Kelvin, while pressure boundary conditions should be specified above the fluid's saturation point. Temperature and pressure are clipped to $274$–$1900\,\text{K}$ and $0.1$–$700\,\text{MPa}$ before the lookup, to keep unconverged solver iterates within CoolProp's valid range; pressures should stay comfortably above the lower bound, since it sits close to water's saturation curve at higher temperatures.
@@ -303,6 +309,72 @@ Numerical solver controls
   * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.
   * **`NR_step`** *(float, default: `1.0`)*: Newton-Raphson step/line-search size; scales each iteration's solution update before any Aitken relaxation is applied.
 
+## Mesh generation
+
+Gmsh is not a part of RAFT, but to simplify mesh generation the script `scripts/raft_to_geo.py` is provided which generates a Gmsh `.geo` and `.msh` files. Gmsh is not provided with raft and requires separate download and installation. Meshing by hand or from another source is still supported, this script is provided as a convenient option to keep the mesh and config files synchronized. The script `raft_to_geo.py` reads the config file and generates corresponding files to ensure that the mesh contains discretized boundary condition geometries, fractures, and region boundaries:
+  - nodes are placed exactly where `coords` boundary conditions exist
+  - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, and region boundary edge lines and faces in 2D and 3D respectively
+ Explicit discretization of these features reduces the error introduced by the mesh discretization.
+
+**Running the script:**
+```bash
+uv run just geo **config file name** **options**
+```
+Example:
+```
+uv run just geo config_example_2D -o 2D_generated
+```
+
+This generates `config/2D_generated.geo` and the matching `.msh` using the specifications from `config_example_2D`. The file name defaults to the name specified in [mesh: file](#mesh), unless an alternative name is passed with the flag `-o **alternative name**`. Existing files are never overwritten without `-f` flag.
+
+The ```just geo``` recipe runs `uv run --with Gmsh scripts/raft_to_geo.py <config> --mesh`, which pulls in Gmsh for that command only, and passes any extra flags through. Script names default to `config/<config name>.yaml`. The `.msh` output is Version 2.2 ASCII with T3 triangles in 2D and tetrahedra in 3D. Quadrilateral Q4 elements can be specified in 2D with `--quads`. `raft_to_geo.py` does not support meshing arbitrary hexahedral B8 elements, but they are supported by RAFT if supplied by custom meshing.
+
+### `domain`
+The outer boundary, required by the script. `box` takes two opposite corners; `polyhedron`, `sphere` and `cylinder` take the same values as the equivalent [region](#regions) shapes.
+
+```yaml
+mesh:
+  domain:
+    shape: "box"
+    values: [[-51, 0], [102, 75]]   # [[xmin, ymin, zmin], [xmax, ymax, zmax]]; drop z in 2D
+```
+
+### `sizing`
+Element sizes, each overridable from the command line. Only `outer` is required.
+
+```yaml
+mesh:
+  sizing:
+    outer: 10                                    # size far from any feature
+    frac: [[0.05, 0.05, 1, 10], [0.2, 5, 5, 5]]  # size profile off the fractures
+    bc: 0.5                                      # a bare number is one stage over `transition`
+    transition: 25        # stage length for bare-number profiles (default: 5*outer)
+    region_max: 3         # coarsest size on a region boundary
+    boundary_growth: 0.25 # how strongly region boundaries follow nearby features
+    quads: false          # Q4 elements instead of T3 (2D only)
+```
+
+A profile $[[s_1, ..., s_n], [L_1, ..., L_n]]$ sets the element size to $s_1$ at the feature, then ramps $s_1 \rightarrow s_2$ over $L_1$, $s_2 \rightarrow s_3$ over $L_2$, and finally $s_n \rightarrow$ `outer` over $L_n$. Sizes need not increase, so repeating a value holds that size for a set distance: the example above holds 0.05 for 0.2 m, then grows to 1 over 5 m, to 10 over the next 5 m, and to `outer` over the 5 m after that. `frac` and `bc` are independent, so fractures may be finer than boundary conditions or the other way around.
+
+Region boundaries are refined according to their proximity to fractures and boundary conditions, so an interface near a fracture is resolved more finely than one far away. `region_max` caps that refinement and `boundary_growth` sets how strongly it follows the nearby feature. Stretches of a region boundary that lie on the domain boundary are left at `outer`.
+
+### Command line options
+| Option | Effect |
+| --- | --- |
+| `config` | Config file; a bare name resolves to `config/<name>.yaml` |
+| `-o`, `--output` | Output `.geo`; a bare name resolves into `config/` (default: the stem of `mesh.file`) |
+| `--mesh` | Also run Gmsh and write the `.msh` |
+| `-f`, `--force` | Overwrite existing output files |
+| `--size-outer` | Overrides `sizing.outer` |
+| `--size-frac`, `--dist-frac` | Fracture sizes and stage lengths, comma separated (e.g. `--size-frac 0.05,0.05,1,10 --dist-frac 0.2,5,5,5`) |
+| `--size-bc`, `--dist-bc` | The same for point and line boundary conditions |
+| `--transition` | Stage length when only sizes are given |
+| `--size-region-max` | Overrides `sizing.region_max` |
+| `--boundary-growth` | Overrides `sizing.boundary_growth` |
+| `--quads` | Q4 elements instead of T3 (2D only) |
+
+
+
 ## Prerequisites
 - Python version specified in `.python-version`
 - uv (if not installed - see below)
@@ -330,6 +402,7 @@ Numerical solver controls
     ├── outputs/
     ├── scripts/
     │   ├── debug_fracture_angles.py
+    │   ├── raft_to_geo.py
     │   ├── plot_fluid_props.py
     │   └── plot_fluid_props_functionofpressure.py
     ├── src/

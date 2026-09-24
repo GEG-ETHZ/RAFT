@@ -26,6 +26,7 @@ dev = [
     "types-pyyaml>=6.0.12.20260518",
     "scipy-stubs>=1.17.1.5",
     "prek==0.3.13",
+    "rust-just>=1.58.0", # task runner for the justfile (`uv run just <recipe>`)
 ]
 
 [build-system]

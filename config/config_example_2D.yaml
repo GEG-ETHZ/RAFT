@@ -1,6 +1,13 @@
 mesh:
   file: 2D_example.msh
   dimensions: 2
+  domain:  # outer boundary, used by scripts/raft_to_geo.py
+        shape: "box"
+        values: [[-51, -50], [102, 75]]
+  sizing:  # element sizes, used by scripts/raft_to_geo.py
+      outer: 20
+      frac: [[0.25, 0.5, 2], [0.5, 5, 20]]
+      bc: [[0.5, 2], [1, 10]]
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
