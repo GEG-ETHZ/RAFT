@@ -54,3 +54,7 @@ test:
 
 # Run all quality checks in CI order: format → lint → typecheck → test
 check: fmt lint typecheck test
+
+# Generate config/<mesh>.geo and .msh from a RAFT config, e.g. `just geo config_example_2D -o 2D_generated`
+geo config *args:
+    uv run --with gmsh scripts/raft_to_geo.py {{config}} --mesh {{args}}
