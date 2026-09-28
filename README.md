@@ -16,6 +16,10 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
      - Fracture heat transfer with conductive and advective leak-off
 
 ## Table of Contents
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Building the documentation](#building-the-documentation)
 - [Running the simulation](#running-the-simulation)
 - [Theory](#theory)
 - [Configuration Parameters](#configuration-parameters)
@@ -30,12 +34,28 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [`domain`](#domain)
   - [`sizing`](#sizing)
   - [Command line options](#command-line-options)
-- [Prerequisites](#prerequisites)
-  - [Installation](#installation)
 - [Project Structure](#project-structure)
 - [Developers](#developers)
-  - [Branching Strategy](#branching-strategy)
   - [Running Checks](#running-checks)
+
+## Getting Started
+### Prerequisites
+- Python version specified in `.python-version`
+- uv (if not installed: [install uv](https://docs.astral.sh/uv/getting-started/installation/)  )<!--NOTE: link to Wiki for uv-->
+
+
+### Installation
+1. navigate to the raft directory and run `uv sync`
+1. execute a script via: `uv run some_script.py`
+
+
+### Building the documentation
+1. `uv sync --group docs`
+1. `just docs`
+1. open `docs/_build/html/index.html` in a browser
+
+This builds the Sphinx HTML docs (including this README and [theory.md](theory.md)) from source.
+
 
 ## Running the simulation
 Run a simulation:
@@ -374,17 +394,6 @@ Region boundaries are refined according to their proximity to fractures and boun
 | `--quads` | Q4 elements instead of T3 (2D only) |
 
 
-
-## Prerequisites
-- Python version specified in `.python-version`
-- uv (if not installed - see below)
-
-### Installation
-1. [install uv](https://docs.astral.sh/uv/getting-started/installation/) <!--NOTE: link to Wiki for uv-->
-1. run `uv sync`
-1. (Contributors) install the git hooks: `uv run prek install` and `uv run prek install --hook-type pre-push` — see [Setup](CONTRIBUTING.md#setup) for what they enforce
-1. execute a script via: `uv run some_script.py`
-
 ## Project Structure
 ```
 └── tango-reservoir-simulator
@@ -432,14 +441,8 @@ Region boundaries are refined according to their proximity to fractures and boun
     └── uv.lock
 ```
 
-**Tip:** To regenerate this tree, run:
-`tree -I '__pycache__|.venv|*.egg-info|.git'`
-(If tree isn't installed run: `brew install tree`)
-
-
 ## Developers
-### Branching Strategy
-Explained [here](./CONTRIBUTING.md#branching-strategy).
+View [CONTRIBUTING.md](./CONTRIBUTING.md) and install the git hooks: `uv run prek install` and `uv run prek install --hook-type pre-push`
 
 ### Running Checks
 - **Tests:** `uv run pytest`

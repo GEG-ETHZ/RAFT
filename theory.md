@@ -84,7 +84,9 @@ The mass and energy balances above are closed by a nonlinear fluid EOS providing
 
 $$\rho_f(p,T) = \rho_0\left(1-\alpha(T-T_0) +\frac{p-p_0}{K_f}\right), \qquad u_f(p,T) = c_{pf}T - \frac{\alpha T p}{\rho_0} + \frac{p^2}{2K_f\rho_0}$$
 
-The Boussinesq approximation is suitable for problems with low compressibility of coefficients of expansion, which $\rho_f\approx\rho_0$, or problems with a small bound of pressure and temperature. The internal energy relation follows from integrating the differential $du_f = \left(c_{pf}-\frac{\alpha_f}{\rho_f}p\right)dT + \frac{1}{\rho_f}\left(\frac{p}{K_f}-\alpha_f T\right)dp$.
+The Boussinesq approximation is suitable for problems with low compressibility of coefficients of expansion, which $\rho_f\approx\rho_0$, or problems with a small bound of pressure and temperature. The internal energy relation follows from integrating the differential
+
+$$du_f = \left(c_{pf}-\frac{\alpha_f}{\rho_f}p\right)dT + \frac{1}{\rho_f}\left(\frac{p}{K_f}-\alpha_f T\right)dp$$
 
 **Real-fluid EOS**: $\rho_f$, $u_f$, and their $(p,T)$ derivatives come from a CoolProp Helmholtz-energy equation of state, for any CoolProp-supported `fluid_type` (e.g. water or CO2). $T$ and $p$ are clipped to $274$–$1900\,K$ and $0.1$–$700\,MPa$ before each lookup, keeping unconverged Newton iterates inside CoolProp's valid range.
 
@@ -93,7 +95,8 @@ The Boussinesq approximation is suitable for problems with low compressibility o
 ## Weak Form and Finite Element Discretization
 To develop the weak forms, we multiply the governing equations by admissible variations $\delta p$, $\delta T$ and integrating over the domain. Applying the divergence theorem to the flux terms (the Dirichlet contribution vanishes since $\delta p=\delta T=0$ there, and the Neumann contribution reduces to the prescribed flux) gives:
 
-$$0 = \int_{\Omega} \delta p\, \frac{\partial}{\partial t}(\phi_L \rho_f)\,d\Omega + \int_{\Omega} \nabla\delta p\cdot \frac{\rho_f \boldsymbol{k}_f}{\mu}(\nabla p - \rho_f \vec{g})\,d\Omega + \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N - \int_{\Omega}\delta p\,\rho_f Q_i\delta(\vec{X}_i)\,d\Omega$$
+$$0 = \int_{\Omega} \delta p\, \frac{\partial}{\partial t}(\phi_L \rho_f)\,d\Omega + \int_{\Omega} \nabla\delta p\cdot \frac{\rho_f \boldsymbol{k}_f}{\mu}(\nabla p - \rho_f \vec{g})\,d\Omega \\
++ \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N - \int_{\Omega}\delta p\,\rho_f Q_i\delta(\vec{X}_i)\,d\Omega$$
 
 $$0 = \int_{\Omega} \delta T\, \frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L \rho_f u_f\right] d\Omega + \int_{\Omega} \nabla\delta T \cdot \rho_f h_f \vec{q}\,d\Omega - \oint_\Gamma \delta T(\rho_f h_f \vec{q})\cdot\vec{n}\,d\Gamma \\
 - \int_{\Omega} \nabla\delta T \cdot \lambda_e \nabla T\,d\Omega - \oint_{\Gamma_N} \delta T\,\overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N - \int_{\Omega} \delta T\, Q_{Ti}\delta(\vec{X}_i)\,d\Omega$$
@@ -140,10 +143,12 @@ $$\frac{\partial}{\partial t}(w\rho_f u_f) = -\nabla_\parallel \cdot(\rho_f h_f 
 \qquad \vec{q} = \frac{w^2}{12\mu}(\nabla_\parallel p_f-\rho_f\vec{g})$$
 
 where the total heat energy exchange rate $Q_{E}$ is:
+
 $$Q_{E} = \underbrace{h_c (T_f - T_m)}_{\text{Conductive Exchange}} + \underbrace{Q_{\text{leak}} h_f^*}_{\text{Advective Enthalpy Exchange}} \\
 h_c = \frac{\text{Nu} \cdot \lambda_f}{2w}$$
 
 in which $h_c$ is the conductive heat transfer coefficient and $h_f^*$ is the directional upwind enthalpy based on flow direction:
+
 $$h_f^* =
     \begin{cases}
       h_f(T_f, p_f) & \text{if } p_f \ge p_m \quad \text{(Flow from Fracture to Matrix)} \\
@@ -203,10 +208,12 @@ thus the cut is error-proportional and a larger error produces a sharper cut.
 
 If the timestep $\Delta t < \Delta t_{max}$ and the timestep converges, the timestep grows for the next step.
 * For the `linearized` solver, the timestep is proportional to the extrapolation error but capped at $2\times$:
-$$\Delta t^{n+1} = \min\left(\min\left(\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}},\ 2\right)\Delta t^n,\ \Delta t_{max}\right)$$
+
+  $$\Delta t^{n+1} = \min\left(\min\left(\dfrac{4}{1 + 3\,\varepsilon_T/\texttt{rel\_error\_T}},\ 2\right)\Delta t^n,\ \Delta t_{max}\right)$$
 
 * For the `fully_coupled` solver, the timestep increases by a static $1.5$ factor.
-$$\Delta t^{n+1} = \min(0.5\,\Delta t^n,\ \Delta t_{max})$$
+
+  $$\Delta t^{n+1} = \min(0.5\,\Delta t^n,\ \Delta t_{max})$$
 
 Finally, the proposed step is clamped so it never overshoots a *critical time*: any boundary-condition breakpoint (a `"table"` time or a `"ramp"` end time — see [Value Specification](README.md#boundary_conditions)) or `t_end`. If $t + \Delta t^n$ would step past the next critical time, $\Delta t^n$ is shortened to land exactly on it, so boundary-condition discontinuities always fall on a solved timestep rather than being smoothed over within one.
 

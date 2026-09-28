@@ -4,7 +4,7 @@
 
 ### Persistent Branches
 - `main` — production-ready code
-- `develop` — integration branch for ongoing work
+- `development` — integration branch for ongoing work
 
 ### Topic Branches
 - `dev/<feature>` — feature branches (e.g., `dev/fix-convergence`)
