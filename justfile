@@ -58,3 +58,7 @@ check: fmt lint typecheck test
 # Generate config/<mesh>.geo and .msh from a RAFT config, e.g. `just geo config_example_2D -o 2D_generated`
 geo config *args:
     uv run --with gmsh scripts/raft_to_geo.py {{config}} --mesh {{args}}
+
+# Build HTML documentation from README.md and theory.md into docs/_build/html
+docs:
+    uv run --group docs sphinx-build -b html docs/source docs/_build/html
