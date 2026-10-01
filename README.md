@@ -26,6 +26,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [`mesh`](#mesh)
   - [`regions`](#regions)
   - [`fractures` (optional field)](#fractures-optional-field)
+  - [`wells` (optional field)](#wells-optional-field)
   - [`material`](#material)
   - [`initial_conditions`](#initial_conditions)
   - [`boundary_conditions`](#boundary_conditions)
@@ -141,7 +142,6 @@ Fractures use a conforming mesh approach and cut through the existing mesh, crea
 
 > **Current limitation:** Fractures are only supported in 2D analyses (`dimensions: 2`). 3D fracture support is not yet implemented (a warning is printed and the mesh is returned unmodified).
 
-If regions are not defined, homogeneity is assumed (all elements are assigned to region 0).
 
 **Fracture Definition:**
 Each fracture specification requires three fields:
@@ -156,6 +156,22 @@ Each fracture specification requires three fields:
 Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
 
 > **IMPORTANT NOTE FOR FRACTURE SPECIFICATIONS**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
+
+### `wells` (optional field)
+Wells carry fluid from the surface into the rock mass and interact with the surrounding rock mass before the fluid reaches the injection point. Wells always interact thermally and may interact hydraulically in an open perforation interval. See [Well Coupling](theory.md#well-coupling) for the underlying physics. Mesh refinement around wells is often necessary.
+
+> **Current limitation:** Wells are currently only supported in 3D analyses (`dimensions: 3`). This will be extended to support axisymmetric analyses in 2D in the future.
+
+**Well Definition:**
+Each well specification requires two fields:
+* **`alignments`** *(list of floats as [start, end] point pairs)*: Each pair defines a line segment (points matching the spatial dimensions).
+  * The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. Lines may extend beyond the reservoir boundary.
+  * If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths.
+* **``dL_max``** *(float)*: Maximum element length for sections of the well which exceed the reservoir boundaries.
+
+Wells that share physical nodes in the mesh are automatically connected. Thus, perforation intervals or branching wells can be specified by having the wells share start or end points.
+
+Hydraulic and thermal properties (`diameter`, `perforation`, `insulation`) are not specified here; they are defined per-well under `material.well` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
 
 ### `material`
 
@@ -199,6 +215,10 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.
   * **`nusselt`** *(list[float], no default)*: Nusselt number, $Nu$, controlling the fracture-matrix convective heat transfer coefficient.
 
+* **`well`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
+  * **`diameter`** *(list[float], no default)*: Hydraulic diameter of the well, $D$, which determines frictional resistance.
+  * **`perforation`** *(list[float], no default)*: A list of $K$ values that apply to the pressure drop as the fluid leaves the well. If $K=0$, the well is unperforated and there is no hydraulic interaction between the well segment and the rock mass.
+  * **`insulation`** *(list[float], no default)*: A list of factors, $I$, that moderate the conductive heat transfer coefficient between the well and the rock mass. The heat transfer coefficient is determined as a function of the Reynolds Number. A value of $I = 0$ is perfectly insulated.
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.
@@ -334,7 +354,8 @@ Numerical solver controls
 Gmsh is not a part of RAFT, but to simplify mesh generation the script `scripts/raft_to_geo.py` is provided which generates a Gmsh `.geo` and `.msh` files. Gmsh is not provided with raft and requires separate download and installation. Meshing by hand or from another source is still supported, this script is provided as a convenient option to keep the mesh and config files synchronized. The script `raft_to_geo.py` reads the config file and generates corresponding files to ensure that the mesh contains discretized boundary condition geometries, fractures, and region boundaries:
   - nodes are placed exactly where `coords` boundary conditions exist
   - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, and region boundary edge lines and faces in 2D and 3D respectively
- Explicit discretization of these features reduces the error introduced by the mesh discretization.
+
+Explicit discretization of these features reduces the error introduced by the mesh and ensures consistency as the mesh is refined.
 
 **Running the script:**
 ```bash
