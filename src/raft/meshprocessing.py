@@ -2036,7 +2036,7 @@ def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
             nq, etyp = 3, "Q9"
         case (2, 3):  # T3
             nq, etyp = 2, "T3"
-        case (2, 2):  # L2
+        case (2, 2) | (3, 2):  # L2 (fracture in 2D, well in 3D)
             nq, etyp = 2, "L2"
     return nq, etyp
 
@@ -2281,11 +2281,64 @@ def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
     return mesh
 
 
+def _mesh_outside_well_part(
+    P: npt.NDArray[np.float64], Q: npt.NDArray[np.float64], well: dict[str, Any], tol: float
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]]]:
+    """Node chain and [-1] matrix_conn for a well part outside the domain; empty if negligible."""
+    length = float(np.linalg.norm(Q - P))
+    if length <= tol:
+        return [], []
+
+    # Evenly spaced nodes, element length at most dL_max (default: part length / 10)
+    dL_max = well.get("dL_max", length / 10)
+    n_el = max(1, int(np.ceil(length / dL_max)))
+    chain = np.linspace(P, Q, n_el + 1)
+
+    # No neighbouring matrix elements outside the domain
+    return [chain], [[-1]] * n_el
+
+
+def _create_well_section(
+    mesh: dict[str, Any],
+    section: list[list[float]],
+    well: dict[str, Any],
+    edge_to_elems: dict[tuple[int, int], list[int]],
+    tol: float,
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]]]:
+    """Node chains and per-element matrix_conn for one well section."""
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # Section endpoints and the parameter range inside the domain
+    A = np.asarray(section[0], dtype=float)[:nsd]
+    B = np.asarray(section[1], dtype=float)[:nsd]
+    d = B - A
+    t0, t1 = _clip_line_params(A, B, nodes.min(axis=0), nodes.max(axis=0))
+
+    # Section entirely outside the domain
+    if (t1 - t0) * np.linalg.norm(d) <= tol:
+        return _mesh_outside_well_part(A, B, well, tol)
+
+    # Inside part follows the matrix edge path
+    path, path_conn = _find_lineBC_connectivity(mesh, [A + t0 * d, A + t1 * d], edge_to_elems)
+    # Matrix elements sharing each path edge (any number in 3D)
+    path_matrix_conn = [list(edge_to_elems[(min(n1, n2), max(n1, n2))]) for n1, n2 in path_conn]
+
+    # Outside parts end on the snapped boundary nodes so deduplication joins them to the path
+    chains_in, conn_in = _mesh_outside_well_part(A, nodes[path[0]], well, tol)
+    chains_out, conn_out = _mesh_outside_well_part(nodes[path[-1]], B, well, tol)
+
+    # Assemble in order along the section: entry, inside, exit
+    chains = chains_in + [nodes[path]] + chains_out
+    matrix_conn = conn_in + path_matrix_conn + conn_out
+    return chains, matrix_conn
+
+
 def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
-    """Create 1D well mesh."""
+    """Create 1D well mesh along existing matrix element edges."""
     well_specs = config_mesh["wells"]
     nsd = config_mesh["dimensions"]
-    # nodes = mesh["nodes"]
+    nodes = mesh["nodes"]
 
     if nsd != 3:
         print("Wells in 2D not yet supported.")
@@ -2297,21 +2350,58 @@ def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict
             Remove wells block from config if not needed."""
         )
 
-    # Rest of the function...
-    # For each well
-    #   Loop through each well section. Split into subsections if the section exceeds the boundary.
-    #       If well section is inside the domain,
-    #           Find edge paths in the domain.
-    #           create new nodes along that path
-    #           create 1D well connectivity
-    #           Append well elements to "well region list"
-    #       If well section is outside the domain,
-    #           Mesh along section using a default mesh size of length/10 or the specified dL_max
-    # Deduplicate well nodes
-    # Match well elements to the neighbouring elements that share the edge on which they exist.
-    #       Use a sentinel value of -1 if the element is outside the domain and none exist.
-    # Create global-to-local mesh numbering
-    # Update key mesh statistics.
+    # Node distance tolerance from domain size
+    L = float(np.prod(np.ptp(nodes, axis=0))) ** (1 / nsd)
+    tol = L * 1.0e-9
+
+    # Map matrix edges to the elements that share them
+    edge_to_elems = _build_edge_element_map(mesh)
+
+    # Accumulators across all wells
+    well_nodes: list[npt.NDArray[np.float64]] = []
+    well_conn: list[list[int]] = []
+    matrix_conn: list[list[int]] = []
+    region_lists: list[npt.NDArray[np.int64]] = []
+    nn_w = 0
+
+    # Loop through each well and its sections
+    for well in well_specs:
+        ne_prior = len(well_conn)
+        for section in well["alignment"]:
+            chains, section_matrix_conn = _create_well_section(mesh, section, well, edge_to_elems, tol)
+            # L2 connectivity along each chain, offset past the accumulated well nodes
+            for chain in chains:
+                well_nodes.append(chain)
+                well_conn.extend([[nn_w + i, nn_w + i + 1] for i in range(len(chain) - 1)])
+                nn_w += len(chain)
+            matrix_conn.extend(section_matrix_conn)
+        # Well elements belonging to this well
+        region_lists.append(np.arange(ne_prior, len(well_conn)))
+
+    # Merge coincident nodes, connecting sections and wells sharing endpoints
+    w_nodes, w_conn, _ = _deduplicate_split_nodes(np.vstack(well_nodes), np.zeros((nn_w, 0)), well_conn, nsd)
+
+    # Unit tangent of each well element
+    w_conn_arr = np.asarray(w_conn)
+    tangent = w_nodes[w_conn_arr[:, 1]] - w_nodes[w_conn_arr[:, 0]]
+    tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
+
+    # Assemble well mesh and evaluate key values
+    wmesh: dict[str, Any] = {
+        "nodes": w_nodes,
+        "conn": w_conn,
+        "matrix_conn": matrix_conn,
+        "region_lists": region_lists,  # regions correspond to the well number
+        "well_tangent": tangent,
+    }
+    wmesh = _extract_key_mesh_values(wmesh)
+    # conn_global is well connectivity in combined matrix+fracture+well global numbering.
+    wmesh["conn_global"] = [[node + mesh["nn_total"] for node in elem] for elem in w_conn]
+    mesh["well_mesh"] = wmesh
+
+    # Append well nodes to the combined node set
+    mesh["nodes_total"] = np.vstack([mesh["nodes_total"], w_nodes])
+    mesh["nn_total"] = mesh["nn_total"] + wmesh["nn"]
 
     return mesh
 
