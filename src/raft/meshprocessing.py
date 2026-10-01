@@ -2093,6 +2093,41 @@ def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
     return mesh
 
 
+def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
+    """Create 1D well mesh."""
+    well_specs = config_mesh["wells"]
+    nsd = config_mesh["dimensions"]
+    # nodes = mesh["nodes"]
+
+    if nsd != 3:
+        print("Wells in 2D not yet supported.")
+        return mesh
+    # Initialize
+    if well_specs is None:
+        raise ValueError(
+            """Wells block included but no wells specified.
+            Remove wells block from config if not needed."""
+        )
+
+    # Rest of the function...
+    # For each well
+    #   Loop through each well section. Split into subsections if the section exceeds the boundary.
+    #       If well section is inside the domain,
+    #           Find edge paths in the domain.
+    #           create new nodes along that path
+    #           create 1D well connectivity
+    #           Append well elements to "well region list"
+    #       If well section is outside the domain,
+    #           Mesh along section using a default mesh size of length/10 or the specified dL_max
+    # Deduplicate well nodes
+    # Match well elements to the neighbouring elements that share the edge on which they exist.
+    #       Use a sentinel value of -1 if the element is outside the domain and none exist.
+    # Create global-to-local mesh numbering
+    # Update key mesh statistics.
+
+    return mesh
+
+
 def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     """Load mesh and define mesh structures."""
     config_path = Path(config_mesh["config_dir"]) / config_mesh["file"]
@@ -2112,6 +2147,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     mesh = _extract_key_mesh_values(mesh)
     if "fractures" in config_mesh:
         mesh = _create_fracture_mesh(config_mesh, mesh)
+
+    if "wells" in config_mesh:
+        mesh = _create_well_mesh(config_mesh, mesh)
 
     # Import regions
     mesh = _import_regions(config_mesh, mesh)
