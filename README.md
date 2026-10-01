@@ -164,12 +164,23 @@ Wells carry fluid from the surface into the rock mass and interact with the surr
 
 **Well Definition:**
 Each well specification requires two fields:
-* **`alignments`** *(list of floats as [start, end] point pairs)*: Each pair defines a line segment (points matching the spatial dimensions).
+* **`alignment`** *(list of list of floats as [start, end] point pairs)*: Each pair defines a line segment (points matching the spatial dimensions).
   * The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. Lines may extend beyond the reservoir boundary.
   * If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths.
-* **``dL_max``** *(float)*: Maximum element length for sections of the well which exceed the reservoir boundaries.
+* **``dL_max``** *(float, default: L/10)*: Maximum element length for sections of the well which exceed the reservoir boundaries.
 
 Wells that share physical nodes in the mesh are automatically connected. Thus, perforation intervals or branching wells can be specified by having the wells share start or end points.
+
+**Mesh sizing:** when the mesh is built with [raft_to_geo](#mesh-generation), `mesh.sizing.well` sets the element size around the wells, in the same profile form as `frac` and `bc`:
+
+```yaml
+mesh:
+  sizing:
+    outer: 25
+    well: [[5, 10], [5, 50]]   # 5 at the well, growing to 10 over 5 m, then to `outer` over 50 m
+```
+
+Well alignments are discretized in the mesh, so element edges follow them and wells sharing a start or end point share the node that connects them. Alignments extending past the reservoir are clipped to [mesh: domain](#domain) for meshing, with a warning naming the well; `dL_max` applies to those outside sections and so does not affect the mesh.
 
 Hydraulic and thermal properties (`diameter`, `perforation`, `insulation`) are not specified here; they are defined per-well under `material.well` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
 
@@ -353,7 +364,7 @@ Numerical solver controls
 
 Gmsh is not a part of RAFT, but to simplify mesh generation the script `scripts/raft_to_geo.py` is provided which generates a Gmsh `.geo` and `.msh` files. Gmsh is not provided with raft and requires separate download and installation. Meshing by hand or from another source is still supported, this script is provided as a convenient option to keep the mesh and config files synchronized. The script `raft_to_geo.py` reads the config file and generates corresponding files to ensure that the mesh contains discretized boundary condition geometries, fractures, and region boundaries:
   - nodes are placed exactly where `coords` boundary conditions exist
-  - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, and region boundary edge lines and faces in 2D and 3D respectively
+  - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, well alignments in 3D, and region boundary edge lines and faces in 2D and 3D respectively
 
 Explicit discretization of these features reduces the error introduced by the mesh and ensures consistency as the mesh is refined.
 
@@ -389,15 +400,16 @@ mesh:
     outer: 10                                    # size far from any feature
     frac: [[0.05, 0.05, 1, 10], [0.2, 5, 5, 5]]  # size profile off the fractures
     bc: 0.5                                      # a bare number is one stage over `transition`
+    well: [[5, 10], [5, 50]]                     # size profile off the wells (3D only)
     transition: 25        # stage length for bare-number profiles (default: 5*outer)
     region_max: 3         # coarsest size on a region boundary
     boundary_growth: 0.25 # how strongly region boundaries follow nearby features
     quads: false          # Q4 elements instead of T3 (2D only)
 ```
 
-A profile $[[s_1, ..., s_n], [L_1, ..., L_n]]$ sets the element size to $s_1$ at the feature, then ramps $s_1 \rightarrow s_2$ over $L_1$, $s_2 \rightarrow s_3$ over $L_2$, and finally $s_n \rightarrow$ `outer` over $L_n$. Sizes need not increase, so repeating a value holds that size for a set distance: the example above holds 0.05 for 0.2 m, then grows to 1 over 5 m, to 10 over the next 5 m, and to `outer` over the 5 m after that. `frac` and `bc` are independent, so fractures may be finer than boundary conditions or the other way around.
+A profile $[[s_1, ..., s_n], [L_1, ..., L_n]]$ sets the element size to $s_1$ at the feature, then ramps $s_1 \rightarrow s_2$ over $L_1$, $s_2 \rightarrow s_3$ over $L_2$, and finally $s_n \rightarrow$ `outer` over $L_n$. Sizes need not increase, so repeating a value holds that size for a set distance: the example above holds 0.05 for 0.2 m, then grows to 1 over 5 m, to 10 over the next 5 m, and to `outer` over the 5 m after that. `frac`, `bc` and `well` are independent, so fractures may be finer than boundary conditions or wells, or the other way around.
 
-Region boundaries are refined according to their proximity to fractures and boundary conditions, so an interface near a fracture is resolved more finely than one far away. `region_max` caps that refinement and `boundary_growth` sets how strongly it follows the nearby feature. Stretches of a region boundary that lie on the domain boundary are left at `outer`.
+Region boundaries are refined according to their proximity to fractures, wells and boundary conditions, so an interface near a fracture is resolved more finely than one far away. `region_max` caps that refinement and `boundary_growth` sets how strongly it follows the nearby feature. Stretches of a region boundary that lie on the domain boundary are left at `outer`.
 
 ### Command line options
 | Option | Effect |
@@ -409,6 +421,7 @@ Region boundaries are refined according to their proximity to fractures and boun
 | `--size-outer` | Overrides `sizing.outer` |
 | `--size-frac`, `--dist-frac` | Fracture sizes and stage lengths, comma separated (e.g. `--size-frac 0.05,0.05,1,10 --dist-frac 0.2,5,5,5`) |
 | `--size-bc`, `--dist-bc` | The same for point and line boundary conditions |
+| `--size-well`, `--dist-well` | The same for wells |
 | `--transition` | Stage length when only sizes are given |
 | `--size-region-max` | Overrides `sizing.region_max` |
 | `--boundary-growth` | Overrides `sizing.boundary_growth` |
