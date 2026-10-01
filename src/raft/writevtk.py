@@ -98,7 +98,7 @@ def write_mesh2vtk(  # noqa: C901
         cell_types = np.array(
             [
                 [0, 0, 0],
-                [3, 3, 0],  # L2
+                [3, 3, 3],  # L2
                 [21, 5, 0],  # L3, T3
                 [4, 9, 10],  # L4, Q4, T4
                 [0, 0, 14],  # T5

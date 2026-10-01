@@ -226,7 +226,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.
   * **`nusselt`** *(list[float], no default)*: Nusselt number, $Nu$, controlling the fracture-matrix convective heat transfer coefficient.
 
-* **`well`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
+* **`wells`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
   * **`diameter`** *(list[float], no default)*: Hydraulic diameter of the well, $D$, which determines frictional resistance.
   * **`perforation`** *(list[float], no default)*: A list of $K$ values that apply to the pressure drop as the fluid leaves the well. If $K=0$, the well is unperforated and there is no hydraulic interaction between the well segment and the rock mass.
   * **`insulation`** *(list[float], no default)*: A list of factors, $I$, that moderate the conductive heat transfer coefficient between the well and the rock mass. The heat transfer coefficient is determined as a function of the Reynolds Number. A value of $I = 0$ is perfectly insulated.

@@ -529,6 +529,20 @@ def _build_fracture_cell_data(
     ]
 
 
+def _build_well_cell_data(mesh_well: dict[str, Any], material: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build per-element diameter, perforation, and insulation fields for domain_wells.vtk."""
+    wells = material["wells"]
+    nelem = len(mesh_well["conn"])
+
+    # Assign each well's (region's) properties to its elements
+    fields = {name: np.zeros(nelem) for name in ("diameter", "perforation", "insulation")}
+    for r, elems in enumerate(mesh_well["region_lists"]):
+        for name, data in fields.items():
+            data[elems] = wells[name][r]
+
+    return [{"name": name, "data": _sanitize(data)} for name, data in fields.items()]
+
+
 def _element_scaled_jacobian(xI: npt.NDArray[np.float64], linear_etype: str) -> float:
     """Scaled Jacobian of one element, evaluated once at the parametric cell center."""
     getGN = GNMATRIX_FUNCS[linear_etype]
@@ -676,12 +690,12 @@ def _write_fracture_output(
         print("     Writing fractures to output file...")
 
     nn = mesh["nn"]
-    nn_tot = mesh["nn_total"]
+    nn_f = nn + mesh["fracture_mesh"]["nn"]
     filename = os.path.join(io_path, f"Fracture.vtk.{n}")
 
-    # ----- Extract primary variables
-    p = primary_variables["p"][nn:(nn_tot), 0]
-    T = primary_variables["T"][nn:(nn_tot), 0]
+    # ----- Extract primary variables (fracture nodes follow matrix nodes)
+    p = primary_variables["p"][nn:nn_f, 0]
+    T = primary_variables["T"][nn:nn_f, 0]
 
     # --- Calculate fluxes
     flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True, controls["gravity"])
@@ -703,6 +717,65 @@ def _write_fracture_output(
     )
 
 
+def _write_well_output(
+    n: int,
+    io_path: str,
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    verbose: bool,
+) -> None:
+    """Write one solution to VTK for the wells."""
+    if verbose:
+        print("     Writing wells to output file...")
+
+    wmesh = mesh["well_mesh"]
+    nn_tot = mesh["nn_total"]
+    filename = os.path.join(io_path, f"Well.vtk.{n}")
+
+    # ----- Extract primary variables (well nodes are last in the global numbering)
+    p = primary_variables["p"][nn_tot - wmesh["nn"] : nn_tot, 0]
+    T = primary_variables["T"][nn_tot - wmesh["nn"] : nn_tot, 0]
+
+    scalardata_point = _build_point_scalars(controls, wmesh, material, p, T)
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        wmesh["nodes"],
+        wmesh["conn"],
+        scalar_data_point=scalardata_point,
+    )
+
+
+def _export_domain_wells(io_path: str, mesh: dict[str, Any], material: dict[str, Any]) -> None:
+    """Export the wells' static properties to "domain_wells.vtk"."""
+    wmesh = mesh["well_mesh"]
+    filename = os.path.join(io_path, "domain_wells.vtk")
+
+    # Well number of each element
+    well_id = np.zeros(wmesh["ne"])
+    for r, elems in enumerate(wmesh["region_lists"]):
+        well_id[elems] = r
+
+    # Elements outside the domain have no neighbouring matrix elements
+    inside_domain = np.array([float(elems != [-1]) for elems in wmesh["matrix_conn"]])
+
+    scalardata_cell = _build_well_cell_data(wmesh, material) + [
+        {"name": "well_id", "data": well_id},
+        {"name": "inside_domain", "data": inside_domain},
+    ]
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        wmesh["nodes"],
+        wmesh["conn"],
+        scalar_data_cell=scalardata_cell,
+    )
+
+
 def export_domain_properties(
     mesh: dict[str, Any],
     controls: dict[str, Any],
@@ -718,7 +791,8 @@ def export_domain_properties(
     mesh quality metrics (scaled Jacobian, skewness, aspect ratio - see
     `_build_mesh_quality_cell_data`) and, when fracturing is on, one
     phi_sign level-set field per fracture (see
-    `_build_phi_sign_point_scalars`).
+    `_build_phi_sign_point_scalars`). When wells are on, also writes
+    "domain_wells.vtk" (see `_export_domain_wells`).
     """
     io_path = prepare_output_directory(controls)
     filename = os.path.join(io_path, "domain.vtk")
@@ -740,6 +814,9 @@ def export_domain_properties(
         scalar_data_point=scalardata_point,
         scalar_data_cell=scalardata_cell,
     )
+
+    if controls["wells_on"]:
+        _export_domain_wells(io_path, mesh, material)
 
 
 def postprocessing(
@@ -764,6 +841,9 @@ def postprocessing(
 
     if output_now and controls["output_vtk"] and controls["fracture_on"]:
         _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, verbose)
+
+    if output_now and controls["output_vtk"] and controls["wells_on"]:
+        _write_well_output(n, io_path, mesh, controls, material, primary_variables, verbose)
 
     if output_now:
         _export_flow_logs(n, primary_variables, controls, BC_config, io_path, t)
