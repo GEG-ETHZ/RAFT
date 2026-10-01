@@ -378,6 +378,32 @@ def _resolve_group_geometry(
         group["flux_weight_matrix"] = flux_mats["A"]
 
 
+def _find_well_BC_node(mesh: dict[str, Any], config_mesh: dict[str, Any], well_BC: list[Any]) -> int:
+    """Global node at a well's inlet (first alignment point) or outlet (last alignment point)."""
+    if "well_mesh" not in mesh:
+        raise ValueError("Well boundary condition specified but no wells defined in mesh.")
+    wmesh = mesh["well_mesh"]
+    index, location = well_BC
+
+    # Validate the well index and location
+    if not 0 <= index < len(wmesh["region_lists"]):
+        raise ValueError(f"Well boundary condition index {index} does not match a well in mesh.")
+    alignment = config_mesh["wells"][index]["alignment"]
+    if location == "inlet":
+        xi = np.asarray(alignment[0][0], dtype=float)
+    elif location == "outlet":
+        xi = np.asarray(alignment[-1][1], dtype=float)
+    else:
+        raise ValueError(f'Well boundary condition location "{location}" must be "inlet" or "outlet".')
+
+    # Nearest node among this well's own nodes
+    well_nodes = np.unique(np.asarray(wmesh["conn"])[wmesh["region_lists"][index]])
+    local_node = well_nodes[np.argmin(np.linalg.norm(wmesh["nodes"][well_nodes] - xi, axis=1))]
+
+    # Well nodes are last in the global numbering
+    return int(mesh["nn_total"] - wmesh["nn"] + local_node)
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -387,6 +413,8 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     defined by coordinates into node groups.
 
     3. Line boundary conditions need to find nodes and connectivity.
+
+    4. Well boundary conditions map to the well's inlet or outlet node.
     """
     BC_groups = config["boundary_conditions"]
     nodes = mesh["nodes_total"]
@@ -442,6 +470,11 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
                 d_min = np.min(d)
                 closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
                 BCnodes.append(closest_node)
+            group["nodes"] = BCnodes
+
+        # Convert well inlet/outlet to node number
+        if "well" in group:
+            BCnodes.append(_find_well_BC_node(mesh, config["mesh"], group["well"]))
             group["nodes"] = BCnodes
 
         if "lines" in group:
