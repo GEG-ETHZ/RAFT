@@ -168,6 +168,9 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     # Fractures
     controls["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
 
+    # Wells
+    controls["wells_on"] = 1 if "wells" in config["mesh"] else 0
+
     # CoolProp AbstractState, reused across all property lookups instead of
     # re-initializing it on every matprops call.
     if controls["viscosity_nonconstant"] or controls["density_nonconstant"]:
@@ -317,6 +320,17 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
         material["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
         material["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
 
+    # Wells
+    if "wells" in material:
+        num_regions = len(material["wells"]["diameter"])
+        material["wells"]["radius"] = [None] * num_regions
+        material["wells"]["area"] = [None] * num_regions
+        for r in range(num_regions):
+            D = material["wells"]["diameter"][r]
+            R = D / 2
+            A = np.pi * R**2
+            material["wells"]["radius"][r] = R
+            material["wells"]["area"][r] = A
     return material
 
 
