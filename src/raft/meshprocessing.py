@@ -29,6 +29,7 @@ import scipy as sp
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.tri import Triangulation
+from scipy.sparse.csgraph import dijkstra
 
 
 def _element_colors(n_elems: int, cmap_name: str = "tab20") -> npt.NDArray[np.float64]:
@@ -2078,6 +2079,193 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     mesh["elem_indx"].append(ne - 1)  # add final element to end
 
     return mesh
+
+
+def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
+    # Local node-index pairs for each element edge (distinct from face lists:
+    # for 3D solids a face has >2 nodes, an edge always has 2).
+    if nne == 8:  # B8
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [1, 2],
+            "edge2": [2, 3],
+            "edge3": [3, 0],
+            "edge4": [4, 5],
+            "edge5": [5, 6],
+            "edge6": [6, 7],
+            "edge7": [7, 4],
+            "edge8": [0, 4],
+            "edge9": [1, 5],
+            "edge10": [2, 6],
+            "edge11": [3, 7],
+        }
+    elif nne == 4 and nsd == 3:  # T4
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [0, 2],
+            "edge2": [0, 3],
+            "edge3": [1, 2],
+            "edge4": [1, 3],
+            "edge5": [2, 3],
+        }
+    elif nsd == 2:  # Q4 / T3 -- edges coincide with the face (boundary-segment) list
+        return _get_element_face_lists(nne, nsd)
+    else:
+        raise NotImplementedError(f"Edge extraction for {nne}-node elements in {nsd} dimensions.")
+    return edges
+
+
+def _build_edge_element_map(mesh: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
+    """Map each unique mesh edge (sorted node pair) to the elements that contain it."""
+    conn = mesh["conn"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
+
+    edge_to_elems: dict[tuple[int, int], list[int]] = {}
+    edge_lists = _get_element_edge_lists(nne[0], nsd)
+    counter = 0
+
+    for elem in range(ne):
+        if elem > elem_indx[counter]:
+            counter += 1
+            edge_lists = _get_element_edge_lists(nne[counter], nsd)
+
+        elem_conn = conn[elem]
+        for local_edge in edge_lists.values():
+            n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
+            key = (n1, n2) if n1 < n2 else (n2, n1)
+            edge_to_elems.setdefault(key, []).append(elem)
+
+    return edge_to_elems
+
+
+def _build_mesh_edge_graph(
+    mesh: dict[str, Any], edge_to_elems: dict[tuple[int, int], list[int]]
+) -> sp.sparse.csr_matrix:
+    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
+    nodes = mesh["nodes"]
+
+    row, col, weight = [], [], []
+    for n1, n2 in edge_to_elems:
+        d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
+        row += [n1, n2]
+        col += [n2, n1]
+        weight += [d, d]
+
+    return sp.sparse.csr_matrix((weight, (row, col)), shape=(mesh["nn"], mesh["nn"]))
+
+
+_LINE_DEVIATION_TOL = 1.0e-3  # 1 mm; assumes mesh coordinates are in meters
+
+
+def _clip_line_params(
+    A: npt.NDArray[np.float64],
+    B: npt.NDArray[np.float64],
+    mins: npt.NDArray[np.float64],
+    maxs: npt.NDArray[np.float64],
+) -> tuple[float, float]:
+    """Parameters (t0, t1) of segment A-B inside the bounding box (slab method); t0 > t1 if none."""
+    d = B - A
+    t0, t1 = 0.0, 1.0
+    for axis in range(len(A)):
+        if abs(d[axis]) < 1e-14:
+            if A[axis] < mins[axis] or A[axis] > maxs[axis]:
+                return 1.0, 0.0
+            continue
+        t_near = (mins[axis] - A[axis]) / d[axis]
+        t_far = (maxs[axis] - A[axis]) / d[axis]
+        t0 = max(t0, min(t_near, t_far))
+        t1 = min(t1, max(t_near, t_far))
+        if t0 > t1:
+            return 1.0, 0.0
+
+    return t0, t1
+
+
+def _clip_line_to_domain(
+    A: npt.NDArray[np.float64],
+    B: npt.NDArray[np.float64],
+    mins: npt.NDArray[np.float64],
+    maxs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Clip segment A-B to the mesh's axis-aligned bounding box."""
+    t0, t1 = _clip_line_params(A, B, mins, maxs)
+    if t0 > t1:
+        raise RuntimeError("Requested line does not intersect the mesh domain.")
+    d = B - A
+    return A + t0 * d, A + t1 * d
+
+
+def _find_lineBC_connectivity(
+    mesh: dict[str, Any], line: list[list[float]], edge_to_elems: dict[tuple[int, int], list[int]]
+) -> tuple[list[int], list[list[int]]]:
+    """Find the connectivity of a line (boundary condition or well).
+    Lines follow the shortest path between the start and end points
+    along pre-existing nodes and edges in the mesh.
+
+    Throws a warning if the deviation is large.
+    """
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # Calculate line direction vector
+    A = np.asarray(line[0], dtype=float)[:nsd]
+    B = np.asarray(line[1], dtype=float)[:nsd]
+    length_AB = float(np.linalg.norm(B - A))
+
+    if length_AB == 0.0:
+        raise RuntimeError("Line start and end points are identical.")
+
+    u = (B - A) / length_AB  # tangent vector
+
+    # Clip to the domain so points prescribed outside the mesh snap to the
+    # nearest node at the line/boundary intersection, not to some arbitrary
+    # far-off corner node.
+    mins = nodes[:, :nsd].min(axis=0)
+    maxs = nodes[:, :nsd].max(axis=0)
+    A_clipped, B_clipped = _clip_line_to_domain(A, B, mins, maxs)
+
+    start_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - A_clipped, axis=1)))
+    end_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - B_clipped, axis=1)))
+
+    if start_node == end_node:
+        raise RuntimeError("Line start and end nodes snap to the same mesh node.")
+
+    # Shortest path A -> B weighted by edge length, following existing mesh edges
+    graph = _build_mesh_edge_graph(mesh, edge_to_elems)
+    dist, predecessors = dijkstra(
+        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
+    )
+    dist, predecessors = dist[0], predecessors[0]
+
+    if np.isinf(dist[end_node]):
+        raise RuntimeError("No connected path of mesh edges found between the line endpoints.")
+
+    path = [end_node]
+    node = end_node
+    while node != start_node:
+        node = int(predecessors[node])
+        path.append(node)
+    path.reverse()
+
+    line_nodes = path
+    line_conn = [[path[i], path[i + 1]] for i in range(len(path) - 1)]
+
+    # Check deviation of the snapped path from the requested line
+    rel = nodes[line_nodes, :nsd] - A
+    perp = rel - np.outer(rel @ u, u)
+    deviation = np.linalg.norm(perp, axis=1)
+
+    if np.any(deviation > _LINE_DEVIATION_TOL):
+        warnings.warn(
+            f"Exact line not found in mesh, snapping to nearest nodes. "
+            f"True line distance = {length_AB}, mesh path distance = {dist[end_node]}",
+            stacklevel=2,
+        )
+
+    return line_nodes, line_conn
 
 
 def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
