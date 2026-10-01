@@ -38,7 +38,12 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
-from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
+from .shapefunctions import (
+    GNMATRIX_FUNCS,
+    NMATRIX_FUNCS,
+    getB,
+    getquadrature,
+)
 
 
 # ---- Data classes
@@ -377,8 +382,8 @@ def _get_parent_coordinates_q4(
     nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Numba kernel: map physical boundary points to Q4 parent coordinates by edge projection."""
-    n_loop = goal_pts.shape[2]
-    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 2))
     x_nodes = nodes[:, 0]
     y_nodes = nodes[:, 1]
     tol = 1.0e-7
@@ -438,8 +443,8 @@ def _get_parent_coordinates_t3(
     nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Numba kernel: map physical points to T3 parent coordinates via the direct linear solve."""
-    n_loop = goal_pts.shape[2]
-    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 2))
 
     x1, x2, x3 = nodes[0, 0], nodes[1, 0], nodes[2, 0]
     y1, y2, y3 = nodes[0, 1], nodes[1, 1], nodes[2, 1]
@@ -456,19 +461,113 @@ def _get_parent_coordinates_t3(
     return parent_coords
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_t4(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical points to T4 parent coordinates via the direct linear solve."""
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 3))
+
+    # Affine map x = x1 + J xi, with J columns the edges from node 0
+    J = np.empty((3, 3))
+    for k in range(3):
+        J[:, k] = nodes[k + 1, :] - nodes[0, :]
+    J_inv = np.linalg.inv(J)
+
+    for gp in range(n_loop):
+        parent_coords[gp, 0, :] = J_inv @ (goal_pts[gp, 0, :] - nodes[0, :])
+
+    return parent_coords
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_b8(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical boundary points to B8 parent coordinates by bilinear face inversion."""
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.zeros((n_loop, 1, 3))
+    tol = 1.0e-7 * (np.max(nodes) - np.min(nodes))  # relative to element size
+
+    # B8 faces as (fixed_axis, fixed_value, s_axis, t_axis, nodes at (s, t) = (-,-), (+,-), (+,+), (-,+))
+    fixed_axis = (2, 2, 1, 1, 0, 0)
+    fixed_val = (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+    s_axis = (0, 0, 0, 0, 1, 1)
+    t_axis = (1, 1, 2, 2, 2, 2)
+    face_nodes = np.array(
+        [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [3, 2, 6, 7], [0, 3, 7, 4], [1, 2, 6, 5]]
+    )
+
+    for gp in range(n_loop):
+        x_target = goal_pts[gp, 0, :]
+        for f in range(6):
+            P0 = nodes[face_nodes[f, 0], :]
+            P1 = nodes[face_nodes[f, 1], :]
+            P2 = nodes[face_nodes[f, 2], :]
+            P3 = nodes[face_nodes[f, 3], :]
+            # Bilinear face map x = a + b s + c t + d s t
+            a = 0.25 * (P0 + P1 + P2 + P3)
+            b = 0.25 * (-P0 + P1 + P2 - P3)
+            c = 0.25 * (-P0 - P1 + P2 + P3)
+            d = 0.25 * (P0 - P1 + P2 - P3)
+            r = x_target - a
+
+            # Project to 2D by dropping the axis closest to the face normal
+            normal = np.cross(b, c)
+            drop = np.argmax(np.abs(normal))
+            i, j = (1, 2) if drop == 0 else ((0, 2) if drop == 1 else (0, 1))
+
+            # Eliminating t gives A s^2 + B s + C = 0 (2D cross products)
+            A = b[i] * d[j] - b[j] * d[i]
+            B = (b[i] * c[j] - b[j] * c[i]) - (r[i] * d[j] - r[j] * d[i])
+            C = -(r[i] * c[j] - r[j] * c[i])
+            if abs(A) < 1.0e-12 * abs(B):
+                s_pt = -C / B  # parallelogram face: linear in s
+            else:
+                disc = max(B * B - 4.0 * A * C, 0.0)
+                s_pt = (-B + np.sqrt(disc)) / (2.0 * A)
+                if abs(s_pt) > 1.0 + 1.0e-7:  # take the root inside the face
+                    s_pt = (-B - np.sqrt(disc)) / (2.0 * A)
+            if abs(s_pt) > 1.0 + 1.0e-7:
+                continue
+
+            # Least-squares t along the s-isoline
+            ct = c + d * s_pt
+            t_pt = np.dot(r - b * s_pt, ct) / np.dot(ct, ct)
+            if abs(t_pt) > 1.0 + 1.0e-7:
+                continue
+
+            # Accept the face only if the point lies on it in 3D
+            if np.linalg.norm(a + b * s_pt + c * t_pt + d * s_pt * t_pt - x_target) < tol:
+                parent_coords[gp, 0, fixed_axis[f]] = fixed_val[f]
+                parent_coords[gp, 0, s_axis[f]] = max(-1.0, min(1.0, s_pt))
+                parent_coords[gp, 0, t_axis[f]] = max(-1.0, min(1.0, t_pt))
+                break
+
+    return parent_coords
+
+
 def _get_parent_coordinates(
     etype: str, nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    """Determine the parent coordinates of a physical point in an isoparametric element.
+    """Determine the parent coordinates of physical points in an isoparametric element.
 
-    Assumes that the point is on the element boundary.  Used for mapping fracture
-    quadrature points to matrix element boundary points.
+    Q4 assumes the points lie on the element boundary. Used for mapping fracture/well
+    quadrature points to matrix element points. `goal_pts` and the result are (nq, 1, nsd).
     """
     parent_coords: npt.NDArray[np.float64]
-    if etype == "Q4":
-        parent_coords = _get_parent_coordinates_q4(nodes, goal_pts)
-    else:
-        parent_coords = _get_parent_coordinates_t3(nodes, goal_pts)
+    match etype:
+        case "Q4":
+            parent_coords = _get_parent_coordinates_q4(nodes, goal_pts)
+        case "T3":
+            parent_coords = _get_parent_coordinates_t3(nodes, goal_pts)
+        case "T4":
+            parent_coords = _get_parent_coordinates_t4(nodes, goal_pts)
+        case "B8":
+            parent_coords = _get_parent_coordinates_b8(nodes, goal_pts)
+        case _:
+            raise NotImplementedError(f"Parent coordinate mapping for {etype} elements.")
     return parent_coords
 
 
@@ -598,7 +697,7 @@ def _iter_fracture_matrix_matches(
         etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
         getN_m = NMATRIX_FUNCS[etype]
         Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes_f, :])
-        N_qm = np.array([getN_m(Q[q, :].flatten()) for q in range(np.size(Q, -1))])
+        N_qm = np.array([getN_m(Q[q, 0, :]) for q in range(Q.shape[0])])
 
         yield e_m, enodes_m, nne_m, N_qm
 
