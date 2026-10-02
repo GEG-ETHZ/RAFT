@@ -185,6 +185,7 @@ class RegionFlowData:
     diameter: float  # well only
     radius: float  # well only
     perforation: float  # well only
+    roughness: float  # well only
 
 
 # ---- General helpers
@@ -930,6 +931,7 @@ def _get_region_flow_data(
             diameter=wells["diameter"][r],
             radius=wells["radius"][r],
             perforation=wells["perforation"][r],
+            roughness=wells["roughness"][r],
         )
 
     # Fracture case
@@ -948,6 +950,7 @@ def _get_region_flow_data(
             diameter=nan,
             radius=nan,
             perforation=nan,
+            roughness=nan,
         )
 
     # Bulk case
@@ -963,6 +966,7 @@ def _get_region_flow_data(
         diameter=nan,
         radius=nan,
         perforation=nan,
+        roughness=nan,
     )
 
 
@@ -1473,26 +1477,82 @@ def _evaluate_darcy_flux(
         term_2 = (
             kfmu * rho_f_n.dp
             + rho_f_n.value / mu_q.value * kf.dp
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
+            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
         )
         if isotropic_perm:
-            dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * N_q) + term_2 * gradP_mod * N_q
+            dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * N_q) + term_2 @ gradP_mod * N_q
+            dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * g_r * N_q) + term_2 @ gradP_mod * N_q
 
     dqD_dT = _EMPTY
     if want_tangent_dT:
         term_2 = (
             kfmu * rho_f_n.dT
             + rho_f_n.value / mu_q.value * kf.dT
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
+            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
         )
         if isotropic_perm:
-            dqD_dT = rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
+            dqD_dT = -rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dT = rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
+            dqD_dT = -rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
 
     return darcy_flux, q_D, dqD_dp, dqD_dT
+
+
+_RE_MIN = 1.0e-3  # Reynolds number floor for the friction factor; phi = f Re is 64 below it
+_WELL_FLOW_TOL = 1.0e-10  # relative tolerance of the well momentum residual
+_WELL_FLOW_MAX_ITER = 50
+_WELL_FLOW_MAX_HALVINGS = 20
+
+
+def _evaluate_well_friction(
+    Re: npt.NDArray[np.float64], rel_roughness: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Churchill (1977) Darcy friction factor as phi = f Re and dphi/dRe.
+
+    Smooth across laminar, transitional, and turbulent flow; phi -> 64 as Re -> 0.
+    """
+    Re = np.maximum(Re, _RE_MIN)
+    r7 = (7.0 / Re) ** 0.9
+    t = r7 + 0.27 * rel_roughness
+    L = -np.log(t)
+    A = (2.457 * L) ** 16  # turbulent term
+    B = (37530.0 / Re) ** 16  # transition term
+    P = Re**12 * (A + B) ** -1.5
+    phi = 8.0 * (8.0**12 + P) ** (1.0 / 12.0)
+
+    # Chain rule through L, A, B, and P
+    dL = 0.9 * r7 / (Re * t)
+    dA = 16.0 * 2.457 * (2.457 * L) ** 15 * dL
+    dB = -16.0 * B / Re
+    dP = P * (12.0 / Re - 1.5 * (dA + dB) / (A + B))
+    dphi = phi / (12.0 * (8.0**12 + P)) * dP
+    return phi, dphi
+
+
+def _well_flow_residual(
+    q: npt.NDArray[np.float64],
+    G: npt.NDArray[np.float64],
+    rho: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    grad_rhof: npt.NDArray[np.float64],
+    radius: float,
+    rel_roughness: float,
+) -> tuple[npt.NDArray[np.float64], ...]:
+    """Well momentum residual F = q|q| (f - sign(q) 4R drho/ds / rho) + 4 rho pi^2 R^5 G and dF/dq.
+
+    Written with phi = f Re and |q| = a Re so it stays finite at zero flow.
+    """
+    a = 0.5 * np.pi * radius * mu  # |q| = a Re
+    Re = np.abs(q) / a
+    phi, dphi = _evaluate_well_friction(Re, rel_roughness)
+    c = 4.0 * radius * grad_rhof / rho  # density gradient (acceleration) coefficient
+    K = 4.0 * rho * np.pi**2 * radius**5
+
+    F = a * phi * q - c * q**2 + K * G
+    dF_dq = a * (phi + Re * dphi) - 2.0 * c * q
+    F_scale = np.abs(K * G) + np.abs(a * phi * q) + np.abs(c * q**2)  # convergence reference
+    return F, dF_dq, F_scale, Re, phi, dphi
 
 
 def _evaluate_well_flow(
@@ -1500,51 +1560,94 @@ def _evaluate_well_flow(
     B_q: npt.NDArray[np.float64],
     gradP: npt.NDArray[np.float64],
     g_r: npt.NDArray[np.float64],
-    kf: PropertyResult,
     mu_q: PropertyResult,
-    rho_f: PropertyState,
+    rho_f: NodalPropertyState,
+    radius: float,
+    roughness: float,
     *,
-    isotropic_perm: bool,
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
-    npt.NDArray[np.float64],  # darcy_flux
-    npt.NDArray[np.float64],  # q_D
+    npt.NDArray[np.float64],  # volume flow rate
+    npt.NDArray[np.float64],  # q_w, mass flow rate
     npt.NDArray[np.float64],  # dqD_dp, `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # dqD_dT, `_EMPTY` unless want_tangent_dT
 ]:
-    """Evaluate the well flow and derivatives at quadrature points. Placeholder copy of the Darcy law."""
-    rho_f_n = rho_f.q_n
-    gradP_mod = gradP - rho_f_n.value * g_r  # modified pressure gradient
-    kfmu = kf.value / mu_q.value
-    darcy_flux = -kfmu * gradP_mod if isotropic_perm else -kfmu @ gradP_mod  # volume flux
-    q_D = rho_f_n.value * darcy_flux  # mass flux
+    """Evaluate the well mass flow rate and derivatives at quadrature points.
 
-    dqD_dp = _EMPTY
+    Solves q|q| (f - sign(q) 4R/rho drho/ds) = -4 rho pi^2 R^5 (dp/ds + rho g dz/ds) by
+    safeguarded Newton, with the Churchill Darcy friction factor f(Re). Derivatives follow
+    `_evaluate_darcy_flux`'s sign convention (dqD_dp = -dq/dp).
+    """
+    rho_n = rho_f.q_n
+    rho_e = rho_f.e_n
+    rho = rho_n.value
+    mu = mu_q.value
+    rel_roughness = roughness / (2.0 * radius)
+
+    G = gradP - rho * g_r  # modified pressure gradient
+    grad_rhof = B_q @ rho_e.value  # density gradient along the well
+
+    # Initial guess without acceleration: lesser of the laminar and explicit Colebrook flow rates
+    a = 0.5 * np.pi * radius * mu  # |q| = a Re
+    Lam = 16.0 * rho * radius**3 * np.abs(G) / mu**2  # known f Re^2
+    sqrt_Lam = np.maximum(np.sqrt(Lam), np.finfo(float).tiny)
+    Re_lam = Lam / 64.0
+    Re_turb = sqrt_Lam * -2.0 * np.log10(rel_roughness / 3.7 + 2.51 / sqrt_Lam)
+    Re_0 = np.where(Re_turb > 0.0, np.minimum(Re_lam, Re_turb), Re_lam)
+    q = -np.sign(G) * a * Re_0
+
+    # Safeguarded Newton on the signed mass flow rate
+    for _ in range(_WELL_FLOW_MAX_ITER):
+        F, dF_dq, F_scale, _, _, _ = _well_flow_residual(q, G, rho, mu, grad_rhof, radius, rel_roughness)
+        if np.all(np.abs(F) <= _WELL_FLOW_TOL * F_scale):
+            break
+        dq = -F / np.where(dF_dq != 0.0, dF_dq, np.finfo(float).tiny)
+
+        # Backtrack: halve the step wherever it does not reduce |F|
+        step = np.ones_like(q)
+        for _ in range(_WELL_FLOW_MAX_HALVINGS):
+            F_trial = _well_flow_residual(q + step * dq, G, rho, mu, grad_rhof, radius, rel_roughness)[0]
+            worse = np.abs(F_trial) > np.abs(F)
+            if not np.any(worse):
+                break
+            step = np.where(worse, 0.5 * step, step)
+        q = q + step * dq
+    else:
+        warnings.warn("Well flow rate did not converge at some quadrature points.", stacklevel=2)
+
+    vol_flow = q / rho  # volume flow rate
+
+    dqD_dp = dqD_dT = _EMPTY
+    if want_tangent_dp or want_tangent_dT:
+        # Implicit function theorem: dq/dX = -dF_dX / dF_dq at the converged root
+        _, dF_dq, _, Re, phi, dphi = _well_flow_residual(q, G, rho, mu, grad_rhof, radius, rel_roughness)
+        dF_dG = 4.0 * rho * np.pi**2 * radius**5
+        dF_drho = 4.0 * np.pi**2 * radius**5 * G + 4.0 * radius * grad_rhof * q**2 / rho**2
+        dF_dgrad_rhof = -4.0 * radius * q**2 / rho
+        dF_dmu = 0.5 * np.pi * radius * q * (phi - Re * dphi)
+
     if want_tangent_dp:
-        term_2 = (
-            kfmu * rho_f_n.dp
-            + rho_f_n.value / mu_q.value * kf.dp
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
+        dG_dp = B_q - rho_n.dp * g_r * N_q
+        dF_dp = (
+            dF_dG * dG_dp
+            + dF_drho * rho_n.dp * N_q
+            + dF_dgrad_rhof * (B_q * rho_e.dp.T)
+            + dF_dmu * mu_q.dp * N_q
         )
-        if isotropic_perm:
-            dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * N_q) + term_2 * gradP_mod * N_q
-        else:
-            dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * N_q) + term_2 @ gradP_mod * N_q
+        dqD_dp = dF_dp / dF_dq  # = -dq/dp
 
-    dqD_dT = _EMPTY
     if want_tangent_dT:
-        term_2 = (
-            kfmu * rho_f_n.dT
-            + rho_f_n.value / mu_q.value * kf.dT
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
+        dG_dT = -rho_n.dT * g_r * N_q
+        dF_dT = (
+            dF_dG * dG_dT
+            + dF_drho * rho_n.dT * N_q
+            + dF_dgrad_rhof * (B_q * rho_e.dT.T)
+            + dF_dmu * mu_q.dT * N_q
         )
-        if isotropic_perm:
-            dqD_dT = rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
-        else:
-            dqD_dT = rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
+        dqD_dT = dF_dT / dF_dq  # = -dq/dT
 
-    return darcy_flux, q_D, dqD_dp, dqD_dT
+    return vol_flow, q, dqD_dp, dqD_dT
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
@@ -2537,8 +2640,8 @@ def integrate_residuals(  # noqa
             )
             if is_well:
                 _, q_D, _, _ = _evaluate_well_flow(
-                    N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=flow.isotropic_perm
-                )  # q_D = mass flux
+                    N_q, B_q, kin.gradP, g_r, mu_q, rho_f, flow.radius, flow.roughness
+                )  # q_D = mass flow rate
             else:
                 _, q_D, _, _ = _evaluate_darcy_flux(
                     N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=flow.isotropic_perm
@@ -2961,10 +3064,10 @@ def integrate_tangent_matrices(  # noqa
                     B_q,
                     kin.gradP,
                     g_r,
-                    kf,
                     mu_q,
                     rho_f,
-                    isotropic_perm=flow.isotropic_perm,
+                    flow.radius,
+                    flow.roughness,
                     want_tangent_dp=not temperature_only,
                     want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
                 )
