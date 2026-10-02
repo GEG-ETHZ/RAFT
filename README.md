@@ -268,7 +268,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 **Geometry Specification (Required):**
 Each boundary condition group must specify nodes using one or a combination of the following methods:
 
-* **`nodes`** *(list of integers, or string)*: Direct node IDs where the boundary condition is applied. The string `"all"` is also accepted to fix all nodes in the mesh.
+* **`nodes`** *(list of integers, or string)*: Direct node IDs where the boundary condition is applied. The string `"all"` is also accepted to fix all nodes in the mesh, or `"matrix"` to fix all nodes in the reservoir while leaving fracture and wellbore nodes unconstrained.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the mesh node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
 * **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Fluxes are integrated over the face.
   * Fluid fluxes: Specify `values` in $(\text{m}^3/ \text{s}) / \text{m}^2$.

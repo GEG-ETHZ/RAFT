@@ -459,10 +459,13 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
             elif verbose:
                 print(f"  Minimum pressure: {min_pressure:.2e} \n")
 
-        # List all nodes for "all" case
+        # List nodes for string cases
         nodes_all = group.get("nodes")
         if nodes_all is not None and isinstance(nodes_all, str):
-            nn_all = np.arange(0, mesh["nn_total"])
+            if nodes_all == "all":
+                nn_all = np.arange(0, mesh["nn_total"])
+            if nodes_all == "matrix":
+                nn_all = np.arange(0, mesh["nn"])
             group["nodes"] = nn_all
 
         # Convert coordinates to node numbers
