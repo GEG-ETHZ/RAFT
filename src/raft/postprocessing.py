@@ -242,6 +242,82 @@ def compute_fluid_flux(  # noqa
     return q
 
 
+def compute_well_flux(
+    mesh_well: dict[str, Any],
+    material: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    gravity: float = 0.0,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Computes well mass flow rate and Reynolds number at each node using nodal averaging.
+
+    Returns nsd x nn array of mass flow rates along the well tangent, and nn array of Reynolds numbers.
+    """
+    from .matprops import PropertyResult
+    from .matrixassembly import NodalPropertyState, _evaluate_well_flow, _get_gravity
+
+    nn = mesh_well["nn"]
+    nsd = mesh_well["nsd"]
+    conn = mesh_well["conn"]
+    nodes = mesh_well["nodes"]
+    tangent = mesh_well["well_tangent"]
+    region_lists = mesh_well["region_lists"]
+
+    # Initialize output arrays
+    q = np.zeros((nsd, nn))
+    Re = np.zeros(nn)
+    count = np.zeros(nn)
+
+    # Material properties
+    fluid = material["fluid"]
+    wells = material["wells"]
+    g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
+
+    # L2 shape functions and gradients at the element nodes
+    xi = _get_nodal_parents_coords("L2")
+    N_n = np.eye(2).reshape(2, 1, 2)  # N_I(xi_J) = delta_IJ
+    GN_n = np.array([GNMATRIX_FUNCS["L2"](xi[n, :]) for n in range(2)])
+
+    for r, elems in enumerate(region_lists):
+        radius = wells["radius"][r]
+        roughness = wells["roughness"][r]
+
+        for e in elems:
+            enodes = conn[e]
+
+            # Project onto the element tangent for 1D local coordinates and gravity
+            t_e = tangent[e].reshape(-1, 1)
+            xI = nodes[enodes, :] @ t_e
+            B_n = getB(GN_n, xI, 1)[0]
+            g_r = t_e.T @ g
+
+            # Nodal density and viscosity, evaluated at the element nodes
+            pe = p[enodes].reshape(-1, 1)
+            Te = T[enodes].reshape(-1, 1)
+            rho = get_EOS(Te, Te, pe, fluid, want_density=True)[0].value
+            zeros = np.zeros_like(rho)
+            rho_e = PropertyResult(rho, zeros, zeros)
+            rho_n = PropertyResult(N_n @ rho, N_n @ zeros, N_n @ zeros)
+            rho_f = NodalPropertyState(q=rho_n, e=rho_e)
+            mu_n = get_viscosity(N_n @ Te, N_n @ pe, fluid)
+
+            # Mass flow rate along the tangent, and Reynolds number, at each element node
+            _, q_n, _, _ = _evaluate_well_flow(N_n, B_n, B_n @ pe, g_r, mu_n, rho_f, radius, roughness)
+            Re_n = 2.0 * np.abs(q_n) / (np.pi * radius * mu_n.value)
+
+            q[:, enodes] += t_e @ q_n.reshape(1, -1)
+            Re[enodes] += Re_n.ravel()
+            count[enodes] += 1
+
+    # Nodal averaging
+    # Avoid division by zero for unused nodes
+    nonzero_count = np.where(count == 0, 1, count)
+    q /= nonzero_count
+    Re /= nonzero_count
+
+    return q, Re
+
+
 def _extract_cartesian_properties(
     material_list: list[Any], indx: npt.NDArray[np.int64], nsd: int
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -726,7 +802,7 @@ def _write_well_output(
     primary_variables: dict[str, Any],
     verbose: bool,
 ) -> None:
-    """Write one solution to VTK for the wells."""
+    """Compute mass flow rates and write one solution to VTK for the wells."""
     if verbose:
         print("     Writing wells to output file...")
 
@@ -738,7 +814,13 @@ def _write_well_output(
     p = primary_variables["p"][nn_tot - wmesh["nn"] : nn_tot, 0]
     T = primary_variables["T"][nn_tot - wmesh["nn"] : nn_tot, 0]
 
+    # --- Calculate mass flow rates and Reynolds numbers
+    flux, reynolds = compute_well_flux(wmesh, material, p, T, controls["gravity"])
+
     scalardata_point = _build_point_scalars(controls, wmesh, material, p, T)
+    scalardata_point.append({"name": "reynolds_number", "data": _sanitize(reynolds)})
+
+    vectordata_point = [{"name": "mass_flux", "data": _sanitize(flux.T)}]  # mass flow rate
 
     write_mesh2vtk(
         filename,
@@ -746,6 +828,7 @@ def _write_well_output(
         wmesh["nodes"],
         wmesh["conn"],
         scalar_data_point=scalardata_point,
+        vector_data_point=vectordata_point,
     )
 
 
