@@ -457,6 +457,8 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     mesh["boundaries"]["x_all"] = x_all
     mesh["boundaries"]["y_all"] = y_all
     mesh["boundaries"]["z_all"] = z_all
+
+    # Create an all nodes case
     mesh["boundaries"]["n_all"] = np.arange(0, mesh["nn"])
 
     if nsd == 2:
@@ -2283,19 +2285,22 @@ def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
 
 def _mesh_outside_well_part(
     P: npt.NDArray[np.float64], Q: npt.NDArray[np.float64], well: dict[str, Any], tol: float
-) -> tuple[list[npt.NDArray[np.float64]], list[list[int]]]:
-    """Node chain and [-1] matrix_conn for a well part outside the domain; empty if negligible."""
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]], list[list[int]]]:
+    """Node chain, [-1] matrix_conn, and [-1, -1] matrix_node_conn for a well part outside the domain.
+
+    Empty if negligible.
+    """
     length = float(np.linalg.norm(Q - P))
     if length <= tol:
-        return [], []
+        return [], [], []
 
     # Evenly spaced nodes, element length at most dL_max (default: part length / 10)
     dL_max = well.get("dL_max", length / 10)
     n_el = max(1, int(np.ceil(length / dL_max)))
     chain = np.linspace(P, Q, n_el + 1)
 
-    # No neighbouring matrix elements outside the domain
-    return [chain], [[-1]] * n_el
+    # No neighbouring matrix elements or nodes outside the domain
+    return [chain], [[-1]] * n_el, [[-1, -1]] * n_el
 
 
 def _create_well_section(
@@ -2304,8 +2309,8 @@ def _create_well_section(
     well: dict[str, Any],
     edge_to_elems: dict[tuple[int, int], list[int]],
     tol: float,
-) -> tuple[list[npt.NDArray[np.float64]], list[list[int]]]:
-    """Node chains and per-element matrix_conn for one well section."""
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]], list[list[int]]]:
+    """Node chains, per-element matrix_conn, and per-element matrix_node_conn for one well section."""
     nodes = mesh["nodes"]
     nsd = mesh["nsd"]
 
@@ -2325,13 +2330,15 @@ def _create_well_section(
     path_matrix_conn = [list(edge_to_elems[(min(n1, n2), max(n1, n2))]) for n1, n2 in path_conn]
 
     # Outside parts end on the snapped boundary nodes so deduplication joins them to the path
-    chains_in, conn_in = _mesh_outside_well_part(A, nodes[path[0]], well, tol)
-    chains_out, conn_out = _mesh_outside_well_part(nodes[path[-1]], B, well, tol)
+    chains_in, conn_in, node_conn_in = _mesh_outside_well_part(A, nodes[path[0]], well, tol)
+    chains_out, conn_out, node_conn_out = _mesh_outside_well_part(nodes[path[-1]], B, well, tol)
 
     # Assemble in order along the section: entry, inside, exit
     chains = chains_in + [nodes[path]] + chains_out
     matrix_conn = conn_in + path_matrix_conn + conn_out
-    return chains, matrix_conn
+    # Matrix nodes coincident with each element's well nodes, in element node order
+    matrix_node_conn = node_conn_in + path_conn + node_conn_out
+    return chains, matrix_conn, matrix_node_conn
 
 
 def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
@@ -2361,6 +2368,7 @@ def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict
     well_nodes: list[npt.NDArray[np.float64]] = []
     well_conn: list[list[int]] = []
     matrix_conn: list[list[int]] = []
+    matrix_node_conn: list[list[int]] = []
     region_lists: list[npt.NDArray[np.int64]] = []
     nn_w = 0
 
@@ -2368,13 +2376,16 @@ def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict
     for well in well_specs:
         ne_prior = len(well_conn)
         for section in well["alignment"]:
-            chains, section_matrix_conn = _create_well_section(mesh, section, well, edge_to_elems, tol)
+            chains, section_matrix_conn, section_node_conn = _create_well_section(
+                mesh, section, well, edge_to_elems, tol
+            )
             # L2 connectivity along each chain, offset past the accumulated well nodes
             for chain in chains:
                 well_nodes.append(chain)
                 well_conn.extend([[nn_w + i, nn_w + i + 1] for i in range(len(chain) - 1)])
                 nn_w += len(chain)
             matrix_conn.extend(section_matrix_conn)
+            matrix_node_conn.extend(section_node_conn)
         # Well elements belonging to this well
         region_lists.append(np.arange(ne_prior, len(well_conn)))
 
@@ -2391,6 +2402,7 @@ def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict
         "nodes": w_nodes,
         "conn": w_conn,
         "matrix_conn": matrix_conn,
+        "matrix_node_conn": matrix_node_conn,  # coincident matrix nodes; [-1, -1] outside the domain
         "region_lists": region_lists,  # regions correspond to the well number
         "well_tangent": tangent,
     }

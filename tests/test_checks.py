@@ -855,7 +855,7 @@ def check_fracture_advection_bounded(
     With advection_on and no internal sources, steady p/T have no interior extrema: every
     node - including the fracture's own leak-off nodes and both sides of the matrix - must
     stay within the range spanned by the imposed boundary values. A sign error in the
-    fracture-matrix coupling's advective tangent (`_integrate_fracture_matrix_coupling_tangent`
+    fracture-matrix coupling's advective tangent (`_integrate_fracture_coupling_tangent`
     in matrixassembly.py) or a wrong upwind branch tends to show up as overshoot beyond this
     envelope rather than a subtly wrong interior profile, so this is a cheap discriminating
     check even without an analytical reference solution.
