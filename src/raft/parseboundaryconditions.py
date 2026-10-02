@@ -67,7 +67,7 @@ def _apply_field(
 ) -> tuple[npt.NDArray[np.float64], bool] | None:
     """Evaluate one field spec ("hydraulics" or "thermal") on a group into [node, value] pairs."""
     spec = group.get(field)
-    if spec is None or not nodes:
+    if spec is None or len(nodes) == 0:
         return None
 
     spec["nodes"] = nodes
@@ -118,7 +118,7 @@ def parsebcs(
 
     for group in BC_config:
         nodes = group["nodes"]
-        if not nodes:
+        if len(nodes) == 0:
             continue
 
         hydraulics = _apply_field(mesh, t, group, "hydraulics", nodes)
