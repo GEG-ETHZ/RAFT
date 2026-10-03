@@ -32,6 +32,7 @@ def write_mesh2vtk(  # noqa: C901
     scalar_data_point: list[dict[str, Any]] | None = None,
     vector_data_point: list[dict[str, Any]] | None = None,
     scalar_data_cell: list[dict[str, Any]] | None = None,
+    vector_data_cell: list[dict[str, Any]] | None = None,
 ) -> None:
     """Write FEM mesh data to a file in VTK format.
 
@@ -54,6 +55,8 @@ def write_mesh2vtk(  # noqa: C901
     vector_data : list of dict, optional
         Each entry is {'name': str, 'data': np.ndarray of shape (nn, 2)}
         Example: [{'name': 'disp', 'data': array}]
+    scalar_data_cell, vector_data_cell : list of dict, optional
+        As above, with one entry per element: data of shape (ne,) or (ne, nsd)
 
     Notes:
     -----
@@ -68,6 +71,8 @@ def write_mesh2vtk(  # noqa: C901
         vector_data_point = []
     if scalar_data_cell is None:
         scalar_data_cell = []
+    if vector_data_cell is None:
+        vector_data_cell = []
 
     nodes = np.array(nodes, dtype=float)
     conn_list: list[npt.NDArray[np.int_]] = [np.asarray(enodes, dtype=np.int_) for enodes in conn]
@@ -77,7 +82,7 @@ def write_mesh2vtk(  # noqa: C901
     ne = len(conn_list)  # number of elements
     nne_per_elem = np.array([len(enodes) for enodes in conn_list])  # nodes per element, may vary
     ndp = len(scalar_data_point)  # number of scalar fields
-    ndc = len(scalar_data_cell)  # number of scalar fields
+    ndc = len(scalar_data_cell) + len(vector_data_cell)  # number of cell fields
 
     # Pad 2D nodes with a zero z-column for VTK output
     if nsd == 2:
@@ -199,6 +204,19 @@ def write_mesh2vtk(  # noqa: C901
             data = np.asarray(field["data"]).ravel()
             for val in data:
                 fid.write(f"{val:.4e}\n")
+
+        # --- Vector cell data ---
+        for field in vector_data_cell:
+            fid.write(f"VECTORS {field['name']} float\n")
+            data = np.asarray(field["data"])
+
+            nsv = np.size(data, axis=1)
+            if nsv != 3:
+                # append zeros to vectors
+                data = np.hstack([data, np.zeros((ne, 3 - nsv))])
+
+            for j in range(ne):
+                fid.write(f"{data[j, 0]:.4e} {data[j, 1]:.4e} {data[j, 2]:.4e} \n")
 
 
 # Helper
