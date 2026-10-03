@@ -26,7 +26,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-3]
-    nusselt: [5.0]
+    heat_transfer_factor: [0.634115]  # equivalent to Nu = 5
 
 initial_conditions:
   assignment: "constant"

@@ -248,14 +248,20 @@ def compute_well_flux(
     p: npt.NDArray[np.float64],
     T: npt.NDArray[np.float64],
     gravity: float = 0.0,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Computes well mass flow rate and Reynolds number for each element at its midpoint.
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Computes well mass flow rate, Reynolds number, and heat transfer coefficient at element midpoints.
 
-    Returns nsd x ne array of mass flow rates along the element tangent, and ne array of Reynolds numbers.
+    Returns nsd x ne array of mass flow rates along the element tangent, and ne arrays of Reynolds
+    numbers and heat transfer coefficients.
     Per-element values avoid the cancellation of nodally averaging differently oriented elements.
     """
     from .matprops import PropertyResult
-    from .matrixassembly import NodalPropertyState, _evaluate_well_flow, _get_gravity
+    from .matrixassembly import (
+        NodalPropertyState,
+        _evaluate_well_flow,
+        _evaluate_well_heat_transfer_coefficient,
+        _get_gravity,
+    )
 
     ne = mesh_well["ne"]
     nsd = mesh_well["nsd"]
@@ -267,9 +273,11 @@ def compute_well_flux(
     # Initialize output arrays
     q = np.zeros((nsd, ne))
     Re = np.zeros(ne)
+    hc = np.zeros(ne)
 
     # Material properties
     fluid = material["fluid"]
+    lambda_f = fluid["therm_cond"]
     wells = material["wells"]
     g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
 
@@ -281,6 +289,7 @@ def compute_well_flux(
     for r, elems in enumerate(region_lists):
         radius = wells["radius"][r]
         roughness = wells["roughness"][r]
+        heat_transfer_factor = wells["heat_transfer_factor"][r]
 
         for e in elems:
             enodes = conn[e]
@@ -302,11 +311,22 @@ def compute_well_flux(
             mu_c = get_viscosity(N_c @ Te, N_c @ pe, fluid)
 
             # Mass flow rate along the tangent, and Reynolds number, at the element midpoint
-            _, q_c, _, _ = _evaluate_well_flow(N_c, B_c, B_c @ pe, g_r, mu_c, rho_f, radius, roughness)
+            _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
+                N_c, B_c, B_c @ pe, g_r, mu_c, rho_f, radius, roughness
+            )
             q[:, e] = t_e.ravel() * q_c.item()
-            Re[e] = 2.0 * abs(q_c.item()) / (np.pi * radius * mu_c.value.item())
+            Re[e] = Re_c.item()
 
-    return q, Re
+            # Heat transfer coefficient, with Pr at the element midpoint
+            # cp is assembled from temperature derivatives, so they must be requested
+            cp_c = get_EOS(N_c @ Te, N_c @ Te, N_c @ pe, fluid, want_enthalpy=True, want_dT=True)[2].cp
+            Pr_c = mu_c.value * cp_c / lambda_f
+            hc_c, _, _ = _evaluate_well_heat_transfer_coefficient(
+                heat_transfer_factor, lambda_f, radius, roughness, Re_c, Pr_c
+            )
+            hc[e] = hc_c.item()
+
+    return q, Re, hc
 
 
 def _extract_cartesian_properties(
@@ -566,15 +586,16 @@ def _build_fracture_cell_data(
 ) -> list[dict[str, Any]]:
     """Build per-element aperture and heat transfer coefficient fields for the fracture VTK output.
 
-    Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar
-    aperture and Nusselt number. The heat transfer coefficient is computed as
-    h = nusselt * lambda_f / 2 / aperture, where lambda_f is the fluid thermal conductivity.
+    Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar aperture
+    and heat transfer factor; h is evaluated as in the fracture-matrix conduction coupling.
     """
+    from .matrixassembly import _evaluate_fracture_heat_transfer_coefficient
+
     region_lists = mesh_fracture["region_lists"]
     num_regions = len(region_lists)
 
     apertures = material["fracture"]["aperture"]
-    nusselts = material["fracture"]["nusselt"]
+    heat_transfer_factors = material["fracture"]["heat_transfer_factor"]
     lambda_f = material["fluid"]["therm_cond"]
 
     nelem = len(mesh_fracture["conn"])
@@ -583,8 +604,7 @@ def _build_fracture_cell_data(
 
     for r in range(num_regions):
         w = apertures[r]
-        nu = nusselts[r]
-        h = nu * lambda_f / 2 / w
+        h = _evaluate_fracture_heat_transfer_coefficient(heat_transfer_factors[r], lambda_f, w)
 
         elems = region_lists[r]
         aperture_cell[elems] = w
@@ -597,12 +617,12 @@ def _build_fracture_cell_data(
 
 
 def _build_well_cell_data(mesh_well: dict[str, Any], material: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build per-element diameter, perforation, and insulation fields for domain_wells.vtk."""
+    """Build per-element diameter, perforation, and heat transfer factor fields for domain_wells.vtk."""
     wells = material["wells"]
     nelem = len(mesh_well["conn"])
 
     # Assign each well's (region's) properties to its elements
-    fields = {name: np.zeros(nelem) for name in ("diameter", "perforation", "insulation")}
+    fields = {name: np.zeros(nelem) for name in ("diameter", "perforation", "heat_transfer_factor")}
     for r, elems in enumerate(mesh_well["region_lists"]):
         for name, data in fields.items():
             data[elems] = wells[name][r]
@@ -805,12 +825,15 @@ def _write_well_output(
     p = primary_variables["p"][nn_tot - wmesh["nn"] : nn_tot, 0]
     T = primary_variables["T"][nn_tot - wmesh["nn"] : nn_tot, 0]
 
-    # --- Calculate mass flow rates and Reynolds numbers
-    flux, reynolds = compute_well_flux(wmesh, material, p, T, controls["gravity"])
+    # --- Calculate mass flow rates, Reynolds numbers, and heat transfer coefficients
+    flux, reynolds, hc = compute_well_flux(wmesh, material, p, T, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, wmesh, material, p, T)
 
-    scalardata_cell = [{"name": "reynolds_number", "data": _sanitize(reynolds)}]
+    scalardata_cell = [
+        {"name": "reynolds_number", "data": _sanitize(reynolds)},
+        {"name": "heat_transfer_coefficient", "data": _sanitize(hc)},
+    ]
 
     vectordata_cell = [{"name": "mass_flow_rate", "data": _sanitize(flux.T)}]  # mass flow rate
 

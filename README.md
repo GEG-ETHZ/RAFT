@@ -153,7 +153,7 @@ Each fracture specification requires three fields:
   * $[a,b]$ *(list[float], no default)*: extents. For the ellipse, $a$ = major axis distance, $b$ = minor axis distance. For the rectangle, $a$ = half-length, $b$ = half-width. In 2D, $a$ is taken as the fracture half-length.
   * $[\theta_x, \theta_y, \theta_z]$ *(list[float], no default)*: plane angles in degrees. $\theta_x$ = plane angle with respect to the x-axis, $\theta_y$ = plane angle with respect to the y-axis, , $\theta_z$ = plane angle with respect to the z-axis. In 2D, only $\theta_x$ and $\theta_y$ are considered.
 
-Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
+Hydraulic and thermal properties (`aperture`, `heat_transfer_factor`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
 
 > **IMPORTANT NOTE FOR FRACTURE SPECIFICATIONS**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
 
@@ -182,7 +182,7 @@ mesh:
 
 Well alignments are discretized in the mesh, so element edges follow them and wells sharing a start or end point share the node that connects them. Alignments extending past the reservoir are clipped to [mesh: domain](#domain) for meshing, with a warning naming the well; `dL_max` applies to those outside sections and so does not affect the mesh.
 
-Hydraulic and thermal properties (`diameter`, `perforation`, `insulation`) are not specified here; they are defined per-well under `material.well` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
+Hydraulic and thermal properties (`diameter`, `perforation`, `heat_transfer_factor`, `roughness`) are not specified here; they are defined per-well under `material.wells` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
 
 ### `material`
 
@@ -224,13 +224,13 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 
 * **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s), used in the [fracture governing equations](theory.md#fracture-coupling). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.
-  * **`nusselt`** *(list[float], no default)*: Nusselt number, $Nu$, controlling the fracture-matrix convective heat transfer coefficient.
+  * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the fracture-matrix heat transfer coefficient, which assumes laminar flow between parallel plates. Use 1 for the standard laminar value, values below 1 to reduce heat exchange (0 is perfectly insulated), and large values to approach local thermal equilibrium between fracture and matrix.
 
 * **`wells`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
   * **`diameter`** *(list[float], no default)*: Hydraulic diameter of the well, $D$, which determines frictional resistance.
   * **`roughness`** *(list[float], no default)*: Roughness (units of length) used to calculate friction in turbulent flow.
   * **`perforation`** *(list[float], no default)*: A list of $K$ values that apply to the pressure drop as the fluid leaves the well. If $K=0$, the well is unperforated and there is no hydraulic interaction between the well segment and the rock mass.
-  * **`insulation`** *(list[float], no default)*: A list of factors, $I$, that moderate the conductive heat transfer coefficient between the well and the rock mass. The heat transfer coefficient is determined as a function of the Reynolds Number. A value of $I = 0$ is perfectly insulated.
+  * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the well-rock heat transfer coefficient. The coefficient follows the flow regime: constant in laminar flow (Re < 2000), the Gnielinski correlation in turbulent flow (Re > 2300, including the effect of `roughness`), and interpolated between. Use 1 for an uninsulated well, values below 1 for insulated sections (0 is perfectly insulated); values above 1 are permitted.
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.

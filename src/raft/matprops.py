@@ -32,6 +32,10 @@ _P_MIN = 1e5
 _T_MAX = 1.9e3
 _T_MIN = 274
 _RE_MIN = 1.0e-3  # Reynolds number floor for the friction factor; phi = f Re is 64 below it
+_RE_LAMINAR = 2000.0  # upper bound of laminar heat transfer
+_RE_TURBULENT = 2300.0  # lower bound of turbulent heat transfer (Gnielinski)
+_NU_LAM_PIPE = 0.5 * (3.66 + 4.36)  # laminar pipe Nu, average of constant wall temperature and heat flux
+_NU_LAM_PLATES = 0.5 * (7.54 + 8.23)  # laminar parallel plate Nu (D_h = 2w), same average
 
 # Sentinel for an optional input not needed unless explicitly requested (e.g. `get_enthalpy`'s `cp`).
 _EMPTY = np.empty((0, 0))
@@ -659,3 +663,62 @@ def get_friction_factor(
     dP = P * (12.0 / Re - 1.5 * (dA + dB) / (A + B))
     dphi = phi / (12.0 * (8.0**12 + P)) * dP
     return phi, dphi
+
+
+def _gnielinski_values(
+    Re: npt.NDArray[np.float64], Pr: npt.NDArray[np.float64], rel_roughness: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Gnielinski turbulent Nu, with Churchill Darcy f, and its derivatives wrt Re and Pr."""
+    phi, dphi = get_friction_factor(Re, rel_roughness)
+    f = phi / Re
+    df_dRe = (dphi - f) / Re
+
+    # Nu = k (Re - 1000) Pr / D, with k = f/8 and D = 1 + 12.7 sqrt(k) (Pr^(2/3) - 1)
+    k = f / 8.0
+    s = np.sqrt(k)
+    pr_term = Pr ** (2.0 / 3.0) - 1.0
+    D = 1.0 + 12.7 * s * pr_term
+    Nu = k * (Re - 1000.0) * Pr / D
+
+    # Quotient rule through k(Re) and Pr
+    dk_dRe = df_dRe / 8.0
+    dD_dRe = 12.7 * pr_term * dk_dRe / (2.0 * s)
+    dNu_dRe = ((dk_dRe * (Re - 1000.0) + k) * Pr - Nu * dD_dRe) / D
+    dD_dPr = 12.7 * s * (2.0 / 3.0) * Pr ** (-1.0 / 3.0)
+    dNu_dPr = (k * (Re - 1000.0) - Nu * dD_dPr) / D
+    return Nu, dNu_dRe, dNu_dPr
+
+
+def get_nusselt_number(
+    Re: npt.NDArray[np.float64],
+    Pr: npt.NDArray[np.float64],
+    rel_roughness: float,
+    *,
+    parallel_plates: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Nusselt number and its derivatives wrt Re and Pr, for pipes or parallel plates.
+
+    Constant laminar Nu below Re = 2000, Gnielinski above Re = 2300, and log-interpolated between.
+    """
+    Re = np.asarray(Re, dtype=np.float64)
+    Pr = np.asarray(Pr, dtype=np.float64)
+    Nu_lam = _NU_LAM_PLATES if parallel_plates else _NU_LAM_PIPE
+
+    # Turbulent: Gnielinski, evaluated with Re clipped into its range of validity
+    Nu_turb, dturb_dRe, dturb_dPr = _gnielinski_values(np.maximum(Re, _RE_TURBULENT), Pr, rel_roughness)
+
+    # Transition: log-interpolate from Nu_lam at Re = 2000 to Gnielinski at Re = 2300
+    Nu_2300, _, d2300_dPr = _gnielinski_values(np.full_like(Re, _RE_TURBULENT), Pr, rel_roughness)
+    log_span = np.log(_RE_TURBULENT / _RE_LAMINAR)
+    w = np.log(np.clip(Re, _RE_LAMINAR, _RE_TURBULENT) / _RE_LAMINAR) / log_span
+    Nu_trans = Nu_lam ** (1.0 - w) * Nu_2300**w
+    dtrans_dRe = Nu_trans * np.log(Nu_2300 / Nu_lam) / (np.maximum(Re, _RE_MIN) * log_span)
+    dtrans_dPr = Nu_trans * w * d2300_dPr / Nu_2300
+
+    # Select the regime
+    laminar = Re <= _RE_LAMINAR
+    turbulent = Re >= _RE_TURBULENT
+    Nu = np.where(laminar, Nu_lam, np.where(turbulent, Nu_turb, Nu_trans))
+    dNu_dRe = np.where(laminar, 0.0, np.where(turbulent, dturb_dRe, dtrans_dRe))
+    dNu_dPr = np.where(laminar, 0.0, np.where(turbulent, dturb_dPr, dtrans_dPr))
+    return Nu, dNu_dRe, dNu_dPr

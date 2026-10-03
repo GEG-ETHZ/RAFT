@@ -145,7 +145,7 @@ $$\frac{\partial}{\partial t}(w\rho_f u_f) = -\nabla_\parallel \cdot(\rho_f h_f 
 where the total heat energy exchange rate $Q_{E}$ is:
 
 $$Q_{E} = \underbrace{h_c (T_f - T_m)}_{\text{Conductive Exchange}} + \underbrace{Q_{\text{leak}} h_f^*}_{\text{Advective Enthalpy Exchange}} \\
-h_c = \frac{\text{Nu} \cdot \lambda_f}{2w}$$
+h_c = F \, \frac{\text{Nu} \cdot \lambda_f}{2w}$$
 
 in which $h_c$ is the conductive heat transfer coefficient and $h_f^*$ is the directional upwind enthalpy based on flow direction:
 
@@ -157,7 +157,7 @@ $$h_f^* =
 
 For evaluating the exchange direction, the pressure is lagged to the previous timestep to prevent intra-timestep oscillating.
 
-$Nu$ is the Nusselt number, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. The Nusselt number controls conductive heat transfer between the rock and fluid. In steady, fully-developed laminar flow  $Nu\approx 3.66$–$4.36$ (Bejan, 2013), higher during the thermal transient, and local thermal equilibrium can be enforced by setting an arbitrarily high Nusselt number.
+$Nu$ is the Nusselt number based on the parallel-plate hydraulic diameter $2w$, $F$ is the heat transfer factor, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. Cubic-law flow is laminar, for which steady, fully-developed flow between parallel plates gives $Nu = 7.54$ at constant wall temperature and $Nu = 8.23$ at constant wall heat flux (Bejan, 2013). The coupled fracture-matrix problem fits neither boundary condition exactly, so their average, $Nu = 7.885$, is used. The factor $F$ scales the exchange: $F < 1$ reduces it, $F = 0$ insulates the fracture, and local thermal equilibrium can be approached with an arbitrarily large $F$.
 
 ## Fracture Mesh Cutting Algorithm
 Fracture coupling requires a mesh that conforms to each fracture line, so RAFT cuts an ordinary matrix mesh to fit (2D only).
