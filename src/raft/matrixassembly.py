@@ -2722,7 +2722,7 @@ def integrate_residuals(  # noqa
             if not temperature_only:
                 # Mass storage vector
                 mass_dot_e, _, _ = _evaluate_mass_storage_integrands(phi_L, rho_f, cv, steady_pres)
-                element_vectors["F_Pstorage"] = m_lump * mass_dot_e
+                element_vectors["F_Pstorage"] = m_lump * mass_dot_e * (1 - is_well)  # wells are quasi-steady
 
                 # Diffusion vector
                 element_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(
@@ -3177,7 +3177,7 @@ def integrate_tangent_matrices(  # noqa
             # ------------------------------------ Conservation of mass wrt pressure
             if not temperature_only:
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
-                element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_e.ravel())
+                element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
 
                 # Diffusion vector - Fk
                 # dFk/dp

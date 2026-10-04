@@ -139,8 +139,7 @@ in which $Q_{leak}$ is the mass exchange between matrix and fracture, $\boldsymb
 
 The conservation of energy is
 
-$$\frac{\partial}{\partial t}(w\rho_f u_f) = -\nabla_\parallel \cdot(\rho_f h_f w \vec{q}) + \nabla_\parallel \cdot(w\lambda_f\nabla T) - Q_{E}  \\
-\qquad \vec{q} = \frac{w^2}{12\mu}(\nabla_\parallel p_f-\rho_f\vec{g})$$
+$$\frac{\partial}{\partial t}(w\rho_f u_f) = -\nabla_\parallel \cdot( h_f w Q_{leak}) + \nabla_\parallel \cdot(w\lambda_f\nabla T) - Q_{E}  $$
 
 where the total heat energy exchange rate $Q_{E}$ is:
 
