@@ -1307,7 +1307,7 @@ def _evaluate_well_advection_flux(
     T_m_q: npt.NDArray[np.float64],
     T_flow_wq: npt.NDArray[np.float64],
     T_flow_mq: npt.NDArray[np.float64],
-    flux_p_q: npt.NDArray[np.float64],  # MAss flux
+    flux_p_q: npt.NDArray[np.float64],  # Mass flux
     fluid: dict[str, Any],
     perforation_conductance: float,  # matching the leak-off flux
     radius: float,
@@ -1935,6 +1935,8 @@ def _supg_tau_values(
     q_D: npt.NDArray[np.float64],
     L_vec: npt.NDArray[np.float64],
     lambda_e: npt.NDArray[np.float64],
+    heat_capacity: npt.NDArray[np.float64],  # volumetric heat capacity at quad points
+    rate: float,  # transient rate, cv[0] (= 1/dt for first order); 0 when steady
     nsd: int,
     isotropic_cond: bool,
 ) -> npt.NDArray[np.float64]:
@@ -1971,7 +1973,9 @@ def _supg_tau_values(
 
         # Peclet number
         Pe = dl_eff * flux_mag / lambda_e_projected
-        t = dl_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+        # Advective, diffusive and transient (Tezduyar, 2002) limits
+        inv_t_sq = (2 * flux_mag / dl_eff) ** 2 * (1 + 9 / Pe**2) + (2 * heat_capacity[q, 0, 0] * rate) ** 2
+        t = inv_t_sq ** (-0.5)
         if no_flow:
             t = 0.0
         tau[q, 0, 0] = t
@@ -2045,8 +2049,14 @@ def _evaluate_advection_terms(
     lambda_e_arr = np.asarray(lambda_e, dtype=np.float64)
     lambda_e_bcast = np.ascontiguousarray(np.broadcast_to(lambda_e_arr, lambda_e_shape)).copy()
 
+    # Volumetric heat capacity and transient rate for the tau transient limit
+    phi_q = phi_L.q_n.value
+    heat_capacity = np.ascontiguousarray(
+        (1 - phi_q) * rho_s * cp_s * (1 - no_solid) + phi_q * rho_f_n.value * hf_q.cp
+    )
+    rate = (1 - steady_temp) * cv[0]
     # Evaluated in numba kernel.
-    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, nsd, isotropic_cond)
+    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, heat_capacity, rate, nsd, isotropic_cond)
 
     # Discretized strong form residual at quadrature points
     # Energy rate
@@ -2181,9 +2191,10 @@ def _integrate_fracture_coupling_residual(  # noqa
                 rhof_q, kf_perp, mu_q, p_f_q, p_m_q
             )  # mass flux
 
+        # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
         if pressure_coupling:
-            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)  # Fracture
-            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
+            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, -flux_p_q, wJe_q, True)  # Fracture
+            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, flux_p_q, wJe_q, True)
 
         if thermal_coupling:
             T_m_q = N_qm @ T[enodes_m]  # matrix temperature
@@ -2214,10 +2225,8 @@ def _integrate_fracture_coupling_residual(  # noqa
                     rhof_q,
                     T_flow_lagged=T_flow_lagged,
                 )
-                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
-                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
-                    N_qm, -flux_adv_T_q, wJe_q, True
-                )
+                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_qm, flux_adv_T_q, wJe_q, True)
 
         matches.append((nne_m, matrix_vectors))
 
@@ -2277,10 +2286,10 @@ def _integrate_fracture_coupling_tangent(
             )  # Mass flux
 
         if pressure_coupling:
-            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
-            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
-            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
+            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_q, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_qm, wJe_q, True)
+            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_qm, wJe_q, True)
 
         if thermal_coupling:
             T_f_q = N_q @ kin_n.Te
@@ -2320,25 +2329,27 @@ def _integrate_fracture_coupling_tangent(
                 )
 
                 # fm/mf coefficients use the derivative wrt the column's temperature
-                RTT_ff = RTT_ff + _vctrzd_quad_point_integration(N_q, -dqadv_dTf, N_q, wJe_q, True)
-                RTT_fm = RTT_fm + _vctrzd_quad_point_integration(N_qm, dqadv_dTf, N_q, wJe_q, True)
-                RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_qm, wJe_q, True)
-                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, dqadv_dTm, N_qm, wJe_q, True)
+                RTT_ff = RTT_ff + _vctrzd_quad_point_integration(N_q, dqadv_dTf, N_q, wJe_q, True)
+                RTT_fm = RTT_fm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTf, N_q, wJe_q, True)
+                RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
+                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
 
                 if fully_coupled:
-                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTf, N_q, wJe_q, True)
-                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
-                        N_qm, -dfluxp_dTm, N_q, wJe_q, True
+                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_q, wJe_q, True)
+                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dTm, N_q, wJe_q, True)
+                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(
+                        N_q, -dfluxp_dTf, N_qm, wJe_q, True
                     )
-                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_qm, wJe_q, True)
                     mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(
-                        N_qm, dfluxp_dTm, N_qm, wJe_q, True
+                        N_qm, -dfluxp_dTm, N_qm, wJe_q, True
                     )
 
-                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
-                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_qm, wJe_q, True)
+                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dpf, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
+                        N_qm, -dqadv_dpm, N_qm, wJe_q, True
+                    )
 
             ff_matrices["KTT_ff"] = RTT_ff
             fm_matrices["KTT_fm"] = RTT_fm
@@ -2396,9 +2407,10 @@ def _integrate_well_coupling_residual(
             rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q
         )
 
+    # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
     if pressure_coupling:
-        well_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
-        matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_q, -flux_p_q, wJe_q, True)
+        well_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, -flux_p_q, wJe_q, True)
+        matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
 
     if thermal_coupling:
         # Conduction exchange
@@ -2439,8 +2451,8 @@ def _integrate_well_coupling_residual(
                 rhof_q,
                 T_flow_lagged=T_flow_lagged,
             )
-            well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
-            matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+            well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+            matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
 
     return well_vectors, matrix_vectors
 
@@ -2502,10 +2514,10 @@ def _integrate_well_coupling_tangent(  # noqa
         )
 
     if pressure_coupling:
-        ww_matrices["Kpp_ww"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
-        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpm, N_q, wJe_q, True)
-        mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpw, N_q, wJe_q, True)
-        mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
+        ww_matrices["Kpp_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpw, N_q, wJe_q, True)
+        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
+        mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
+        mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpm, N_q, wJe_q, True)
 
     if thermal_coupling:
         # Conduction exchange
@@ -2561,22 +2573,22 @@ def _integrate_well_coupling_tangent(  # noqa
                 want_tangent=True,
                 T_flow_lagged=T_flow_lagged,
             )
-            RTT_ww = RTT_ww + _vctrzd_quad_point_integration(N_q, -dqadv_dTw, N_q, wJe_q, True)
-            RTT_wm = RTT_wm + _vctrzd_quad_point_integration(N_q, dqadv_dTw, N_q, wJe_q, True)
-            RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
-            RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
+            RTT_ww = RTT_ww + _vctrzd_quad_point_integration(N_q, dqadv_dTw, N_q, wJe_q, True)
+            RTT_wm = RTT_wm + _vctrzd_quad_point_integration(N_q, -dqadv_dTw, N_q, wJe_q, True)
+            RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
+            RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
 
             # Off-diagonal pressure/temperature coupling
             if fully_coupled:
-                ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
-                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
-                mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
-                mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
+                ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
+                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
+                mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
+                mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
 
-                ww_matrices["KTp_ww"] += _vctrzd_quad_point_integration(N_q, -dqadv_dpw, N_q, wJe_q, True)
-                wm_matrices["KTp_wm"] += _vctrzd_quad_point_integration(N_q, dqadv_dpw, N_q, wJe_q, True)
-                mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
-                mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
+                ww_matrices["KTp_ww"] += _vctrzd_quad_point_integration(N_q, dqadv_dpw, N_q, wJe_q, True)
+                wm_matrices["KTp_wm"] += _vctrzd_quad_point_integration(N_q, -dqadv_dpw, N_q, wJe_q, True)
+                mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
+                mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
 
         ww_matrices["KTT_ww"] = RTT_ww
         wm_matrices["KTT_wm"] = RTT_wm

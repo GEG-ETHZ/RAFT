@@ -173,11 +173,11 @@ Standard Galerkin FEM produces spurious oscillations for advection-dominated hea
 
 $$\textbf{F}_{stab} = \int_\Omega \textbf{B}^\top\cdot \vec{a}\,\tau\,\mathcal{R}(T^h)\,d\Omega, \qquad \vec{a} = c_{pf}\,\vec{q}_D$$
 
-with stabilization coefficient (Shakib, Hughes & Zohan, 1991) and element Péclet number:
+with stabilization coefficient combining the advective-diffusive limit (Shakib, Hughes & Zohan, 1991) with the transient limit (Tezduyar, 2002), and element Péclet number:
 
-$$\tau = \frac{\ell^e}{2\lVert\vec{a}\rVert}\left(1 + \frac{9}{Pe^2}\right)^{-0.5}, \qquad Pe = \frac{\ell^e \lVert\vec{a}\rVert}{\lambda_e}$$
+$$\tau = \left[\left(\frac{2\lVert\vec{a}\rVert}{\ell^e}\right)^2\left(1 + \frac{9}{Pe^2}\right) + \left(2\,(\rho c)_e\,c_{v0}\right)^2\right]^{-1/2}, \qquad Pe = \frac{\ell^e \lVert\vec{a}\rVert}{\lambda_e}$$
 
-where $\ell^e$ is a flow-direction-weighted effective element length and $\mathcal{R}(T^h)$ is the strong-form residual of the discretized temperature field, built from the same storage/advection/conduction terms as $\textbf{R}_T$ above.
+where $\ell^e$ is a flow-direction-weighted effective element length, $(\rho c)_e = (1-\phi)\rho_s c_s + \phi\,\rho_f c_{pf}$ is the volumetric heat capacity, $c_{v0}$ is the leading rate coefficient ($1/\Delta t$ for first order, zero for steady temperature), and $\mathcal{R}(T^h)$ is the strong-form residual of the discretized temperature field, built from the same storage/advection/conduction terms as $\textbf{R}_T$ above.
 
 ## Time Discretization and Solution Scheme
 Time derivatives use a general multistep discretization backwards Euler time discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified. RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation), both of which are implicit time integration schemes.
