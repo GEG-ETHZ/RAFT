@@ -249,7 +249,9 @@ def _assign_ic_bc_compatible(  # noqa
             )
             primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
             # For debugging
-            postprocessing(n + i, mesh, controls, material, BC_config, primary_variables, 0, verbose)  # noqa
+            postprocessing(
+                n + i, mesh, controls, material, BC_config, primary_variables, 0, [1, 1, 1], verbose
+            )  # noqa
         # Perform fully coupled solution
         if verbose:
             print("   Solving for fully-coupled steady-state condition...")
@@ -581,7 +583,7 @@ def main(  # noqa
         # --- Export initial condition
         if verbose:
             print("Export initial condition")
-        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
         n += 1
 
         # ---- Time integration
@@ -615,6 +617,7 @@ def main(  # noqa
 
             # Check error and update time step
             t0 = t
+            dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
             t, dt, converged = _update_time(
                 controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
             )
@@ -623,7 +626,9 @@ def main(  # noqa
             if converged:
                 if verbose:
                     print("     Postprocessing...")
-                postprocessing(n, mesh, controls, material, BC_config, primary_variables, t0, verbose)
+                postprocessing(
+                    n, mesh, controls, material, BC_config, primary_variables, t0, dt_step, verbose
+                )
                 n += 1
                 # rollover update primary variables, column 0 gets overwritten in time integration
                 primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
