@@ -1253,9 +1253,10 @@ def _evaluate_well_conduction_flux(
     lambda_f: float,
     radius: float,
     roughness: float,
-    Re: npt.NDArray[np.float64],  # Reynolds number at quad points
-    mu_q: PropertyResult,  # viscosity at quad points
-    cp_q: npt.NDArray[np.float64],  # specific heat at quad points, lagged in the tangent
+    Re_c: npt.NDArray[np.float64],  # element (midpoint) Reynolds number
+    mu_c: PropertyResult,  # midpoint viscosity
+    cp_c: npt.NDArray[np.float64],  # midpoint specific heat, lagged in the tangent
+    N_c: npt.NDArray[np.float64],  # midpoint shape functions
     N_q: npt.NDArray[np.float64],
     T_w_q: npt.NDArray[np.float64],
     T_m_q: npt.NDArray[np.float64],
@@ -1273,12 +1274,13 @@ def _evaluate_well_conduction_flux(
     """Evaluate the well-matrix convective conduction flux per unit well length and its well node tangents.
 
     Flux = h P (T_w - T_m), with wetted perimeter P = 2 pi R and
-    h = heat_transfer_factor * Nu(Re, Pr) * lambda_f / D, Pr = mu cp / lambda_f.
+    h = heat_transfer_factor * Nu(Re, Pr) * lambda_f / D, Pr = mu cp / lambda_f, evaluated once
+    per element at its midpoint.
     """
-    # Heat transfer coefficient from the pipe Nusselt number
-    Pr = mu_q.value * cp_q / lambda_f
+    # Element heat transfer coefficient from the pipe Nusselt number
+    Pr = mu_c.value * cp_c / lambda_f
     hc, dh_dRe, dh_dPr = _evaluate_well_heat_transfer_coefficient(
-        heat_transfer_factor, lambda_f, radius, roughness, Re, Pr
+        heat_transfer_factor, lambda_f, radius, roughness, Re_c, Pr
     )
 
     perimeter = 2.0 * np.pi * radius  # wetted perimeter: h is per unit wall area
@@ -1288,11 +1290,11 @@ def _evaluate_well_conduction_flux(
     # h depends on the well state through Re (flow) and Pr (viscosity; cp lagged)
     dfluxc_dTw = dfluxc_dTm = dfluxc_dpw = _EMPTY
     if want_tangent_dT:
-        dh_dTw = dh_dRe * dRe_dT + dh_dPr * cp_q / lambda_f * mu_q.dT * N_q
+        dh_dTw = dh_dRe * dRe_dT + dh_dPr * cp_c / lambda_f * mu_c.dT * N_c
         dfluxc_dTw = perimeter * (hc * N_q + dT_q * dh_dTw)
         dfluxc_dTm = -perimeter * hc * N_q
     if want_tangent_dp:
-        dh_dpw = dh_dRe * dRe_dp + dh_dPr * cp_q / lambda_f * mu_q.dp * N_q
+        dh_dpw = dh_dRe * dRe_dp + dh_dPr * cp_c / lambda_f * mu_c.dp * N_c
         dfluxc_dpw = perimeter * dT_q * dh_dpw
     return flux_hc_T_q, dfluxc_dTw, dfluxc_dTm, dfluxc_dpw
 
@@ -1551,6 +1553,7 @@ def _evaluate_darcy_flux(
 _WELL_FLOW_TOL = 1.0e-10  # relative tolerance of the well momentum residual
 _WELL_FLOW_MAX_ITER = 50
 _WELL_FLOW_MAX_HALVINGS = 20
+_N_MID_L2 = np.full((1, 1, 2), 0.5)  # L2 shape functions at the element midpoint
 
 
 def _well_flow_residual(
@@ -1579,12 +1582,12 @@ def _well_flow_residual(
 
 
 def _evaluate_well_flow(
-    N_q: npt.NDArray[np.float64],
-    B_q: npt.NDArray[np.float64],
+    N_c: npt.NDArray[np.float64],
+    B_c: npt.NDArray[np.float64],
     gradP: npt.NDArray[np.float64],
     g_r: npt.NDArray[np.float64],
-    mu_q: PropertyResult,
-    rho_f: NodalPropertyState,
+    mu_c: PropertyResult,
+    rho_e: PropertyResult,
     radius: float,
     roughness: float,
     *,
@@ -1593,26 +1596,28 @@ def _evaluate_well_flow(
 ) -> tuple[
     npt.NDArray[np.float64],  # volume flow rate
     npt.NDArray[np.float64],  # q_w, mass flow rate
-    npt.NDArray[np.float64],  # dqD_dp, `_EMPTY` unless want_tangent_dp
-    npt.NDArray[np.float64],  # dqD_dT, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dqD_dp, (1, 1, nne); `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dqD_dT, (1, 1, nne); `_EMPTY` unless want_tangent_dT
     npt.NDArray[np.float64],  # Re, Reynolds number
-    npt.NDArray[np.float64],  # dRe_dp, `_EMPTY` unless want_tangent_dp
-    npt.NDArray[np.float64],  # dRe_dT, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dRe_dp, (1, 1, nne); `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dRe_dT, (1, 1, nne); `_EMPTY` unless want_tangent_dT
 ]:
-    """Evaluate the well mass flow rate, Reynolds number, and derivatives at quadrature points.
+    """Evaluate the well element's mass flow rate, Reynolds number, and nodal derivatives.
 
     Solves q|q| (f - sign(q) 4R/rho drho/ds) = -4 rho pi^2 R^5 (dp/ds + rho g dz/ds) by
-    safeguarded Newton, with the Churchill Darcy friction factor f(Re). Derivatives follow
-    `_evaluate_darcy_flux`'s sign convention (dqD_dp = -dq/dp).
+    safeguarded Newton, with the Churchill Darcy friction factor f(Re). On an L2 element the
+    pressure and density gradients are constant, so one evaluation at the midpoint (shape
+    functions N_c, gradients B_c) gives the element flow; rho is the average nodal density, the
+    exact element mean of the gravity term. Derivatives follow `_evaluate_darcy_flux`'s sign
+    convention (dqD_dp = -dq/dp).
     """
-    rho_n = rho_f.q_n
-    rho_e = rho_f.e_n
-    rho = rho_n.value
-    mu = mu_q.value
+    mu = mu_c.value
     rel_roughness = roughness / (2.0 * radius)
 
+    # Element density, modified pressure gradient, and density gradient
+    rho = N_c @ rho_e.value  # average nodal density
     G = gradP - rho * g_r  # modified pressure gradient
-    grad_rhof = B_q @ rho_e.value  # density gradient along the well
+    grad_rhof = B_c @ rho_e.value  # density gradient along the well
 
     # Initial guess without acceleration: lesser of the laminar and explicit Colebrook flow rates
     a = 0.5 * np.pi * radius * mu  # |q| = a Re
@@ -1640,7 +1645,7 @@ def _evaluate_well_flow(
             step = np.where(worse, 0.5 * step, step)
         q = q + step * dq
     else:
-        warnings.warn("Well flow rate did not converge at some quadrature points.", stacklevel=2)
+        warnings.warn("Well flow rate did not converge in some well elements.", stacklevel=2)
 
     vol_flow = q / rho  # volume flow rate
 
@@ -1656,27 +1661,23 @@ def _evaluate_well_flow(
         dF_dmu = 0.5 * np.pi * radius * q * (phi - Re * dphi)
 
     if want_tangent_dp:
-        dG_dp = B_q - rho_n.dp * g_r * N_q
+        drho_dp = N_c * rho_e.dp.T  # exact nodal derivative of the average density
+        dG_dp = B_c - g_r * drho_dp
         dF_dp = (
-            dF_dG * dG_dp
-            + dF_drho * rho_n.dp * N_q
-            + dF_dgrad_rhof * (B_q * rho_e.dp.T)
-            + dF_dmu * mu_q.dp * N_q
+            dF_dG * dG_dp + dF_drho * drho_dp + dF_dgrad_rhof * (B_c * rho_e.dp.T) + dF_dmu * mu_c.dp * N_c
         )
         dqD_dp = dF_dp / dF_dq  # = -dq/dp
         # Re = 2|q| / (pi R mu)
-        dRe_dp = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dp - Re / mu * mu_q.dp * N_q
+        dRe_dp = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dp - Re / mu * mu_c.dp * N_c
 
     if want_tangent_dT:
-        dG_dT = -rho_n.dT * g_r * N_q
+        drho_dT = N_c * rho_e.dT.T
+        dG_dT = -g_r * drho_dT
         dF_dT = (
-            dF_dG * dG_dT
-            + dF_drho * rho_n.dT * N_q
-            + dF_dgrad_rhof * (B_q * rho_e.dT.T)
-            + dF_dmu * mu_q.dT * N_q
+            dF_dG * dG_dT + dF_drho * drho_dT + dF_dgrad_rhof * (B_c * rho_e.dT.T) + dF_dmu * mu_c.dT * N_c
         )
         dqD_dT = dF_dT / dF_dq  # = -dq/dT
-        dRe_dT = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dT - Re / mu * mu_q.dT * N_q
+        dRe_dT = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dT - Re / mu * mu_c.dT * N_c
 
     return vol_flow, q, dqD_dp, dqD_dT, Re, dRe_dp, dRe_dT
 
@@ -2369,8 +2370,9 @@ def _integrate_well_coupling_residual(
     lambda_f: float,  # fluid thermal conductivity
     radius: float,
     roughness: float,
-    Re: npt.NDArray[np.float64],  # Reynolds number at quad points
-    hf: NodalEnthalpyState,  # enthalpy; `.q_n.cp` used only when thermal_coupling
+    mu_c: PropertyResult,  # element midpoint viscosity
+    Re_c: npt.NDArray[np.float64],  # element midpoint Reynolds number
+    hf: NodalEnthalpyState,  # enthalpy; nodal `cp` used only when thermal_coupling
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -2404,7 +2406,17 @@ def _integrate_well_coupling_residual(
         T_w_q = N_q @ kin_n.Te
         T_m_q = N_q @ T[enodes_m]
         flux_hc_T_q, _, _, _ = _evaluate_well_conduction_flux(
-            heat_transfer_factor, lambda_f, radius, roughness, Re, mu_q, hf.q_n.cp, N_q, T_w_q, T_m_q
+            heat_transfer_factor,
+            lambda_f,
+            radius,
+            roughness,
+            Re_c,
+            mu_c,
+            _N_MID_L2 @ hf.e_n.cp,  # midpoint cp from the nodal values
+            _N_MID_L2,
+            N_q,
+            T_w_q,
+            T_m_q,
         )
         well_vectors["F_Tdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
         matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_q, -flux_hc_T_q, wJe_q, True)
@@ -2453,10 +2465,13 @@ def _integrate_well_coupling_tangent(  # noqa
     lambda_f: float,  # fluid thermal conductivity
     radius: float,
     roughness: float,
-    Re: npt.NDArray[np.float64],  # Reynolds number at quad points
-    dRe_dp: npt.NDArray[np.float64],  # Reynolds number pressure tangent; `_EMPTY` unless fully_coupled
-    dRe_dT: npt.NDArray[np.float64],  # Reynolds number temperature tangent
-    hf: NodalEnthalpyState,  # enthalpy; `.q_n.cp` (lagged) used only when thermal_coupling
+    mu_c: PropertyResult,  # element midpoint viscosity
+    Re_c: npt.NDArray[np.float64],  # element midpoint Reynolds number
+    dRe_dp: npt.NDArray[
+        np.float64
+    ],  # element Reynolds number pressure tangent; `_EMPTY` unless fully_coupled
+    dRe_dT: npt.NDArray[np.float64],  # element Reynolds number temperature tangent
+    hf: NodalEnthalpyState,  # enthalpy; nodal `cp` (lagged) used only when thermal_coupling
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -2503,9 +2518,10 @@ def _integrate_well_coupling_tangent(  # noqa
             lambda_f,
             radius,
             roughness,
-            Re,
-            mu_q,
-            hf.q_n.cp,
+            Re_c,
+            mu_c,
+            _N_MID_L2 @ hf.e_n.cp,  # midpoint cp from the nodal values
+            _N_MID_L2,
             N_q,
             T_w_q,
             T_m_q,
@@ -2707,9 +2723,12 @@ def integrate_residuals(  # noqa
                 volumetric_strain_on=volumetric_strain_on,
             )
             if is_well:
-                _, q_D, _, _, Re_q, _, _ = _evaluate_well_flow(
-                    N_q, B_q, kin.gradP, g_r, mu_q, rho_f, flow.radius, flow.roughness
-                )  # q_D = mass flow rate
+                # Element flow from the midpoint state: L2 gradients are constant and T is linear
+                mu_c = get_viscosity(_N_MID_L2 @ kin_n.Te_flow, _N_MID_L2 @ kin_n.pe, fluid, temperature_only)
+                _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
+                    _N_MID_L2, B_q[0:1], kin.gradP[0:1], g_r, mu_c, rho_f.e_n, flow.radius, flow.roughness
+                )
+                q_D = np.repeat(q_c, nq, axis=0)  # q_D = mass flow rate, constant along the element
             else:
                 _, q_D, _, _ = _evaluate_darcy_flux(
                     N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=flow.isotropic_perm
@@ -2837,7 +2856,8 @@ def integrate_residuals(  # noqa
                     lambda_f,
                     flow.radius,
                     flow.roughness,
-                    Re_q,
+                    mu_c,
+                    Re_c,
                     hf,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
@@ -3134,19 +3154,32 @@ def integrate_tangent_matrices(  # noqa
                 fully_coupled=fully_coupled,
             )
             if is_well:
-                # dT tangents whenever temperature is solved: conduction h depends on Re
-                _, q_D, dqD_dp, dqD_dT, Re_q, dRe_dp, dRe_dT = _evaluate_well_flow(
-                    N_q,
-                    B_q,
-                    kin.gradP,
+                # Element flow from the midpoint state: L2 gradients are constant and T is linear.
+                # dT tangents whenever temperature is solved: conduction h depends on Re.
+                mu_c = get_viscosity(
+                    _N_MID_L2 @ kin_n.Te_flow,
+                    _N_MID_L2 @ kin_n.pe,
+                    fluid,
+                    T_flow_lagged,
+                    want_dp=not temperature_only,
+                    want_dT=not pressure_only,
+                )
+                _, q_c, dqD_dp_c, dqD_dT_c, Re_c, dRe_dp, dRe_dT = _evaluate_well_flow(
+                    _N_MID_L2,
+                    B_q[0:1],
+                    kin.gradP[0:1],
                     g_r,
-                    mu_q,
-                    rho_f,
+                    mu_c,
+                    rho_f.e_n,
                     flow.radius,
                     flow.roughness,
                     want_tangent_dp=not temperature_only,
                     want_tangent_dT=not pressure_only,
                 )
+                # Broadcast the element flow and its tangents to the quad points
+                q_D = np.repeat(q_c, nq, axis=0)
+                dqD_dp = np.repeat(dqD_dp_c, nq, axis=0) if not temperature_only else _EMPTY
+                dqD_dT = np.repeat(dqD_dT_c, nq, axis=0) if not pressure_only else _EMPTY
             else:
                 _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
                     N_q,
@@ -3345,7 +3378,8 @@ def integrate_tangent_matrices(  # noqa
                     lambda_f,
                     flow.radius,
                     flow.roughness,
-                    Re_q,
+                    mu_c,
+                    Re_c,
                     dRe_dp,
                     dRe_dT,
                     hf,

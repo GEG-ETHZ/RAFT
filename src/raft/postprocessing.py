@@ -257,7 +257,6 @@ def compute_well_flux(
     """
     from .matprops import PropertyResult
     from .matrixassembly import (
-        NodalPropertyState,
         _evaluate_well_flow,
         _evaluate_well_heat_transfer_coefficient,
         _get_gravity,
@@ -300,27 +299,24 @@ def compute_well_flux(
             B_c = getB(GN_c, xI, 1)[0]
             g_r = t_e.T @ g
 
-            # Nodal density, for its gradient, and midpoint density and viscosity
+            # Nodal density and specific heat, and midpoint viscosity
             pe = p[enodes].reshape(-1, 1)
             Te = T[enodes].reshape(-1, 1)
-            rho = get_EOS(Te, Te, pe, fluid, want_density=True)[0].value
-            zeros = np.zeros_like(rho)
-            rho_e = PropertyResult(rho, zeros, zeros)
-            rho_c = PropertyResult(N_c @ rho, N_c @ zeros, N_c @ zeros)
-            rho_f = NodalPropertyState(q=rho_c, e=rho_e)
+            # cp is assembled from temperature derivatives, so they must be requested
+            rho_n, _, hf_n = get_EOS(Te, Te, pe, fluid, want_density=True, want_enthalpy=True, want_dT=True)
+            zeros = np.zeros_like(rho_n.value)
+            rho_e = PropertyResult(rho_n.value, zeros, zeros)
             mu_c = get_viscosity(N_c @ Te, N_c @ pe, fluid)
 
-            # Mass flow rate along the tangent, and Reynolds number, at the element midpoint
+            # Element mass flow rate along the tangent and Reynolds number, as in the solver
             _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
-                N_c, B_c, B_c @ pe, g_r, mu_c, rho_f, radius, roughness
+                N_c, B_c, B_c @ pe, g_r, mu_c, rho_e, radius, roughness
             )
             q[:, e] = t_e.ravel() * q_c.item()
             Re[e] = Re_c.item()
 
-            # Heat transfer coefficient, with Pr at the element midpoint
-            # cp is assembled from temperature derivatives, so they must be requested
-            cp_c = get_EOS(N_c @ Te, N_c @ Te, N_c @ pe, fluid, want_enthalpy=True, want_dT=True)[2].cp
-            Pr_c = mu_c.value * cp_c / lambda_f
+            # Element heat transfer coefficient, with midpoint Pr from the nodal cp
+            Pr_c = mu_c.value * (N_c @ hf_n.cp) / lambda_f
             hc_c, _, _ = _evaluate_well_heat_transfer_coefficient(
                 heat_transfer_factor, lambda_f, radius, roughness, Re_c, Pr_c
             )
