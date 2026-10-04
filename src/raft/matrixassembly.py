@@ -183,10 +183,10 @@ class RegionFlowData:
     nodes_r: npt.NDArray[np.float64]  # fracture: projected nodes; well: 3D nodes, projected per element
     w0: float  # fracture aperture or well area; scales storage and conduction
     u: npt.NDArray[np.float64]  # fracture: region tangent (nsd, 1); well: element tangents (ne, nsd)
-    kf_perp: PropertyResult  # transverse permeability, coupling only; dummy 1 for wells
+    kf_perp: PropertyResult  # fracture transverse permeability, coupling only
     diameter: float  # well only
     radius: float  # well only
-    perforation: float  # well only
+    perforation_conductance: float  # well only; well-to-rock conductance per unit wall area (m)
     roughness: float  # well only
 
 
@@ -920,8 +920,7 @@ def _get_region_flow_data(
     # Well case
     if is_well:
         wells = material["wells"]
-        one = np.asarray(1.0)  # dummy permeabilities pending well physics
-        zeros = np.zeros_like(one)
+        nan_arr = np.asarray(np.nan)
         A = wells["area"][r]
         return RegionFlowData(
             kf=A**2 / 8 / np.pi,
@@ -929,10 +928,10 @@ def _get_region_flow_data(
             nodes_r=mesh_data.submesh_nodes,  # projected per element by its tangent
             w0=A,
             u=mesh_data.submesh["well_tangent"],
-            kf_perp=PropertyResult(one, zeros, zeros),
+            kf_perp=PropertyResult(nan_arr, nan_arr, nan_arr),  # leak-off uses perforation_conductance
             diameter=wells["diameter"][r],
             radius=wells["radius"][r],
-            perforation=wells["perforation"][r],
+            perforation_conductance=wells["perforation_conductance"][r],
             roughness=wells["roughness"][r],
         )
 
@@ -951,7 +950,7 @@ def _get_region_flow_data(
             kf_perp=PropertyResult(kf_perp, zeros, zeros),
             diameter=nan,
             radius=nan,
-            perforation=nan,
+            perforation_conductance=nan,
             roughness=nan,
         )
 
@@ -967,7 +966,7 @@ def _get_region_flow_data(
         kf_perp=PropertyResult(nan_arr, nan_arr, nan_arr),
         diameter=nan,
         radius=nan,
-        perforation=nan,
+        perforation_conductance=nan,
         roughness=nan,
     )
 
@@ -1212,8 +1211,8 @@ def _evaluate_fracture_advection_flux(
 
 def _evaluate_well_leakoff_flux(
     rhof_q: PropertyResult,
-    kf_perp: PropertyResult,
-    perforation: float,  # perforation factor K; 0 is unperforated
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m); 0 is unperforated
+    radius: float,
     mu_q: PropertyResult,
     p_w_q: npt.NDArray[np.float64],
     p_m_q: npt.NDArray[np.float64],
@@ -1227,21 +1226,21 @@ def _evaluate_well_leakoff_flux(
     npt.NDArray[np.float64],  # dfluxp_dTw, `_EMPTY` unless want_tangent_dT
     npt.NDArray[np.float64],  # dfluxp_dTm, `_EMPTY` unless want_tangent_dT
 ]:
-    """Evaluate the well-matrix leak-off mass flux and tangents. Placeholder copy of the fracture law."""
-    flux_coeff = perforation * rhof_q.value * kf_perp.value / mu_q.value  # leak-off conductance
-    flux_p_q = flux_coeff * (p_w_q - p_m_q)  # leak-ff mass flux
+    """Evaluate the well-matrix leak-off mass flux per unit well length and optionally its tangents.
+
+    Flux = P C rho / mu (p_w - p_m), with wetted perimeter P = 2 pi R and perforation conductance C.
+    """
+    leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance  # per unit well length (m^2)
+    flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
+    flux_p_q = flux_coeff * (p_w_q - p_m_q)  # leak-off mass flux
 
     dfluxp_dpw = dfluxp_dpm = dfluxp_dTw = dfluxp_dTm = _EMPTY
     if want_tangent_dp:
-        dcoeff_dp = (
-            perforation * (rhof_q.dp * kf_perp.value + rhof_q.value * kf_perp.dp) - flux_coeff * mu_q.dp
-        )
+        dcoeff_dp = rhof_q.dp * leakoff_conductance - flux_coeff * mu_q.dp
         dfluxp_dpw = flux_coeff + dcoeff_dp / mu_q.value * (p_w_q - p_m_q)
         dfluxp_dpm = -flux_coeff
     if want_tangent_dT:
-        dcoeff_dT = (
-            perforation * (rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT) - flux_coeff * mu_q.dT
-        )
+        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
         dfluxp_dTw = dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
         dfluxp_dTm = np.zeros_like(dfluxp_dTw)  # Flux properties are evaluated with well state
 
@@ -1310,8 +1309,8 @@ def _evaluate_well_advection_flux(
     T_flow_mq: npt.NDArray[np.float64],
     flux_p_q: npt.NDArray[np.float64],  # MAss flux
     fluid: dict[str, Any],
-    kf_perp: PropertyResult,
-    perforation: float,  # perforation factor K, matching the leak-off flux
+    perforation_conductance: float,  # matching the leak-off flux
+    radius: float,
     mu_q: PropertyResult,
     rhof_q: PropertyResult,
     *,
@@ -1326,7 +1325,7 @@ def _evaluate_well_advection_flux(
     npt.NDArray[np.float64],  # dqadv_dpw, `_EMPTY` unless want_tangent
     npt.NDArray[np.float64],  # dqadv_dpm, `_EMPTY` unless want_tangent
 ]:
-    """Evaluate the well-matrix advective enthalpy flux and tangents. Placeholder of the fracture law.
+    """Evaluate the well-matrix advective enthalpy flux and tangents, with the well leak-off conductance.
 
     Upwind direction is picked from the lagged pressures `p_w_q_lag`/`p_m_q_lag`.
     """
@@ -1352,10 +1351,9 @@ def _evaluate_well_advection_flux(
 
     dqadv_dTw = dqadv_dTm = dqadv_dpw = dqadv_dpm = _EMPTY
     if want_tangent:
-        flux_coeff = perforation * rhof_q.value * kf_perp.value / mu_q.value
-        dcoeff_dT = (
-            perforation * (rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT) - flux_coeff * mu_q.dT
-        )
+        leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance
+        flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
+        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
         if well_upwind:
             dqadv_dTw = hf_q.dT * flux_p_q + hf_q.value * dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
             dqadv_dTm = np.zeros_like(dqadv_dTw)
@@ -2362,8 +2360,7 @@ def _integrate_well_coupling_residual(
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
     T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
-    kf_perp: PropertyResult,  # dummy transverse permeability
-    perforation: float,  # perforation factor K
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m)
     mu_q: PropertyResult,  # viscosity at quad points
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
     heat_transfer_factor: float,  # heat transfer coefficient multiplier
@@ -2395,7 +2392,9 @@ def _integrate_well_coupling_residual(
 
     # Leak-off mass flux
     if pressure_coupling or advection_on:
-        flux_p_q, _, _, _, _ = _evaluate_well_leakoff_flux(rhof_q, kf_perp, perforation, mu_q, p_w_q, p_m_q)
+        flux_p_q, _, _, _, _ = _evaluate_well_leakoff_flux(
+            rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q
+        )
 
     if pressure_coupling:
         well_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
@@ -2434,8 +2433,8 @@ def _integrate_well_coupling_residual(
                 N_q @ T_flow[enodes_m],
                 flux_p_q,
                 fluid,
-                kf_perp,
-                perforation,
+                perforation_conductance,
+                radius,
                 mu_q,
                 rhof_q,
                 T_flow_lagged=T_flow_lagged,
@@ -2457,8 +2456,7 @@ def _integrate_well_coupling_tangent(  # noqa
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
     T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
-    kf_perp: PropertyResult,
-    perforation: float,  # perforation factor K
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m)
     mu_q: PropertyResult,  # viscosity at quad points
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
     heat_transfer_factor: float,  # heat transfer coefficient multiplier
@@ -2494,8 +2492,8 @@ def _integrate_well_coupling_tangent(  # noqa
     if pressure_coupling or advection_on:
         flux_p_q, dfluxp_dpw, dfluxp_dpm, dfluxp_dTw, dfluxp_dTm = _evaluate_well_leakoff_flux(
             rhof_q,
-            kf_perp,
-            perforation,
+            perforation_conductance,
+            radius,
             mu_q,
             p_w_q,
             p_m_q,
@@ -2554,8 +2552,8 @@ def _integrate_well_coupling_tangent(  # noqa
                 N_q @ T_flow[enodes_m],
                 flux_p_q,
                 fluid,
-                kf_perp,
-                perforation,
+                perforation_conductance,
+                radius,
                 mu_q,
                 rhof_q,
                 dfluxp_dpw=dfluxp_dpw,
@@ -2848,8 +2846,7 @@ def integrate_residuals(  # noqa
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    flow.kf_perp,
-                    flow.perforation,
+                    flow.perforation_conductance,
                     mu_q,
                     rho_f,
                     heat_transfer_factor,
@@ -3370,8 +3367,7 @@ def integrate_tangent_matrices(  # noqa
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    flow.kf_perp,
-                    flow.perforation,
+                    flow.perforation_conductance,
                     mu_q,
                     rho_f,
                     heat_transfer_factor,

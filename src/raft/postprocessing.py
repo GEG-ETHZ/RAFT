@@ -618,12 +618,14 @@ def _build_fracture_cell_data(
 
 
 def _build_well_cell_data(mesh_well: dict[str, Any], material: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build per-element diameter, perforation, and heat transfer factor fields for domain_wells.vtk."""
+    """Build per-element well property fields for domain_wells.vtk."""
     wells = material["wells"]
     nelem = len(mesh_well["conn"])
 
     # Assign each well's (region's) properties to its elements
-    fields = {name: np.zeros(nelem) for name in ("diameter", "perforation", "heat_transfer_factor")}
+    fields = {
+        name: np.zeros(nelem) for name in ("diameter", "perforation_conductance", "heat_transfer_factor")
+    }
     for r, elems in enumerate(mesh_well["region_lists"]):
         for name, data in fields.items():
             data[elems] = wells[name][r]

@@ -182,7 +182,7 @@ mesh:
 
 Well alignments are discretized in the mesh, so element edges follow them and wells sharing a start or end point share the node that connects them. Alignments extending past the reservoir are clipped to [mesh: domain](#domain) for meshing, with a warning naming the well; `dL_max` applies to those outside sections and so does not affect the mesh.
 
-Hydraulic and thermal properties (`diameter`, `perforation`, `heat_transfer_factor`, `roughness`) are not specified here; they are defined per-well under `material.wells` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
+Hydraulic and thermal properties (`diameter`, `perforation_conductance`, `heat_transfer_factor`, `roughness`) are not specified here; they are defined per-well under `material.wells` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
 
 ### `material`
 
@@ -229,7 +229,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 * **`wells`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
   * **`diameter`** *(list[float], no default)*: Hydraulic diameter of the well, $D$, which determines frictional resistance.
   * **`roughness`** *(list[float], no default)*: Roughness (units of length) used to calculate friction in turbulent flow.
-  * **`perforation_conductance`** *(list[float], no default)*: Conductance from the well to the reservoir in ($m^2/m$). A value of 0 is an unperforated well. A value of 1 typically large enough to hydraullically link the well and the reservoir while neglecting the pressure drop caused by perforations and skin effects.
+  * **`perforation_conductance`** *(list[float], no default)*: Conductance from the well to the reservoir in ($m^2/m$). The pressure drop out of the well is typically a function of the skin effect and perforation radius, as well as damaged zones. A value of 0 is an unperforated well. A value of 1 typically large enough to hydraullically link the well and the reservoir while neglecting the pressure drop caused by perforations and skin effects.
   * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the well-rock heat transfer coefficient. The coefficient follows the flow regime: constant in laminar flow (Re < 2000), the Gnielinski correlation in turbulent flow (Re > 2300, including the effect of `roughness`), and interpolated between. Use 1 for an uninsulated well, values below 1 for insulated sections (0 is perfectly insulated); values above 1 are permitted.
 
 ### `initial_conditions`
