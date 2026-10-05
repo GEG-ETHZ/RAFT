@@ -327,6 +327,12 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
         material["wells"]["area"] = [None] * num_regions
         for r in range(num_regions):
             D = material["wells"]["diameter"][r]
+            # Relative roughness within the Moody chart, where the Churchill friction factor applies
+            rel_roughness = material["wells"]["roughness"][r] / D
+            if not 0.0 <= rel_roughness <= 0.05:
+                raise ValueError(
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must lie in [0, 0.05]."
+                )
             R = D / 2
             A = np.pi * R**2
             material["wells"]["radius"][r] = R
