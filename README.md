@@ -231,6 +231,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
   * **`roughness`** *(list[float], no default)*: Roughness (units of length) used to calculate friction in turbulent flow.
   * **`perforation_conductance`** *(list[float], no default)*: Conductance from the well to the reservoir in ($m^2/m$). The pressure drop out of the well is typically a function of the skin effect and perforation radius, as well as damaged zones. A value of 0 is an unperforated well. A value of 1 typically large enough to hydraullically link the well and the reservoir while neglecting the pressure drop caused by perforations and skin effects.
   * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the well-rock heat transfer coefficient. The coefficient follows the flow regime: constant in laminar flow (Re < 2000), the Gnielinski correlation in turbulent flow (Re > 2300, including the effect of `roughness`), and interpolated between. Use 1 for an uninsulated well, values below 1 for insulated sections (0 is perfectly insulated); values above 1 are permitted.
+> **Injecting and Producing via Wells**: For the well to interact hydraulically with the reservoir (i.e. inject or produce fluid), the connected well chain must have at least one interval with non-zero perforation conductance.
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.

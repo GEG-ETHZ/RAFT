@@ -2287,8 +2287,8 @@ def _integrate_fracture_coupling_tangent(
 
         if pressure_coupling:
             ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_q, wJe_q, True)
-            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_qm, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpf, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_qm, wJe_q, True)
             mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_qm, wJe_q, True)
 
         if thermal_coupling:
@@ -2336,10 +2336,10 @@ def _integrate_fracture_coupling_tangent(
 
                 if fully_coupled:
                     ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_q, wJe_q, True)
-                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dTm, N_q, wJe_q, True)
-                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(
-                        N_q, -dfluxp_dTf, N_qm, wJe_q, True
+                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
+                        N_qm, -dfluxp_dTf, N_q, wJe_q, True
                     )
+                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_qm, wJe_q, True)
                     mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(
                         N_qm, -dfluxp_dTm, N_qm, wJe_q, True
                     )
@@ -2515,8 +2515,8 @@ def _integrate_well_coupling_tangent(  # noqa
 
     if pressure_coupling:
         ww_matrices["Kpp_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpw, N_q, wJe_q, True)
-        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
-        mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
+        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
+        mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
         mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpm, N_q, wJe_q, True)
 
     if thermal_coupling:
@@ -2581,8 +2581,8 @@ def _integrate_well_coupling_tangent(  # noqa
             # Off-diagonal pressure/temperature coupling
             if fully_coupled:
                 ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
-                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
-                mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
+                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
+                mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
                 mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
 
                 ww_matrices["KTp_ww"] += _vctrzd_quad_point_integration(N_q, dqadv_dpw, N_q, wJe_q, True)
