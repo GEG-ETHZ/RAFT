@@ -32,6 +32,20 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_well_conduction() -> None:
+    """Test well heat exchange against analytical solution"""
+    case_dir = _test_data_dir()
+    test_name = "Wellbore heat conduction"
+    config_filename = "config_test_wellconvection.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+
+    plot_on = False
+    test_pass = test_checks.check_well_convection(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_fracture_advection_bounded() -> None:
     """Check p/T stay within the boundary-value envelope for a fracture angled into the
     pressure/temperature gradient, with advective leak-off turned on."""

@@ -942,3 +942,76 @@ def check_enthalpy_bndry_bounded(
     p_sane = bool(np.all(np.isfinite(p)) and np.all(p > 0) and np.all(np.abs(p) < 10 * p_scale))
 
     return T_bounded and p_sane
+
+
+def check_well_convection(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check well convection against analytical solution."""
+    # Set tolerance
+    tol = 1.0e-3
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    # Extract nodes along lines
+    nodes = mesh["nodes_total"]
+    n1 = mesh["nn"]
+    n2 = mesh["nn_total"]
+    line_1 = np.arange(n1, n2)  # well nodes
+
+    L = np.sqrt(np.sum((nodes[4, :] - nodes[0, :]) ** 2))
+
+    d_1 = np.sqrt(np.sum((nodes[line_1, :] - nodes[line_1[0], :]) ** 2, 1))
+
+    # Define analytical solution
+    mat = config["material"]
+    # BCs
+    Tm = _bc_value(config, "thermal", "temperature", 0)
+    T0 = _bc_value(config, "thermal", "temperature", 1)
+    q = _bc_value(config, "hydraulics", "flux", 0)
+    # properties
+    mu = mat["fluid"]["viscosity"]
+    cp = mat["fluid"]["specific_heat"]
+    rho = mat["fluid"]["density"]
+    D = mat["wells"]["diameter"][0]
+    R = D * 0.5
+    lambda_f = mat["fluid"]["therm_cond"]
+
+    Nu = 4.01
+
+    hc = Nu * lambda_f / D
+
+    # analytical solution from constant heating in the rock with pressure work
+    x = np.linspace(0, L, 100)
+    h1 = hc * np.pi * D
+    friction_heating = 8 * mu * q**2 / (h1 * rho**2 * R**4)
+    T_exact = T0 + (Tm - T0 + friction_heating) * (1 - np.exp(-h1 / q / cp * x))
+
+    # extract T and normalize
+    T = results["T"][:, 0]
+
+    if plot_on:
+        plt.figure()
+        plt.plot(x / L, T_exact, "r-")
+        plt.plot(d_1 / L, T[line_1], "ko")
+        plt.ylabel("T")
+        plt.title(test_name)
+
+    # calculate error
+    x = d_1
+    T_exact = T0 + (Tm - T0 + friction_heating) * (1 - np.exp(-h1 / q / cp * x))
+
+    err_ex = sum((T_exact - T[line_1]) ** 2) / sum(T_exact**2)
+    # The error here is calculated pased on the nodal solutions, which with SUPG
+    # stabilization should be close to exact at the nodes. The full error
+    # includes the linear interpolation between the nodes, which is much higher.
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
