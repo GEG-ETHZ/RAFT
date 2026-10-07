@@ -203,9 +203,10 @@ $f$ follows the Churchill (1977) correlation as a function of the Reynolds numbe
 $$\text{Re} = \frac{\rho_f\lvert v\rvert D}{\mu} = \frac{4\lvert q_w\rvert}{\pi D \mu}$$
 
 The Churchill correlation is an explicit correlation for the friction factor across the laminar, transitional, and turbulent regimes, and is expressed as
-$$ f = 8 \left[ \left(\frac{8}{\text{Re}}\right)^{12} + (A + B)^{-1.5} \right]^{1/12} \\
-  A = \left[ -2.457 \ln \left( \left(\frac{7}{\text{Re}}\right)^{0.9} + 0.27 \frac{\varepsilon}{D} \right) \right]^{16} \\
-  B = \left( \frac{37530}{\text{Re}} \right)^{16} $$
+
+$$f = 8 \left[ \left(\frac{8}{\text{Re}}\right)^{12} + (A + B)^{-1.5} \right]^{1/12} \\
+A = \left[ -2.457 \ln \left( \left(\frac{7}{\text{Re}}\right)^{0.9} + 0.27 \frac{\varepsilon}{D} \right) \right]^{16} \\
+B = \left( \frac{37530}{\text{Re}} \right)^{16}$$
 
 which RAFT solves in log-space to avoid evaluating the large exponents. The following figure shows the friction factor as it transitions from the laminar to turbulent regime at various relative roughnesses.
 ![Churchill Friction Factor](figures/ChurchillFriction.png)
