@@ -11,6 +11,7 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 - [Weak Form and Finite Element Discretization](#weak-form-and-finite-element-discretization)
 - [Fracture Coupling](#fracture-coupling)
 - [Fracture Mesh Cutting Algorithm](#fracture-mesh-cutting-algorithm)
+- [Well Coupling](#well-coupling)
 - [Advection Stabilization (SUPG)](#advection-stabilization-supg)
 - [Time Discretization and Solution Scheme](#time-discretization-and-solution-scheme)
 - [Adaptive Timestep Control](#adaptive-timestep-control)
@@ -41,8 +42,8 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 | $K_s$ | Bulk modulus of solid matrix | $Pa$ | Material property |
 | $K_f$ | Fluid bulk modulus (closed-form EOS only) | $Pa$ | Material property |
 | $Q_i$ | Volumetric fluid injection per injection point | $m^n/s$ | Boundary condition |
-| $\vec{q}$ | Darcy (volumetric) flux | $m^3/s/m^2$ | Derived property |
-| $\vec{q}_D$ | Mass flux, $\rho_f\vec{q}$ | $kg/s/m^2$ | Derived property |
+| $\vec{q}_D$ | Darcy (volumetric) flux | $m^3/s/m^2$ | Derived property |
+| $\vec{q}$ | Mass flux, $\rho_f\vec{q}$ | $kg/s/m^2$ | Derived property |
 | $c_{ps}$ | Specific heat capacity of matrix | $J/kg/^\circ K$ | Material property |
 | $\boldsymbol{\lambda}_f$ | Fluid thermal conductivity tensor | $W/m/^\circ K$ | Material property |
 | $\boldsymbol{\lambda}_s$ | Matrix thermal conductivity tensor | $W/m/^\circ K$ | Material property |
@@ -54,11 +55,11 @@ RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase por
 #### Conservation of Mass
 Flow is governed by conservation of mass with Darcy's law, assuming a fully-saturated, single-phase medium, idealized as a continuous porous medium:
 
-$$\frac{\partial}{\partial t}(\phi \rho_f) + \rho_f \phi \dot{\epsilon} = \nabla\cdot \vec{q}_D + \rho_f Q_i\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
+$$\frac{\partial}{\partial t}(\phi \rho_f) + \rho_f \phi \dot{\epsilon} = \nabla\cdot \vec{q} + \rho_f Q_i\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
 
-$$\vec{q}_D = \frac{\rho_f \boldsymbol{k}_f}{\mu}\left(\nabla p - \rho_f \vec{g}\right)$$
+$$\vec{q} = \frac{\rho_f \boldsymbol{k}_f}{\mu}\left(\nabla p - \rho_f \vec{g}\right)$$
 
-The first term on the left-hand side corresponds to the rate of fluid accumulation in the changing pore space, while the second term corresponds to the bulk change in the frame (the additional volume gained by or lost by changes in the frame volume). We combine these terms to define the Lagrangian porosity, $\phi_L=\phi(1+\epsilon)$. The first term on the right-hand side is the divergence of the Darcy mass flux ($\vec{q}_D$), and the last term represents point sources.
+The first term on the left-hand side corresponds to the rate of fluid accumulation in the changing pore space, while the second term corresponds to the bulk change in the frame (the additional volume gained by or lost by changes in the frame volume). We combine these terms to define the Lagrangian porosity, $\phi_L=\phi(1+\epsilon)$. The first term on the right-hand side is the divergence of the Darcy mass flux ($\vec{q}$), and the last term represents point sources.
 
 Porosity is defined neglecting deformation from external mechanical loads/equilibrium but including volumetric strain from pore-pressure and thermal changes, and assuming the matrix and solid-grain thermal expansions are approximately equal $\alpha_m\approx\alpha_s$. Thus the temperature does not itself change porosity — a linear change in all dimensions scales void and solid volume equally. The strain and porosity become
 
@@ -67,13 +68,13 @@ $$\epsilon = \frac{\beta}{K_d}(p-p_0) + \alpha_s(T-T_0), \qquad \phi(p) = 1-(1-\
 #### Conservation of Energy
 Temperature is governed by conservation of energy assuming local thermal equilibrium between rock and fluid (a single temperature field for the porous medium — not valid across highly conductive fracture apertures, where a separate fracture/matrix convective exchange is used instead, see [Fracture Coupling](#fracture-coupling)):
 
-$$\frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps} T + \phi_L \rho_f u_f\right] = -\nabla\cdot(\rho_f h_f \vec{q}) + \nabla\cdot(\lambda_e \nabla T) + Q_{Ti}\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
+$$\frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps} T + \phi_L \rho_f u_f\right] = -\nabla\cdot( h_f \vec{q}) + \nabla\cdot(\lambda_e \nabla T) + Q_{Ti}\delta(\vec{X}_i) \quad \forall \vec{X}\in\Omega$$
 
 with effective thermal conductivity mixed by (Lagrangian) porosity, $\lambda_e = \phi_L\lambda_f + (1-\phi_L)\lambda_s$, and work done by expansion of the solid matrix neglected relative to the temperature term.
 
 The coupled problem seeks $p(\vec{X},t)$ and $T(\vec{X},t)$ satisfying the above everywhere in $\Omega$, subject to initial conditions $p_0(\vec{X})$, $T_0(\vec{X})$, Dirichlet boundary conditions $\overline{p}(t)$, $\overline{T}(t)$ on $\Gamma_D$, and Neumann (flux) boundary conditions on $\Gamma_N$:
 
-$$\vec{q} = \overline{\vec{q}}(t), \qquad \vec{q}_T = -\lambda_e \nabla T = \overline{\vec{q}}_T(t)$$
+$$\vec{q}= \overline{\vec{q}}_M(t), \qquad \vec{q}_T = -\lambda_e \nabla T = \overline{\vec{q}}_T(t)$$
 
 where $\Gamma = \Gamma_N \cup \Gamma_D$, $\Gamma_N \cap \Gamma_D = \emptyset$.
 
@@ -96,9 +97,9 @@ $$du_f = \left(c_{pf}-\frac{\alpha_f}{\rho_f}p\right)dT + \frac{1}{\rho_f}\left(
 To develop the weak forms, we multiply the governing equations by admissible variations $\delta p$, $\delta T$ and integrating over the domain. Applying the divergence theorem to the flux terms (the Dirichlet contribution vanishes since $\delta p=\delta T=0$ there, and the Neumann contribution reduces to the prescribed flux) gives:
 
 $$0 = \int_{\Omega} \delta p\, \frac{\partial}{\partial t}(\phi_L \rho_f)\,d\Omega + \int_{\Omega} \nabla\delta p\cdot \frac{\rho_f \boldsymbol{k}_f}{\mu}(\nabla p - \rho_f \vec{g})\,d\Omega \\
-+ \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}\cdot\vec{n}\,d\Gamma_N - \int_{\Omega}\delta p\,\rho_f Q_i\delta(\vec{X}_i)\,d\Omega$$
++ \oint_{\Gamma_N}\delta p\,\overline{\vec{q}}_M\cdot\vec{n}\,d\Gamma_N - \int_{\Omega}\delta p\,\rho_f Q_i\delta(\vec{X}_i)\,d\Omega$$
 
-$$0 = \int_{\Omega} \delta T\, \frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L \rho_f u_f\right] d\Omega + \int_{\Omega} \nabla\delta T \cdot \rho_f h_f \vec{q}\,d\Omega - \oint_\Gamma \delta T(\rho_f h_f \vec{q})\cdot\vec{n}\,d\Gamma \\
+$$0 = \int_{\Omega} \delta T\, \frac{\partial}{\partial t}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L \rho_f u_f\right] d\Omega + \int_{\Omega} \nabla\delta T \cdot h_f \vec{q}\,d\Omega - \oint_\Gamma \delta T() h_f \vec{q})\cdot\vec{n}\,d\Gamma \\
 - \int_{\Omega} \nabla\delta T \cdot \lambda_e \nabla T\,d\Omega - \oint_{\Gamma_N} \delta T\,\overline{\vec{q}}_T\cdot\vec{n}\,d\Gamma_N - \int_{\Omega} \delta T\, Q_{Ti}\delta(\vec{X}_i)\,d\Omega$$
 
 Discretizing with standard isoparametric shape functions $p^h=\textbf{N}(\vec{X})\textbf{p}(t)$, $T^h=\textbf{N}(\vec{X})\textbf{T}(t)$ (gradients $\nabla p^h=\textbf{B}(\vec{X})\textbf{p}(t)$, $B_{ij}=\partial N_j/\partial x_i$) gives element residual vectors $\textbf{R}_p=0$, $\textbf{R}_T=0$:
@@ -108,7 +109,7 @@ $$\textbf{R}_p = \textbf{F}_{Pstorage} - \textbf{F}_{Pdiffusion} - \textbf{F}_{e
 | Term | Definition | Description |
 |---|---|---|
 | $\textbf{F}_{Pstorage}$ | $\textbf{M}_{lump}\frac{d}{dt}(\phi_L\rho_f)$ | Lumped nodal mass storage rate |
-| $\textbf{F}_{Pdiffusion}$ | $\int_\Omega \textbf{B}^\top \vec{q}_D\,d\Omega$ | Darcy mass-flux (conductance) vector; gravity is embedded in $\vec{q}_D=\rho_f\vec{q}$ |
+| $\textbf{F}_{Pdiffusion}$ | $\int_\Omega \textbf{B}^\top \vec{q}\,d\Omega$ | Darcy mass-flux (conductance) vector; gravity is embedded in $\vec{q}=\rho_f\vec{q}$ |
 | $\textbf{F}_{ext,p}$ | Prescribed Neumann flux + point-source (wellbore) terms | External/source forcing |
 
 $$\textbf{R}_T = \textbf{F}_{Tstorage} + \textbf{F}_{Tdiffusion} - \textbf{F}_{Tadvection} + \textbf{F}_{Tstab} - \textbf{F}_{ext,T} - \textbf{F}_{enth,\Gamma} = 0$$
@@ -117,7 +118,7 @@ $$\textbf{R}_T = \textbf{F}_{Tstorage} + \textbf{F}_{Tdiffusion} - \textbf{F}_{T
 |---|---|---|
 | $\textbf{F}_{Tstorage}$ | $\textbf{M}_{lump}\frac{d}{dt}\left[(1-\phi_L)\rho_s c_{ps}T + \phi_L\rho_f u_f\right]$ | Lumped nodal energy storage rate |
 | $\textbf{F}_{Tdiffusion}$ | $\int_\Omega \textbf{B}^\top \lambda_e\textbf{B}\textbf{T}\,d\Omega$ | Heat conduction vector |
-| $\textbf{F}_{Tadvection}$ | $\int_\Omega \textbf{B}^\top h_f\vec{q}_D\,d\Omega$ | Enthalpy advection vector |
+| $\textbf{F}_{Tadvection}$ | $\int_\Omega \textbf{B}^\top h_f\vec{q}\,d\Omega$ | Enthalpy advection vector |
 | $\textbf{F}_{Tstab}$ | see [SUPG](#advection-stabilization-supg) | Streamline-upwind stabilization |
 | $\textbf{F}_{ext,T}$ | Prescribed Neumann heat flux | External forcing |
 | $\textbf{F}_{enth,\Gamma}$ | see below | Advective enthalpy boundary correction |
@@ -168,10 +169,75 @@ Fracture coupling requires a mesh that conforms to each fracture line, so RAFT c
 * **Matrix cutting.** Matrix elements are split and cut, preserving Q4 geometry when possible, but reverting to T3s when not. This may affect accuracy. Review the mesh quality heuristics (Scaled Jacobian, Skewness, Aspect Ratio). Fracture typically require finer meshes around them to fully resolve the normal boundary layers.
 * **Matrix–fracture correspondence.** Once cutting is complete, each fracture element is matched to the corresponding matrix elements which is the fracture-matrix coupling occurs.
 
+## Well Coupling
+Wells are modelled as lines that follow element edges of the matrix mesh. Each well node has its own pressure and temperature, coincident with a matrix node, and the well exchanges mass and heat with the matrix through its wall. Wells are not porous media, and are thus governed by unique governing equations. See [`wells`](README.md#wells-optional-field) and [`material`](README.md#material) for the inputs.
+
+**Governing equations.** The well is modelled as a circular fluid-filled pipe of radius $R$ along the curvilinear path $s$. The flow in the pipe is governed by the Navier-Stokes equations for conservation of mass and momentum:
+
+$$    \text{Conservation of Mass:} \quad A \frac{\partial \rho_f}{\partial t} + \frac{\partial}{\partial s}(\rho_f vA) = 0 $$
+
+$$    \text{Conservation of Momentum:} \quad  A \frac{\partial (\rho_f v)}{\partial t} + \frac{\partial}{\partial s} (\rho_f v^2A) = - A \frac{\partial p}{\partial s} - \frac{f}{8} \pi D \rho_f v^2 - \rho gA \frac{d z}{ds}  $$
+
+in which $A$ is the cross-sectional area, $D$ is the well radius, $v$ is the average fluid velocity, $f$ is the Darcy friction factor and $z$ is the direction of gravity.
+
+We assume that the characteristic timescale of flow is negligible compared to pressure and temperature in the rock mass, even in long wells. The equations thus become quasi-steady-state such that the conservation of mass simplifies to
+
+$$  \frac{\partial q_w}{\partial s} = 0 $$
+
+in which $q_w = \rho_f A v$ is the mass flow rate through the well (kg/s). This quasi-steady conservation of mass then allows us to simplify the conservation of momentum to
+
+$$ \underbrace{\frac{q_w^2}{\rho^2 A} \frac{\partial \rho_f}{\partial s} }_{\text{Density change}}  - \underbrace{\frac{f\pi D q_w^2 }{8 \rho A^2}}_{\text{Friction losses}} - \underbrace{\rho_f gA \frac{d z}{ds}}_{\text{Gravity}} = \underbrace{A \frac{\partial p}{\partial s}}_{\text{Pressure gradient}}  $$
+
+which can be rearranged to express a constitutive relationship for the flow rate in the wells as a function of pressure, such that
+
+$$ \text{Well Constutitive Relationship:}  \quad  q_w = -\frac{4\rho \pi R^5}{\left[f -  \frac{4R}{\rho} \frac{\partial \rho}{\partial s} \right] |q_w|} \left( \frac{\partial p}{\partial s} - \rho g \frac{d z}{ds} \right) $$
+
+This constitutive equation is the structural equivalent to Darcy's law in porous media and allows us to solve the flow in the wells as a function of pressure and temperature, without requiring a separate field for the velocity which is usually required in the Navier-Stokes equations. We then reformulate the conservation of mass to include perforated well sections, such that
+
+$$\frac{\partial q_w}{\partial s} = -Q_{leak}, \qquad Q_{leak} = \frac{\rho_f}{\mu} P C\,(p_w-p_m)$$
+
+in which $Q_{leak}$ is the mass leak-off from well to matrix per unit well length, $C$ is the perforation conductance per unit wall area ($m^2/m$), and $p_w$/$p_m$ are the well and matrix pressures. The perforation conductance can be used to account for perforation resistance, skin effects, etc. $C=0$ is an unperforated well with no hydraulic connection to surrounding reservoir, and a large $C$ ties $p_w\to p_m$.
+
+$f$ follows the Churchill (1977) correlation as a function of the Reynolds number and relative roughness $\varepsilon/D$, in which $\varepsilon$ is the relative roughness and the Reynolds number is
+
+$$\text{Re} = \frac{\rho_f\lvert v\rvert D}{\mu} = \frac{4\lvert q_w\rvert}{\pi D \mu}$$
+
+The Churchill correlation is an explicit correlation for the friction factor across the laminar, transitional, and turbulent regimes, and is expressed as
+$$ f = 8 \left[ \left(\frac{8}{\text{Re}}\right)^{12} + (A + B)^{-1.5} \right]^{1/12} \\
+  A = \left[ -2.457 \ln \left( \left(\frac{7}{\text{Re}}\right)^{0.9} + 0.27 \frac{\varepsilon}{D} \right) \right]^{16} \\
+  B = \left( \frac{37530}{\text{Re}} \right)^{16} $$
+
+which RAFT solves in log-space to avoid evaluating the large exponents. The following figure shows the friction factor as it transitions from the laminar to turbulent regime at various relative roughnesses.
+![Churchill Friction Factor](figures/ChurchillFriction.png)
+_Darcy friction factor using the Churchill correlation (1977)_
+
+
+The conservation of energy in the wells is given by
+
+$$\frac{\partial}{\partial t}(A\rho_f u_f) = -\frac{\partial}{\partial s}(h_f q_w) + \frac{\partial}{\partial s}\left(A\lambda_f\frac{\partial T_w}{\partial s}\right) - Q_E$$
+
+where the total heat exchange rate with the matrix per unit length, $Q_E$, is
+
+$$Q_{E} = \underbrace{h_c P (T_w - T_m)}_{\text{Conductive Exchange}} + \underbrace{Q_{\text{leak}} h_f^*}_{\text{Advective Enthalpy Exchange}} \\
+h_c = F\,\frac{\text{Nu}(\text{Re},\text{Pr})\,\lambda_f}{D}, \qquad \text{Pr}=\frac{\mu c_{pf}}{\lambda_f}$$
+
+in which $h_c$ is the well-matrix heat transfer coefficient, $F$ is the heat transfer factor, and $h_f^*$ is the upwind enthalpy of the leak-off flow, defined as for fractures (well properties if $p_w\ge p_m$, matrix properties otherwise, with the direction lagged to the previous timestep). Heat exchange does not assume thermal equilibrium between the well fluid and the rock. The factor $F$ scales the exchange: $F<1$ models an insulated section, $F=0$ is perfectly insulated, and an arbitrarily high value of $F$ enforces local thermal equilibrium.
+
+**Nusselt number.** The Nusselt number, $\text{Nu}$, is a function of the flow regime. In the laminar regime($\text{Re}\leq2000$), the Nusselt number is a constant (in fractures, the flow is always assumed to be laminar, thus $\text{Nu}$ is always a constant). The values of $\text{Nu}$ in the laminar regime is taken as  the average of the fully-developed values for constant wall temperature ($3.66$) and constant wall heat flux ($4.36$), $\text{Nu}=4.01$, since the conductive heat exchange does not fit either condition exactly. Turbulent flow ($\text{Re}\ge2300$) uses the Gnielinski (1976) correlation, which includes the effect of roughness through $f$:
+
+$$\text{Nu} = \frac{(f/8)(\text{Re}-1000)\text{Pr}}{1+12.7\sqrt{f/8}\,(\text{Pr}^{2/3}-1)}$$
+
+with $\text{Re}$ and $\text{Pr}$ clipped to its range of validity ($\text{Pr}\in[0.5,2000]$). Between $\text{Re}=2000$ and $2300$, $\text{Nu}$ is interpolated log-linearly in $\text{Re}$. The following figure shows the Nusselt number as it transitions from the laminar to turbulent regime at various Prandtl numbers.
+![Gnielinski Nusselt number](figures/GnielinskiNusselt.png)
+_Nusselt number using the Gnielinski correlation (1976) at $\varepsilon = 0.02$_
+
+**Discretization.** The wells are discretized using 1D linear L2 elements, and thus the flow rate $q_w$ must be a constant in the element. Since the flow rate is a function of both the pressure and the temperature, the use of two quadrature points could lead to different flow rate evaluations at each quadrature point, thus breaking the continuity of mass, and the finite element solution would only satisfy continuity for the mean value of the two flow rates. Thus, each well element uses a single flow rate $q_w$, computed using the temperature field evaluated at the element midpoint.
+
+
 ## Advection Stabilization (SUPG)
 Standard Galerkin FEM produces spurious oscillations for advection-dominated heat transport (Brooks & Hughes, 1982). RAFT applies Streamline Upwind Petrov–Galerkin (SUPG) stabilization to the temperature residual, adding
 
-$$\textbf{F}_{stab} = \int_\Omega \textbf{B}^\top\cdot \vec{a}\,\tau\,\mathcal{R}(T^h)\,d\Omega, \qquad \vec{a} = c_{pf}\,\vec{q}_D$$
+$$\textbf{F}_{stab} = \int_\Omega \textbf{B}^\top\cdot \vec{a}\,\tau\,\mathcal{R}(T^h)\,d\Omega, \qquad \vec{a} = c_{pf}\,\vec{q}$$
 
 with stabilization coefficient combining the advective-diffusive limit (Shakib, Hughes & Zohan, 1991) with the transient limit (Tezduyar, 2002), and element Péclet number:
 
@@ -224,21 +290,21 @@ $$\begin{bmatrix}\textbf{K}_{pp} & \textbf{K}_{pT} \\ \textbf{K}_{Tp} & \textbf{
 
 where $k$ denotes the Newton-Raphson iteration index.
 
-**Common derivatives.** The Darcy mass flux $\vec{q}_D$ and its tangents:
+**Common derivatives.** The Darcy mass flux $\vec{q}$ and its tangents:
 
-$$\vec{q}_D = \frac{\rho_f\boldsymbol{k}_f}{\mu}\nabla p', \qquad \nabla p' = \textbf{B}\textbf{p}^n - \rho_f\vec{g}$$
+$$\vec{q} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\nabla p', \qquad \nabla p' = \textbf{B}\textbf{p}^n - \rho_f\vec{g}$$
 
-$$\frac{\partial\vec{q}_D}{\partial\textbf{p}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\textbf{B}+\frac{\partial\rho_f}{\partial p}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial p} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial p} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial p}\right]\nabla p'\,\textbf{N}$$
+$$\frac{\partial\vec{q}}{\partial\textbf{p}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\textbf{B}+\frac{\partial\rho_f}{\partial p}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial p} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial p} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial p}\right]\nabla p'\,\textbf{N}$$
 
-$$\frac{\partial\vec{q}_D}{\partial\textbf{T}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\frac{\partial\rho_f}{\partial T}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial T} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial T} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial T}\right]\nabla p'\,\textbf{N}$$
+$$\frac{\partial\vec{q}}{\partial\textbf{T}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\frac{\partial\rho_f}{\partial T}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial T} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial T} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial T}\right]\nabla p'\,\textbf{N}$$
 
 **Conservation of Mass wrt Pressure ($\textbf{K}_{pp}$):**
 
-$$\textbf{K}_{pp} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial p}\rho_f + \phi_L\frac{\partial\rho_f}{\partial p}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}_D}{\partial\textbf{p}}\,d\Omega$$
+$$\textbf{K}_{pp} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial p}\rho_f + \phi_L\frac{\partial\rho_f}{\partial p}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{p}}\,d\Omega$$
 
 **Conservation of Mass wrt Temperature ($\textbf{K}_{pT}$):**
 
-$$\textbf{K}_{pT} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial T}\rho_f + \phi_L\frac{\partial\rho_f}{\partial T}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}_D}{\partial\textbf{T}}\,d\Omega$$
+$$\textbf{K}_{pT} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial T}\rho_f + \phi_L\frac{\partial\rho_f}{\partial T}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{T}}\,d\Omega$$
 
 **Conservation of Energy wrt Pressure ($\textbf{K}_{Tp}$):**
 
@@ -246,18 +312,18 @@ $$\textbf{K}_{Tp} = \frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} + \frac{\p
 
 $$\frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]\textbf{N}\,d\Omega$$
 
-$$\frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial p}\vec{q}_D\textbf{N} + h_f\frac{\partial\vec{q}_D}{\partial\textbf{p}}\right)d\Omega$$
+$$\frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial p}\vec{q}\textbf{N} + h_f\frac{\partial\vec{q}}{\partial\textbf{p}}\right)d\Omega$$
 
 $$\frac{\partial\textbf{F}_\lambda}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\frac{\partial\phi_L}{\partial p}\left(\lambda_f-\lambda_s\right)\nabla T\,\textbf{N}\,d\Omega$$
 
-$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{p}}\mathcal{R}\vec{q}_D + \tau\frac{\partial\mathcal{R}}{\partial\textbf{p}}\vec{q}_D + \tau\mathcal{R}\frac{\partial\vec{q}_D}{\partial\textbf{p}}\right]d\Omega$$
+$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{p}}\mathcal{R}\vec{q} + \tau\frac{\partial\mathcal{R}}{\partial\textbf{p}}\vec{q} + \tau\mathcal{R}\frac{\partial\vec{q}}{\partial\textbf{p}}\right]d\Omega$$
 
 Neglecting the stabilization coefficient derivative, $\partial\tau/\partial\textbf{p}\approx 0$:
 
 $$\frac{\partial\mathcal{R}}{\partial\textbf{p}} = c_{v0}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T^h\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]\textbf{N} \\
-+ \left(\frac{\partial h_f}{\partial p} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial p}\right)\vec{q}_D\cdot\textbf{B} \\
-+ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}_D}{\partial\textbf{p}} \\
-+ \left(\frac{\partial h_f}{\partial p}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial p}\right)\cdot\vec{q}_D\textbf{N}$$
++ \left(\frac{\partial h_f}{\partial p} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial p}\right)\vec{q}\cdot\textbf{B} \\
++ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}}{\partial\textbf{p}} \\
++ \left(\frac{\partial h_f}{\partial p}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial p}\right)\cdot\vec{q}\textbf{N}$$
 
 **Conservation of Energy wrt Temperature ($\textbf{K}_{TT}$):**
 
@@ -265,17 +331,15 @@ $$\textbf{K}_{TT} = \frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} + \frac{\p
 
 $$\frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[(1-\phi_L)\rho_s c_{ps} + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right) + \frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T\right)\right]\textbf{N}\,d\Omega$$
 
-$$\frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial T}\vec{q}_D\textbf{N} + h_f\frac{\partial\vec{q}_D}{\partial\textbf{T}}\right)d\Omega$$
+$$\frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial T}\vec{q}\textbf{N} + h_f\frac{\partial\vec{q}}{\partial\textbf{T}}\right)d\Omega$$
 
 $$\frac{\partial\textbf{F}_\lambda}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\lambda_e\textbf{B} + \frac{\partial\phi_L}{\partial T}\left(\lambda_f-\lambda_s\right)\nabla T\,\textbf{N}\right)d\Omega$$
 
-$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{T}}\mathcal{R}\vec{q}_D + \tau\frac{\partial\mathcal{R}}{\partial\textbf{T}}\vec{q}_D + \tau\mathcal{R}\frac{\partial\vec{q}_D}{\partial\textbf{T}}\right]d\Omega$$
+$$\frac{\partial\textbf{F}_{stab}}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left[\frac{\partial\tau}{\partial\textbf{T}}\mathcal{R}\vec{q} + \tau\frac{\partial\mathcal{R}}{\partial\textbf{T}}\vec{q} + \tau\mathcal{R}\frac{\partial\vec{q}}{\partial\textbf{T}}\right]d\Omega$$
 
 Neglecting the stabilization coefficient derivative, $\partial\tau/\partial\textbf{T}\approx 0$:
 
 $$\frac{\partial\mathcal{R}}{\partial\textbf{T}} = c_{v0}\left[\frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T^h\right) + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right)\right]\textbf{N} \\
-+ \left(\frac{\partial h_f}{\partial T} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial T}\right)\vec{q}_D\cdot\textbf{B} \\
-+ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}_D}{\partial\textbf{T}} \\
-+ \left(\frac{\partial h_f}{\partial T}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial T}\right)\cdot\vec{q}_D\textbf{N}$$
-
-Mass matrices ($c_{v1}$/$c_{v0}$ terms above) are lumped, matching the residual storage vectors, to prevent transient spurious oscillations. The advective enthalpy boundary correction $\textbf{F}_{enth,\Gamma}$ contributes its own tangent beyond the blocks above, including (for `"fully_coupled"` only) a cross-term through $\textbf{K}_{pp}$/$\textbf{K}_{pT}$ at pressure-Dirichlet nodes, since the mass flow rate there is itself a function of $\textbf{p}^n,\textbf{T}^n$.
++ \left(\frac{\partial h_f}{\partial T} + h_f\frac{1}{\rho_f}\frac{\partial\rho_f}{\partial T}\right)\vec{q}\cdot\textbf{B} \\
++ \left(\nabla h_f + h_f\frac{\nabla\rho_f}{\rho_f}\right)\cdot\frac{\partial\vec{q}}{\partial\textbf{T}} \\
++ \left(\frac{\partial h_f}{\partial T}\frac{\nabla\rho_f}{\rho_f} - h_f\frac{\nabla\rho_f}{\rho_f^2}\frac{\partial\rho_f}{\partial T}\right)\cdot\vec{q}\textbf{N}$$
