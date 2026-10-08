@@ -195,6 +195,7 @@ def _assign_ic_gradient(
 
 
 def _assign_ic_bc_compatible(  # noqa
+    config_ini: dict[str, Any],
     controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -219,6 +220,10 @@ def _assign_ic_bc_compatible(  # noqa
         primary_variables["p"][:, :] = _broadcast_to_history(
             _fit_affine_from_dirichlet(mesh["nodes_total"], p_dirichlet)
         )
+    # The seed is only a solver guess; `off` fields are never solved, so they hold *_ini
+    physics = controls["physics"]
+    primary_variables["p"][physics.off_nodes(mesh, "flow"), :] = config_ini["p_ini"]
+    primary_variables["T"][physics.off_nodes(mesh, "heat"), :] = config_ini["T_ini"]
 
     controls_SS = _build_steady_state_controls(controls)
     # Initialized reference values -> set as current values and neglect
@@ -308,6 +313,7 @@ def _assign_initial_conditions(
         primary_variables = _assign_ic_gradient(config_ini, mesh, primary_variables)
     elif assign_type == "BC_compatible":
         primary_variables = _assign_ic_bc_compatible(
+            config_ini,
             controls,
             mesh,
             material,

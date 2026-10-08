@@ -135,8 +135,6 @@ def _parse_field_mode(value: Any, where: str) -> str:
     mode = "off" if value is False else value
     if mode not in FIELD_MODES:
         raise ValueError(f"physics.{where} = {value!r}; expected one of {FIELD_MODES}")
-    if mode == "off":
-        raise NotImplementedError(f"physics.{where} = 'off' is not yet supported")
     return str(mode)
 
 

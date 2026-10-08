@@ -334,17 +334,22 @@ Physics switches for each domain: `matrix`, `fractures`, and `wells`. Fractures 
 
 ```yaml
 physics:
-  matrix:
-    flow: transient
+  matrix:          # frozen pressure field, conduction only
+    flow: off
     heat: transient
-    advection: on
+    advection: off
   wells:
     flow: steady
+    advection: on
 ```
 
-* **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"steady"` or `"transient"`.
-* **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"steady"` or `"transient"`.
-* **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on. Fracture/well-matrix coupling includes advective exchange if either side has advection on.
+* **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
+* **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
+* **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
+
+An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
+
+Fracture/well-matrix coupling is assembled for a field if either side solves it, and includes advective exchange if either side has advection on.
 
 ### `simulation`
  Simulation controls

@@ -17,6 +17,7 @@
 
 """Per-domain physics switches resolved from the config `physics` block."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -34,6 +35,16 @@ class DomainPhysics:
     flow: str = "transient"  # one of FIELD_MODES
     heat: str = "transient"
     advection: bool = False
+
+    @property
+    def solve_flow(self) -> bool:
+        """Mass balance assembled; `off` holds pressure at its current values."""
+        return self.flow != "off"
+
+    @property
+    def solve_heat(self) -> bool:
+        """Energy balance assembled; `off` holds temperature at its current values."""
+        return self.heat != "off"
 
     @property
     def steady_flow(self) -> bool:
@@ -74,10 +85,29 @@ class Physics:
         """All domains made steady."""
         return Physics(self.matrix.as_steady(), self.fractures.as_steady(), self.wells.as_steady())
 
-    def advection_node_mask(self, mesh: dict[str, Any]) -> npt.NDArray[np.bool_]:
-        """Global nodes lying in a domain with advection on (nodes ordered matrix, fractures, wells)."""
-        mask = np.full(mesh["nn_total"], self.matrix.advection)
+    def with_off(self, field: str) -> "Physics":
+        """`field` ("flow" or "heat") switched off in every domain."""
+        domains = (self.matrix, self.fractures, self.wells)
+        if field == "flow":
+            return Physics(*(replace(d, flow="off") for d in domains))
+        return Physics(*(replace(d, heat="off") for d in domains))
+
+    def solves(self, field: str) -> bool:
+        """Whether `field` ("flow" or "heat") is on in any domain."""
+        return any(getattr(d, field) != "off" for d in (self.matrix, self.fractures, self.wells))
+
+    def node_mask(self, mesh: dict[str, Any], test: Callable[[DomainPhysics], bool]) -> npt.NDArray[np.bool_]:
+        """Global nodes whose domain passes `test` (nodes ordered matrix, fractures, wells)."""
+        mask = np.full(mesh["nn_total"], test(self.matrix))
         nn_f = mesh["fracture_mesh"]["nn"] if "fracture_mesh" in mesh else 0
-        mask[mesh["nn"] : mesh["nn"] + nn_f] = self.fractures.advection
-        mask[mesh["nn"] + nn_f :] = self.wells.advection
+        mask[mesh["nn"] : mesh["nn"] + nn_f] = test(self.fractures)
+        mask[mesh["nn"] + nn_f :] = test(self.wells)
         return mask
+
+    def advection_node_mask(self, mesh: dict[str, Any]) -> npt.NDArray[np.bool_]:
+        """Global nodes lying in a domain with advection on."""
+        return self.node_mask(mesh, lambda d: d.advection)
+
+    def off_nodes(self, mesh: dict[str, Any], field: str) -> npt.NDArray[np.intp]:
+        """Global nodes whose `field` ("flow" or "heat") is off."""
+        return np.flatnonzero(self.node_mask(mesh, lambda d: getattr(d, field) == "off"))

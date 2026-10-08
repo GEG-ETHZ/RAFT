@@ -40,6 +40,7 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
+from .physics import Physics
 from .shapefunctions import (
     GNMATRIX_FUNCS,
     NMATRIX_FUNCS,
@@ -1422,13 +1423,9 @@ def _evaluate_element_kinematics(
     return ElementKinematics(Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP)
 
 
-def _property_derivative_flags(
-    calc_derivatives: bool, temperature_only: bool, pressure_only: bool, fully_coupled: bool
-) -> tuple[bool, bool, bool]:
-    """Resolve (want_dp, want_dT, want_dT_props) for property evaluations."""
-    want_dp = calc_derivatives and (pressure_only or fully_coupled)
-    want_dT = calc_derivatives and (temperature_only or fully_coupled)
-    return want_dp, want_dT, want_dT or not pressure_only
+def _property_derivative_flags(calc_derivatives: bool, solve_p: bool, solve_T: bool) -> tuple[bool, bool]:
+    """Resolve (want_dp, want_dT) for property evaluations: only wrt fields solved in this domain."""
+    return calc_derivatives and solve_p, calc_derivatives and solve_T
 
 
 def _get_pass_dofs(mesh: dict[str, Any], nn: int, *, is_fracture: bool, is_well: bool) -> slice:
@@ -1458,9 +1455,9 @@ def _evaluate_nodal_fluid_state(
     *,
     calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
-    temperature_only: bool = False,
-    pressure_only: bool = False,
-    fully_coupled: bool = False,
+    solve_p: bool = True,
+    solve_T: bool = True,
+    want_energy: bool = True,
 ) -> NodalFluidState:
     """Evaluate density, internal energy, and enthalpy once per node.
 
@@ -1468,9 +1465,7 @@ def _evaluate_nodal_fluid_state(
     Internal energy is evaluated with T, the current temperature field.
     Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
     """
-    want_dp, _, want_dT_props = _property_derivative_flags(
-        calc_derivatives, temperature_only, pressure_only, fully_coupled
-    )
+    want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
     rho_f, u_f, hf = get_EOS(
         T,
         T_flow,
@@ -1478,10 +1473,10 @@ def _evaluate_nodal_fluid_state(
         fluid,
         T_flow_lagged=T_flow_lagged,
         want_density=True,
-        want_internal_energy=not pressure_only,
-        want_enthalpy=not pressure_only,
+        want_internal_energy=want_energy,
+        want_enthalpy=want_energy,
         want_dp=want_dp,
-        want_dT=want_dT_props,
+        want_dT=want_dT or want_energy,
     )
     return NodalFluidState(rho_f, u_f, hf)
 
@@ -1575,9 +1570,9 @@ def _evaluate_flow_and_storage_state(
     *,
     calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
-    temperature_only: bool = False,
-    pressure_only: bool = False,
-    fully_coupled: bool = False,
+    solve_p: bool = True,
+    solve_T: bool = True,
+    want_energy: bool = True,
 ) -> tuple[
     PropertyResult,  # kf
     PropertyResult,  # mu_q
@@ -1590,9 +1585,7 @@ def _evaluate_flow_and_storage_state(
 
     `enodes` indexes this element's rows in `nodal_state`.
     """
-    want_dp, want_dT, _ = _property_derivative_flags(
-        calc_derivatives, temperature_only, pressure_only, fully_coupled
-    )
+    want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
 
     # ---- Quadrature-point flow properties
     kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
@@ -1608,7 +1601,7 @@ def _evaluate_flow_and_storage_state(
     rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
     rho_f = NodalPropertyState(q=rho_f_q, e=rho_f_e)
 
-    if not pressure_only:
+    if want_energy:
         u_f_q = PropertyResult(N_q @ u_f_e.value, N_q @ u_f_e.dp[:, 0:1], N_q @ u_f_e.dT[:, 0:1])
         hf_q = EnthalpyResult(
             N_q @ hf_e.value, N_q @ hf_e.dp[:, 0:1], N_q @ hf_e.dT[:, 0:1], N_q @ hf_e.cp[:, 0:1]
@@ -2729,8 +2722,8 @@ def integrate_residuals(  # noqa
     *,
     is_fracture: bool = False,
     is_well: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
+    physics: Physics,  # fields solved in this call; `off` fields are not assembled
+    T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
     p = primary_variables["p"]
@@ -2743,19 +2736,23 @@ def integrate_residuals(  # noqa
     fracture_on = bool(controls["fracture_on"])
     wells_on = bool(controls["wells_on"])
     on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
-    physics = controls["physics"].domain(is_fracture=is_fracture, is_well=is_well)
-    advection_on = physics.advection
-    coupling_advection = advection_on or controls["physics"].matrix.advection  # either side advects
+    domain = physics.domain(is_fracture=is_fracture, is_well=is_well)
+    solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
+    need_flux = solve_p or (solve_T and advection_on)
+    # matrix coupling is assembled for a field if either side solves (or advects) it
+    pressure_coupling = solve_p or physics.matrix.solve_flow
+    thermal_coupling = solve_T or physics.matrix.solve_heat
+    coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = float(physics.steady_flow)
-    steady_temp = float(physics.steady_heat)
+    steady_pres = float(domain.steady_flow)
+    steady_temp = float(domain.steady_heat)
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["F_Pstorage", "F_Pdiffusion"]
-    if not pressure_only:
+    if physics.solves("heat"):
         list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection", "F_Tstab"] + list_of_matrices
 
     # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
@@ -2778,10 +2775,10 @@ def integrate_residuals(  # noqa
         row_vec_flux_m = _get_well_coupling_vectors(mesh_data)["row_vec_flux_m"]
 
     if on_submesh:
-        coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
-            ["F_Tdiffusion_mm"] if not pressure_only else []
+        coupling_flux_names = (["F_Pdiffusion_mm"] if pressure_coupling else []) + (
+            ["F_Tdiffusion_mm"] if thermal_coupling else []
         )
-        if not pressure_only and coupling_advection:
+        if thermal_coupling and coupling_advection:
             coupling_flux_names = coupling_flux_names + ["F_Tadvection_mm"]
 
         vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
@@ -2798,11 +2795,12 @@ def integrate_residuals(  # noqa
     p_nodes, T_flow_nodes = p[dofs], T_flow[dofs]
     p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
     nodal_fluid = _evaluate_nodal_fluid_state(
-        T[dofs], T_flow_nodes, p_nodes, fluid, T_flow_lagged=temperature_only, pressure_only=pressure_only
+        T[dofs], T_flow_nodes, p_nodes, fluid, T_flow_lagged=T_flow_lagged, want_energy=thermal_coupling
     )
 
-    # ----- Matrix integration element loop
-    for r in range(mesh_data.num_regions):
+    # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
+    active = solve_p or solve_T or on_submesh
+    for r in range(mesh_data.num_regions if active else 0):
         flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q. Wells project per element.
@@ -2820,7 +2818,7 @@ def integrate_residuals(  # noqa
             solid,
             flow.w0,
             no_solid=on_submesh,
-            T_flow_lagged=temperature_only,
+            T_flow_lagged=T_flow_lagged,
             volumetric_strain_on=volumetric_strain_on,
         )
         nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
@@ -2872,26 +2870,28 @@ def integrate_residuals(  # noqa
                 fluid,
                 nodal_state,
                 np.asarray(enodes),
-                T_flow_lagged=temperature_only,
-                pressure_only=pressure_only,
+                T_flow_lagged=T_flow_lagged,
+                want_energy=thermal_coupling,
             )
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear
-                mu_c = get_viscosity(_N_MID_L2 @ kin_n.Te_flow, _N_MID_L2 @ kin_n.pe, fluid, temperature_only)
+                mu_c = get_viscosity(_N_MID_L2 @ kin_n.Te_flow, _N_MID_L2 @ kin_n.pe, fluid, T_flow_lagged)
                 _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
                     _N_MID_L2, B_q[0:1], kin.gradP[0:1], g_r, mu_c, rho_f.e_n, flow.radius, flow.roughness
                 )
                 q_D = np.repeat(q_c, nq, axis=0)  # q_D = mass flow rate, constant along the element
-            else:
+            elif need_flux:
                 _, q_D, _, _ = _evaluate_darcy_flux(
                     N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=flow.isotropic_perm
                 )  # q_D = mass flux
+            else:
+                q_D = _EMPTY
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
             m_lump = _lumped_mass(N_q, wJe_q).reshape(-1, 1)
 
             # ------ Conservation of mass
-            if not temperature_only:
+            if solve_p:
                 # Mass storage vector
                 mass_dot_e, _, _ = _evaluate_mass_storage_integrands(phi_L, rho_f, cv, steady_pres)
                 element_vectors["F_Pstorage"] = m_lump * mass_dot_e * (1 - is_well)  # wells are quasi-steady
@@ -2902,7 +2902,7 @@ def integrate_residuals(  # noqa
                 )
 
             # ------ Conservation of energy
-            if not pressure_only:
+            if solve_T:
                 # thermal conductivity
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
@@ -2976,10 +2976,10 @@ def integrate_residuals(  # noqa
                     heat_transfer_factor,
                     lambda_f,
                     flow.w0,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
                     advection_on=coupling_advection,
-                    T_flow_lagged=temperature_only,
+                    T_flow_lagged=T_flow_lagged,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
 
@@ -3011,10 +3011,10 @@ def integrate_residuals(  # noqa
                     mu_c,
                     Re_c,
                     hf,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
                     advection_on=coupling_advection,
-                    T_flow_lagged=temperature_only,
+                    T_flow_lagged=T_flow_lagged,
                 )
                 _accumulate_element_matrices(element_vectors, well_flux_vectors)
 
@@ -3056,8 +3056,8 @@ def integrate_residuals(  # noqa
             cv,
             T_flow,
             is_fracture=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
         )
         # Fold the matrix-side "_mm" flux from the fracture pass into the matrix residual.
         for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
@@ -3077,8 +3077,8 @@ def integrate_residuals(  # noqa
             cv,
             T_flow,
             is_well=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
         )
         # Fold the matrix-side "_mm" flux from the well pass into the matrix residual.
         for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
@@ -3101,9 +3101,7 @@ def integrate_tangent_matrices(  # noqa
     *,
     is_fracture: bool = False,
     is_well: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
-    fully_coupled: bool = False,
+    physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
     """Integrate tangent matrices.
@@ -3121,24 +3119,25 @@ def integrate_tangent_matrices(  # noqa
     fracture_on = bool(controls["fracture_on"])
     wells_on = bool(controls["wells_on"])
     on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
-    physics = controls["physics"].domain(is_fracture=is_fracture, is_well=is_well)
-    advection_on = physics.advection
-    coupling_advection = advection_on or controls["physics"].matrix.advection  # either side advects
+    domain = physics.domain(is_fracture=is_fracture, is_well=is_well)
+    solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
+    coupled = solve_p and solve_T  # off-diagonal KpT/KTp blocks
+    need_flux = solve_p or (solve_T and advection_on)
+    # matrix coupling is assembled for a field if either side solves (or advects) it
+    pressure_coupling = solve_p or physics.matrix.solve_flow
+    thermal_coupling = solve_T or physics.matrix.solve_heat
+    coupling_cross = pressure_coupling and thermal_coupling
+    coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = float(physics.steady_flow)
-    steady_temp = float(physics.steady_heat)
-
-    if fully_coupled:
-        # Overwrite bad combination if it occurs
-        pressure_only = False
-        temperature_only = False
+    steady_pres = float(domain.steady_flow)
+    steady_temp = float(domain.steady_heat)
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["Kpp"]
-    if not pressure_only:
+    if physics.solves("heat"):
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
     # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
     mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture, is_well=is_well)
@@ -3154,28 +3153,28 @@ def integrate_tangent_matrices(  # noqa
         row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
         row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
-        ktp_on = not pressure_only and coupling_advection and fully_coupled
+        ktp_on = coupling_cross and coupling_advection
         coupling_ff_names = (
-            (["Kpp_ff"] if not temperature_only else [])
-            + (["KTT_ff"] if not pressure_only else [])
+            (["Kpp_ff"] if pressure_coupling else [])
+            + (["KTT_ff"] if thermal_coupling else [])
             + (["KTp_ff"] if ktp_on else [])
             + (["KpT_ff"] if ktp_on else [])
         )
         coupling_fm_names = (
-            (["Kpp_fm"] if not temperature_only else [])
-            + (["KTT_fm"] if not pressure_only else [])
+            (["Kpp_fm"] if pressure_coupling else [])
+            + (["KTT_fm"] if thermal_coupling else [])
             + (["KTp_fm"] if ktp_on else [])
             + (["KpT_fm"] if ktp_on else [])
         )
         coupling_mf_names = (
-            (["Kpp_mf"] if not temperature_only else [])
-            + (["KTT_mf"] if not pressure_only else [])
+            (["Kpp_mf"] if pressure_coupling else [])
+            + (["KTT_mf"] if thermal_coupling else [])
             + (["KTp_mf"] if ktp_on else [])
             + (["KpT_mf"] if ktp_on else [])
         )
         coupling_mm_names = (
-            (["Kpp_mm"] if not temperature_only else [])
-            + (["KTT_mm"] if not pressure_only else [])
+            (["Kpp_mm"] if pressure_coupling else [])
+            + (["KTT_mm"] if thermal_coupling else [])
             + (["KTp_mm"] if ktp_on else [])
             + (["KpT_mm"] if ktp_on else [])
         )
@@ -3200,29 +3199,29 @@ def integrate_tangent_matrices(  # noqa
         row_vec_mw, col_vec_mw = cached_wv["row_vec_mw"], cached_wv["col_vec_mw"]
         row_vec_mm, col_vec_mm = cached_wv["row_vec_mm"], cached_wv["col_vec_mm"]
 
-        ktp_on = not pressure_only and coupling_advection and fully_coupled
-        well_ktp_on = not pressure_only and fully_coupled  # conduction h depends on well pressure
+        ktp_on = coupling_cross and coupling_advection
+        well_ktp_on = coupling_cross  # conduction h depends on well pressure
         coupling_ww_names = (
-            (["Kpp_ww"] if not temperature_only else [])
-            + (["KTT_ww"] if not pressure_only else [])
+            (["Kpp_ww"] if pressure_coupling else [])
+            + (["KTT_ww"] if thermal_coupling else [])
             + (["KTp_ww"] if well_ktp_on else [])
             + (["KpT_ww"] if ktp_on else [])
         )
         coupling_wm_names = (
-            (["Kpp_wm"] if not temperature_only else [])
-            + (["KTT_wm"] if not pressure_only else [])
+            (["Kpp_wm"] if pressure_coupling else [])
+            + (["KTT_wm"] if thermal_coupling else [])
             + (["KTp_wm"] if well_ktp_on else [])
             + (["KpT_wm"] if ktp_on else [])
         )
         coupling_mw_names = (
-            (["Kpp_mw"] if not temperature_only else [])
-            + (["KTT_mw"] if not pressure_only else [])
+            (["Kpp_mw"] if pressure_coupling else [])
+            + (["KTT_mw"] if thermal_coupling else [])
             + (["KTp_mw"] if well_ktp_on else [])
             + (["KpT_mw"] if ktp_on else [])
         )
         coupling_mm_names = (
-            (["Kpp_mm"] if not temperature_only else [])
-            + (["KTT_mm"] if not pressure_only else [])
+            (["Kpp_mm"] if pressure_coupling else [])
+            + (["KTT_mm"] if thermal_coupling else [])
             + (["KTp_mm"] if well_ktp_on else [])
             + (["KpT_mm"] if ktp_on else [])
         )
@@ -3253,13 +3252,14 @@ def integrate_tangent_matrices(  # noqa
         fluid,
         calc_derivatives=True,
         T_flow_lagged=T_flow_lagged,
-        temperature_only=temperature_only,
-        pressure_only=pressure_only,
-        fully_coupled=fully_coupled,
+        solve_p=solve_p,
+        solve_T=solve_T,
+        want_energy=thermal_coupling,
     )
 
-    # ----- Matrix integration element loop
-    for r in range(mesh_data.num_regions):
+    # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
+    active = solve_p or solve_T or on_submesh
+    for r in range(mesh_data.num_regions if active else 0):
         flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
         # the reduced dimensionality of the fracture's own gradP/B_q. Wells project per element.
@@ -3331,9 +3331,9 @@ def integrate_tangent_matrices(  # noqa
                 np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
                 calc_derivatives=True,
-                temperature_only=temperature_only,
-                pressure_only=pressure_only,
-                fully_coupled=fully_coupled,
+                solve_p=solve_p,
+                solve_T=solve_T,
+                want_energy=thermal_coupling,
             )
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear.
@@ -3343,8 +3343,8 @@ def integrate_tangent_matrices(  # noqa
                     _N_MID_L2 @ kin_n.pe,
                     fluid,
                     T_flow_lagged,
-                    want_dp=not temperature_only,
-                    want_dT=not pressure_only,
+                    want_dp=solve_p,
+                    want_dT=solve_T,
                 )
                 _, q_c, dqD_dp_c, dqD_dT_c, Re_c, dRe_dp, dRe_dT = _evaluate_well_flow(
                     _N_MID_L2,
@@ -3355,14 +3355,14 @@ def integrate_tangent_matrices(  # noqa
                     rho_f.e_n,
                     flow.radius,
                     flow.roughness,
-                    want_tangent_dp=not temperature_only,
-                    want_tangent_dT=not pressure_only,
+                    want_tangent_dp=solve_p,
+                    want_tangent_dT=solve_T,
                 )
                 # Broadcast the element flow and its tangents to the quad points
                 q_D = np.repeat(q_c, nq, axis=0)
-                dqD_dp = np.repeat(dqD_dp_c, nq, axis=0) if not temperature_only else _EMPTY
-                dqD_dT = np.repeat(dqD_dT_c, nq, axis=0) if not pressure_only else _EMPTY
-            else:
+                dqD_dp = np.repeat(dqD_dp_c, nq, axis=0) if solve_p else _EMPTY
+                dqD_dT = np.repeat(dqD_dT_c, nq, axis=0) if solve_T else _EMPTY
+            elif need_flux:
                 _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
                     N_q,
                     B_q,
@@ -3372,9 +3372,11 @@ def integrate_tangent_matrices(  # noqa
                     mu_q,
                     rho_f,
                     isotropic_perm=flow.isotropic_perm,
-                    want_tangent_dp=not temperature_only,
-                    want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
+                    want_tangent_dp=solve_p,
+                    want_tangent_dT=solve_T and (advection_on or solve_p),
                 )
+            else:
+                q_D = dqD_dp = dqD_dT = _EMPTY
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
             phi_L_n = phi_L.q_n
@@ -3385,12 +3387,12 @@ def integrate_tangent_matrices(  # noqa
                 rho_f,
                 cv,
                 steady_pres,
-                want_tangent_dp=not temperature_only,
-                want_tangent_dT=fully_coupled,
+                want_tangent_dp=solve_p,
+                want_tangent_dT=coupled,
             )
 
             # ------------------------------------ Conservation of mass wrt pressure
-            if not temperature_only:
+            if solve_p:
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
                 element_matrices["Kpp"] = _diag_matrix(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
 
@@ -3399,7 +3401,7 @@ def integrate_tangent_matrices(  # noqa
                 # dqD_dp already contains the RHS matrices, integrate like a vector
                 element_matrices["Kpp"] += _vctrzd_qp_vctr_integrate(B_q, dqD_dp, wJe_q, False)
 
-            if not pressure_only:
+            if solve_T:
                 # -------------------------------- Conservation of energy wrt temperature
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
@@ -3423,7 +3425,7 @@ def integrate_tangent_matrices(  # noqa
                     no_solid=on_submesh,
                     kin_n=kin_n,
                     want_tangent_dT=True,
-                    want_tangent_dp=fully_coupled,
+                    want_tangent_dp=coupled,
                 )
                 element_matrices["KTT"] = _diag_matrix(m_lump * integrand_dFCdT_e.ravel())
 
@@ -3464,7 +3466,7 @@ def integrate_tangent_matrices(  # noqa
                         dqD_dT=dqD_dT,
                         dqD_dp=dqD_dp,
                         want_tangent_dT=True,
-                        want_tangent_dp=fully_coupled,
+                        want_tangent_dp=coupled,
                     )
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection_dT, wJe_q, False
@@ -3472,7 +3474,7 @@ def integrate_tangent_matrices(  # noqa
                     element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dT, wJe_q, False)
 
             # Fully coupled - off diagonal matrices
-            if fully_coupled:
+            if coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
                 element_matrices["KpT"] = _diag_matrix(m_lump * integrand_dFsdT_e.ravel())
@@ -3518,9 +3520,9 @@ def integrate_tangent_matrices(  # noqa
                     heat_transfer_factor,
                     lambda_f,
                     flow.w0,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
-                    fully_coupled=fully_coupled,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    fully_coupled=coupling_cross,
                     advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -3564,9 +3566,9 @@ def integrate_tangent_matrices(  # noqa
                     dRe_dp,
                     dRe_dT,
                     hf,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
-                    fully_coupled=fully_coupled,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    fully_coupled=coupling_cross,
                     advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -3635,9 +3637,7 @@ def integrate_tangent_matrices(  # noqa
             cv,
             T_flow,
             is_fracture=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
-            fully_coupled=fully_coupled,
+            physics=physics,
             T_flow_lagged=T_flow_lagged,
         )
         # Combine fracture and matrix matrices into one
@@ -3655,9 +3655,7 @@ def integrate_tangent_matrices(  # noqa
             cv,
             T_flow,
             is_well=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
-            fully_coupled=fully_coupled,
+            physics=physics,
             T_flow_lagged=T_flow_lagged,
         )
         # Combine well and (matrix + fracture) matrices into one
