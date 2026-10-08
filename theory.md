@@ -178,7 +178,7 @@ $$    \text{Conservation of Mass:} \quad A \frac{\partial \rho_f}{\partial t} + 
 
 $$    \text{Conservation of Momentum:} \quad  A \frac{\partial (\rho_f v)}{\partial t} + \frac{\partial}{\partial s} (\rho_f v^2A) = - A \frac{\partial p}{\partial s} - \frac{f}{8} \pi D \rho_f v^2 - \rho gA \frac{d z}{ds}  $$
 
-in which $A$ is the cross-sectional area, $D$ is the well radius, $v$ is the average fluid velocity, $f$ is the Darcy friction factor and $z$ is the direction of gravity.
+in which $A$ is the cross-sectional area, $D$ is the well diameter, $v$ is the average fluid velocity, $f$ is the Darcy friction factor and $z$ is the direction of gravity.
 
 We assume that the characteristic timescale of flow is negligible compared to pressure and temperature in the rock mass, even in long wells. The equations thus become quasi-steady-state such that the conservation of mass simplifies to
 
@@ -190,7 +190,7 @@ $$ \underbrace{\frac{q_w^2}{\rho^2 A} \frac{\partial \rho_f}{\partial s} }_{\tex
 
 which can be rearranged to express a constitutive relationship for the flow rate in the wells as a function of pressure, such that
 
-$$ \text{Well Constutitive Relationship:}  \quad  q_w = -\frac{4\rho \pi R^5}{\left[f -  \frac{4R}{\rho} \frac{\partial \rho}{\partial s} \right] |q_w|} \left( \frac{\partial p}{\partial s} - \rho g \frac{d z}{ds} \right) $$
+$$ \text{Well Constutitive Relationship:}  \quad  q_w = -\frac{4\rho \pi^2 R^5}{\left[f -  \text{sign}(q_w)\frac{4R}{\rho} \frac{\partial \rho}{\partial s} \right] |q_w|} \left( \frac{\partial p}{\partial s} + \rho g \frac{d z}{ds} \right) $$
 
 This constitutive equation is the structural equivalent to Darcy's law in porous media and allows us to solve the flow in the wells as a function of pressure and temperature, without requiring a separate field for the velocity which is usually required in the Navier-Stokes equations. We then reformulate the conservation of mass to include perforated well sections, such that
 

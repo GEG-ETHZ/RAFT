@@ -41,7 +41,7 @@ boundary_conditions:
       type: temperature
   - faces: [z_max]
     hydraulics:
-      values: [-0.0007]
+      values: [-0.00007]
       type: flux
     thermal:
       values: [410]

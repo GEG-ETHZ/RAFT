@@ -316,11 +316,13 @@ def check_advection(
 
     if plot_on:
         plt.figure()
-        plt.plot(x, T_exact, "r-")
-        plt.plot(d_1 / L, T[line_1], "ko")
-        plt.ylabel("T")
+        plt.plot(x, T_exact, "r-", label="exact")
+        plt.plot(d_1 / L, T[line_1], "ko", label="RAFT")
+        plt.xlabel("z/L")
+        plt.ylabel(r"$(T - T_0)/(T_L - T_0)$")
         plt.title(test_name)
-        plt.text(0.05, 0.9, f"Pe = {Pe * L:.2f}")
+        plt.text(0.05, 0.9, f"Pe = {Pe:.2f}")
+        plt.legend(loc="lower right")
 
     # calculate error
     T_exact = (np.exp(Pe * d_1 / L) - 1) / (np.exp(Pe) - 1)
@@ -360,12 +362,15 @@ def check_buoyancy(
     # Define analytical solution
     mat = config["material"]
 
-    g = -9.81
-    rho0 = mat["fluid"]["density"]
-    alpha_f = mat["fluid"]["therm_expansion"]
+    g = 9.81
     T0 = _bc_value(config, "thermal", "temperature", 0)
     T1 = _bc_value(config, "thermal", "temperature", 1)
-    dT = T0 - T1
+    dT = T1 - T0
+    # density and expansion referenced to T0 (x = 0)
+    T_ref = mat["fluid"]["reference_temperature"]
+    shift = 1 - mat["fluid"]["therm_expansion"] * (T0 - T_ref)
+    rho0 = mat["fluid"]["density"] * shift
+    alpha_f = mat["fluid"]["therm_expansion"] / shift
     p0 = _bc_value(config, "hydraulics", "pressure", 0)
     p1 = _bc_value(config, "hydraulics", "pressure", 1)
 
@@ -373,19 +378,25 @@ def check_buoyancy(
     x = np.linspace(0, L, 100) / L
     A = alpha_f * dT
     B = rho0 * g * L
-    p_exact = p0 + B * (
-        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
-    )
+
+    def _p_exact(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        C = (p1 - p0) / B - (A / 2 - 1)
+        p: npt.NDArray[np.float64] = p0 + B * (C * np.log(1 - A * x) / np.log(1 - A) + (A * x / 2 - 1) * x)
+        return p
+
+    p_exact = _p_exact(x)
 
     # extract T and normalize
     p = results["p"][:, 0]
 
     if plot_on:
         plt.figure()
-        plt.plot(x, p_exact, "r-")
-        plt.plot(d_1 / L, p[line_1], "ko")
-        plt.ylabel("p")
+        plt.plot(x, p_exact, "r-", label="exact")
+        plt.plot(d_1 / L, p[line_1], "ko", label="RAFT")
+        plt.xlabel("z/L")
+        plt.ylabel("p (Pa)")
         plt.title(test_name)
+        plt.legend()
 
         # mu = mat["fluid"]["viscosity"]
         # k = mat["solid"]["permeability"]
@@ -403,9 +414,7 @@ def check_buoyancy(
 
     # calculate error
     x = d_1 / L
-    p_exact = p0 + B * (
-        x / 2 * (A * x - 2) - ((A - 2) / 2 + (p0 - p1) / B) * np.log(1 - A * x) / np.log(1 - A)
-    )
+    p_exact = _p_exact(x)
     err_ex = sum((p_exact - p[line_1]) ** 2) / sum(p_exact**2)
     # The error here is calculated based on the nodal solutions.
 
@@ -437,7 +446,7 @@ def check_heterogeneous(
     test_name: str,
     plot_on: bool,
 ) -> bool:
-    """Check patch test. Result should be an exact linear solution."""
+    """Check heterogeneous layers. Result should be an exact piecewise-linear solution."""
     # Set tolerance
     tol = 1.0e-4
 
@@ -475,11 +484,12 @@ def check_heterogeneous(
 
     if plot_on:
         plt.figure()
-        plt.plot(d_1, T_ex, "r-")
-        plt.plot(d_1, T[line_1], "ko")
-        plt.xlabel("d (m)")
+        plt.plot(d_1, T_ex, "r-", label="exact")
+        plt.plot(d_1, T[line_1], "ko", label="RAFT")
+        plt.xlabel("z (m)")
         plt.ylabel("T")
         plt.title(test_name)
+        plt.legend()
 
     # calculate error
     err_ex = sum((T_ex - T[line_1]) ** 2 / T_ex**2)
@@ -500,11 +510,12 @@ def check_heterogeneous(
 
     if plot_on:
         plt.figure()
-        plt.plot(d_1, p_ex, "b-")
-        plt.plot(d_1, p[line_1], "ko")
-        plt.xlabel("d (m)")
-        plt.ylabel("p")
+        plt.plot(d_1, p_ex, "b-", label="exact")
+        plt.plot(d_1, p[line_1], "ko", label="RAFT")
+        plt.xlabel("z (m)")
+        plt.ylabel("p (Pa)")
         plt.title(test_name)
+        plt.legend()
 
     err_ex += sum((p_ex - p[line_1]) ** 2 / p_ex**2)
 
@@ -589,22 +600,28 @@ def check_NL_viscosity(
 
     if plot_on:
         plt.figure()
-        plt.plot(x, T_exact, "r-")
-        plt.plot(d_1 / L, T[line_1], "ko")
-        plt.ylabel("T")
+        plt.plot(x, T_exact, "r-", label="exact")
+        plt.plot(d_1 / L, T[line_1], "ko", label="RAFT")
+        plt.xlabel("z/L")
+        plt.ylabel("T (K)")
         plt.title(test_name)
+        plt.legend()
 
         plt.figure()
-        plt.plot(x, visc_exact, "r--")
-        plt.plot(d_1 / L, visc_approx, "ko")
-        plt.ylabel("viscosity")
+        plt.plot(x, visc_exact, "r--", label="exact")
+        plt.plot(d_1 / L, visc_approx, "ko", label="RAFT")
+        plt.xlabel("z/L")
+        plt.ylabel(r"$\mu$ (Pa$\cdot$s)")
         plt.title(test_name)
+        plt.legend()
 
         plt.figure()
-        plt.plot(x, p_exact, "b-")
-        plt.plot(d_1 / L, p[line_1], "ko")
-        plt.ylabel("p")
+        plt.plot(x, p_exact, "b-", label="semi-analytical")
+        plt.plot(d_1 / L, p[line_1], "ko", label="RAFT")
+        plt.xlabel("z/L")
+        plt.ylabel("p (Pa)")
         plt.title(test_name)
+        plt.legend()
 
     # calculate error
     p_exact_atnodes = np.interp(d_1, x * L, p_exact)
@@ -668,12 +685,13 @@ def check_axisymmetry(
 
     if plot_on:
         plt.figure()
-        plt.plot(r, T_exact)
-        plt.plot(d_1, T[line_1], "ko")
-        plt.plot(d_2, T[line_2], "bo")
+        plt.plot(r, T_exact, "r-", label="exact")
+        plt.plot(d_1, T[line_1], "ko", label="RAFT, lower edge")
+        plt.plot(d_2, T[line_2], "bo", mfc="none", label="RAFT, upper edge")
         plt.xlabel("r (m)")
         plt.ylabel("T")
         plt.title(test_name)
+        plt.legend()
 
     # calculate error
     mean_val = np.mean(T_exact)
@@ -692,12 +710,13 @@ def check_axisymmetry(
 
     if plot_on:
         plt.figure()
-        plt.plot(r, p_exact)
-        plt.plot(d_1, p[line_1], "ko")
-        plt.plot(d_2, p[line_2], "bo")
-        plt.xlabel("d (m)")
-        plt.ylabel("p")
+        plt.plot(r, p_exact, "b-", label="exact")
+        plt.plot(d_1, p[line_1], "ko", label="RAFT, lower edge")
+        plt.plot(d_2, p[line_2], "bo", mfc="none", label="RAFT, upper edge")
+        plt.xlabel("r (m)")
+        plt.ylabel("p (Pa)")
         plt.title(test_name)
+        plt.legend()
 
     denom = p_exact[0]
     err_ex += sum((_y_exact(d_1, p0, q, k, Ri, Ro) - p[line_1]) ** 2) / denom**2
@@ -954,7 +973,7 @@ def check_well_convection(
 ) -> bool:
     """Check well convection against analytical solution."""
     # Set tolerance
-    tol = 1.0e-3
+    tol = 1.0e-5
 
     # Load config
     config = load_config(config_name, config_dir, verbose=False)
@@ -990,7 +1009,7 @@ def check_well_convection(
     # analytical solution from constant heating in the rock with pressure work
     x = np.linspace(0, L, 100)
     h1 = hc * np.pi * D
-    friction_heating = 8 * mu * q**2 / (h1 * rho**2 * R**4)
+    friction_heating = 8 * mu * q**2 / (np.pi * h1 * rho**2 * R**4)
     T_exact = T0 + (Tm - T0 + friction_heating) * (1 - np.exp(-h1 / q / cp * x))
 
     # extract T and normalize
@@ -998,19 +1017,18 @@ def check_well_convection(
 
     if plot_on:
         plt.figure()
-        plt.plot(x / L, T_exact, "r-")
-        plt.plot(d_1 / L, T[line_1], "ko")
-        plt.ylabel("T")
+        plt.plot(x / L, T_exact, "r-", label="exact")
+        plt.plot(d_1 / L, T[line_1], "ko", label="RAFT")
+        plt.xlabel("s/L")
+        plt.ylabel("T (K)")
         plt.title(test_name)
+        plt.legend()
 
     # calculate error
     x = d_1
     T_exact = T0 + (Tm - T0 + friction_heating) * (1 - np.exp(-h1 / q / cp * x))
 
     err_ex = sum((T_exact - T[line_1]) ** 2) / sum(T_exact**2)
-    # The error here is calculated pased on the nodal solutions, which with SUPG
-    # stabilization should be close to exact at the nodes. The full error
-    # includes the linear interpolation between the nodes, which is much higher.
 
     test_pass = bool(err_ex < tol)
 

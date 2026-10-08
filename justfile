@@ -59,6 +59,10 @@ check: fmt lint typecheck test
 geo config *args:
     uv run --with gmsh scripts/raft_to_geo.py {{config}} --mesh {{args}}
 
-# Build HTML documentation from README.md and theory.md into docs/_build/html
+# Regenerate the verification.md comparison figures into figures/verification
+verification-figures:
+    uv run python scripts/verification_figures.py
+
+# Build HTML documentation from README.md, theory.md and verification.md into docs/_build/html
 docs:
     uv run --group docs sphinx-build -b html docs/source docs/_build/html
