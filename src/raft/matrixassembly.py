@@ -1074,6 +1074,8 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
 
 # Sentinel for a tangent-only input/output not needed when want_tangent_*=False.
 _EMPTY = np.empty((0, 0))
+_EMPTY_3D = np.empty((0, 0, 0))  # sliceable like a quad-point history field
+_EMPTY_PROPERTY = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
 
 
 def _evaluate_fracture_leakoff_flux(
@@ -1402,10 +1404,12 @@ def _evaluate_element_kinematics(
     enodes_dof: npt.NDArray[np.int32] | list[int],
     *,
     want_lengths: bool,
+    want_flow: bool,
 ) -> ElementKinematics:
     """Slice this element's nodal primary variables and interpolate them to quadrature points.
 
-    `want_lengths` computes `L_vec` (SUPG only); otherwise it is `_EMPTY`.
+    `want_lengths` computes `L_vec` (SUPG only); `want_flow` computes the flow inputs `T_flow_q`,
+    `p_q`, and `gradP`. Skipped fields are empty.
     """
     Te = T[enodes_dof]  # element nodal temperatures
     Te_flow = T_flow[enodes_dof]  # element nodal temperatures, for flow properties
@@ -1415,10 +1419,10 @@ def _evaluate_element_kinematics(
     L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1) if want_lengths else _EMPTY  # element lengths
 
     T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
-    T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
-    p_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
+    T_flow_q = N_q @ Te_flow if want_flow else _EMPTY_3D  # quadrature point temperatures, for flow properties
+    p_q = N_q @ pe if want_flow else _EMPTY_3D  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
     gradT = B_q @ Te[:, 0:1]  # qudarature point temperature gradient, nq x nsd x 1
-    gradP = B_q @ pe[:, 0:1]  # quadrature point pressure gradient, nq x nsd x 1
+    gradP = B_q @ pe[:, 0:1] if want_flow else _EMPTY  # quadrature point pressure gradient, nq x nsd x 1
 
     return ElementKinematics(Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP)
 
@@ -1573,6 +1577,7 @@ def _evaluate_flow_and_storage_state(
     solve_p: bool = True,
     solve_T: bool = True,
     want_energy: bool = True,
+    want_flow: bool = True,
 ) -> tuple[
     PropertyResult,  # kf
     PropertyResult,  # mu_q
@@ -1587,9 +1592,12 @@ def _evaluate_flow_and_storage_state(
     """
     want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
 
-    # ---- Quadrature-point flow properties
-    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    # ---- Quadrature-point flow properties, only for Darcy flux and matrix coupling
+    if want_flow:
+        kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+        mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    else:
+        kf = mu_q = _EMPTY_PROPERTY
 
     phi_L_e, rho_f_e, u_f_e, hf_e = _gather_nodal_state(nodal_state, enodes)
 
@@ -2739,6 +2747,7 @@ def integrate_residuals(  # noqa
     domain = physics.domain(is_fracture=is_fracture, is_well=is_well)
     solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
     need_flux = solve_p or (solve_T and advection_on)
+    need_flow_props = need_flux or on_submesh  # matrix coupling uses viscosity
     # matrix coupling is assembled for a field if either side solves (or advects) it
     pressure_coupling = solve_p or physics.matrix.solve_flow
     thermal_coupling = solve_T or physics.matrix.solve_heat
@@ -2858,7 +2867,17 @@ def integrate_residuals(  # noqa
 
             # Evaluate primary variables at quad points and nodes
             kin = _evaluate_element_kinematics(
-                N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof, want_lengths=advection_on
+                N_q,
+                B_q,
+                xI,
+                T,
+                T_flow,
+                p,
+                T_0,
+                p_0,
+                enodes_dof,
+                want_lengths=advection_on,
+                want_flow=need_flow_props,
             )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
@@ -2872,6 +2891,7 @@ def integrate_residuals(  # noqa
                 np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
                 want_energy=thermal_coupling,
+                want_flow=need_flow_props,
             )
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear
@@ -3123,6 +3143,7 @@ def integrate_tangent_matrices(  # noqa
     solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
     coupled = solve_p and solve_T  # off-diagonal KpT/KTp blocks
     need_flux = solve_p or (solve_T and advection_on)
+    need_flow_props = need_flux or on_submesh  # matrix coupling uses viscosity
     # matrix coupling is assembled for a field if either side solves (or advects) it
     pressure_coupling = solve_p or physics.matrix.solve_flow
     thermal_coupling = solve_T or physics.matrix.solve_heat
@@ -3317,7 +3338,17 @@ def integrate_tangent_matrices(  # noqa
 
             # Evaluate primary variables at quad points and nodes
             kin = _evaluate_element_kinematics(
-                N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof, want_lengths=advection_on
+                N_q,
+                B_q,
+                xI,
+                T,
+                T_flow,
+                p,
+                T_0,
+                p_0,
+                enodes_dof,
+                want_lengths=advection_on,
+                want_flow=need_flow_props,
             )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
@@ -3334,6 +3365,7 @@ def integrate_tangent_matrices(  # noqa
                 solve_p=solve_p,
                 solve_T=solve_T,
                 want_energy=thermal_coupling,
+                want_flow=need_flow_props,
             )
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear.
@@ -3382,17 +3414,16 @@ def integrate_tangent_matrices(  # noqa
             phi_L_n = phi_L.q_n
             m_lump = _lumped_mass(N_q, wJe_q)
 
-            _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
-                phi_L,
-                rho_f,
-                cv,
-                steady_pres,
-                want_tangent_dp=solve_p,
-                want_tangent_dT=coupled,
-            )
-
             # ------------------------------------ Conservation of mass wrt pressure
             if solve_p:
+                _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
+                    phi_L,
+                    rho_f,
+                    cv,
+                    steady_pres,
+                    want_tangent_dp=True,
+                    want_tangent_dT=coupled,
+                )
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
                 element_matrices["Kpp"] = _diag_matrix(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
 
