@@ -2743,10 +2743,12 @@ def integrate_residuals(  # noqa
     fracture_on = bool(controls["fracture_on"])
     wells_on = bool(controls["wells_on"])
     on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
-    advection_on = bool(controls["advection_on"])
+    physics = controls["physics"].domain(is_fracture=is_fracture, is_well=is_well)
+    advection_on = physics.advection
+    coupling_advection = advection_on or controls["physics"].matrix.advection  # either side advects
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = controls["steady_pressure"]
-    steady_temp = controls["steady_temperature"]
+    steady_pres = float(physics.steady_flow)
+    steady_temp = float(physics.steady_heat)
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
@@ -2779,7 +2781,7 @@ def integrate_residuals(  # noqa
         coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
             ["F_Tdiffusion_mm"] if not pressure_only else []
         )
-        if not pressure_only and advection_on:
+        if not pressure_only and coupling_advection:
             coupling_flux_names = coupling_flux_names + ["F_Tadvection_mm"]
 
         vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
@@ -2976,7 +2978,7 @@ def integrate_residuals(  # noqa
                     flow.w0,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
-                    advection_on=advection_on,
+                    advection_on=coupling_advection,
                     T_flow_lagged=temperature_only,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
@@ -3011,7 +3013,7 @@ def integrate_residuals(  # noqa
                     hf,
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
-                    advection_on=advection_on,
+                    advection_on=coupling_advection,
                     T_flow_lagged=temperature_only,
                 )
                 _accumulate_element_matrices(element_vectors, well_flux_vectors)
@@ -3119,10 +3121,12 @@ def integrate_tangent_matrices(  # noqa
     fracture_on = bool(controls["fracture_on"])
     wells_on = bool(controls["wells_on"])
     on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
-    advection_on = bool(controls["advection_on"])
+    physics = controls["physics"].domain(is_fracture=is_fracture, is_well=is_well)
+    advection_on = physics.advection
+    coupling_advection = advection_on or controls["physics"].matrix.advection  # either side advects
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = controls["steady_pressure"]
-    steady_temp = controls["steady_temperature"]
+    steady_pres = float(physics.steady_flow)
+    steady_temp = float(physics.steady_heat)
 
     if fully_coupled:
         # Overwrite bad combination if it occurs
@@ -3150,7 +3154,7 @@ def integrate_tangent_matrices(  # noqa
         row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
         row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
-        ktp_on = not pressure_only and advection_on and fully_coupled
+        ktp_on = not pressure_only and coupling_advection and fully_coupled
         coupling_ff_names = (
             (["Kpp_ff"] if not temperature_only else [])
             + (["KTT_ff"] if not pressure_only else [])
@@ -3196,7 +3200,7 @@ def integrate_tangent_matrices(  # noqa
         row_vec_mw, col_vec_mw = cached_wv["row_vec_mw"], cached_wv["col_vec_mw"]
         row_vec_mm, col_vec_mm = cached_wv["row_vec_mm"], cached_wv["col_vec_mm"]
 
-        ktp_on = not pressure_only and advection_on and fully_coupled
+        ktp_on = not pressure_only and coupling_advection and fully_coupled
         well_ktp_on = not pressure_only and fully_coupled  # conduction h depends on well pressure
         coupling_ww_names = (
             (["Kpp_ww"] if not temperature_only else [])
@@ -3517,7 +3521,7 @@ def integrate_tangent_matrices(  # noqa
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
                     fully_coupled=fully_coupled,
-                    advection_on=advection_on,
+                    advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
 
@@ -3563,7 +3567,7 @@ def integrate_tangent_matrices(  # noqa
                     pressure_coupling=not temperature_only,
                     thermal_coupling=not pressure_only,
                     fully_coupled=fully_coupled,
-                    advection_on=advection_on,
+                    advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
                 # Direct node coupling: every block is nne x nne
@@ -3681,10 +3685,10 @@ def integrate_enthlpy_bndry_residual(
     We use the existing assembled Jacobians and vectors rather than
     re-performing the matrix integration.
     """
-    advection_off = not bool(controls["advection_on"])
+    advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
 
-    if advection_off:
+    if not advection_nodes.any():
         return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
 
     F_enth_bnd = np.zeros((nn_total, 1))
@@ -3697,6 +3701,9 @@ def integrate_enthlpy_bndry_residual(
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            nodes_i = nodes_i[advection_nodes[nodes_i]]  # no enthalpy outflow where advection is off
+            if nodes_i.size == 0:
+                continue
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
@@ -3735,10 +3742,10 @@ def integrate_enthlpy_bndry_tangent(
     the latter is nonzero only for a Dirichlet-pressure node under
     `fully_coupled`, via the Kpp/KpT cross-terms.
     """
-    advection_off = not bool(controls["advection_on"])
+    advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
 
-    if advection_off:
+    if not advection_nodes.any():
         if fully_coupled:
             return {
                 "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
@@ -3758,6 +3765,9 @@ def integrate_enthlpy_bndry_tangent(
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            nodes_i = nodes_i[advection_nodes[nodes_i]]  # no enthalpy outflow where advection is off
+            if nodes_i.size == 0:
+                continue
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]

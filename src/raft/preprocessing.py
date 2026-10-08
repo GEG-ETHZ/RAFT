@@ -28,6 +28,7 @@ import yaml
 from .matprops import create_abstract_state
 from .matrixassembly import integrate_boundary_flux_matrices
 from .meshprocessing import _build_edge_element_map, _find_lineBC_connectivity, load_mesh
+from .physics import DOMAINS, FIELD_MODES, DomainPhysics, Physics
 
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
@@ -76,6 +77,10 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- boundary conditions -------------------------------------------------
     "boundary_conditions": [],
+    # ---- physics: fractures/wells inherit unset fields from matrix -----------
+    "physics": {
+        "matrix": {"flow": "transient", "heat": "transient", "advection": 0},
+    },
     # ---- simulation ----------------------------------------------------------
     "simulation": {
         "t_start": 0.0,
@@ -91,11 +96,8 @@ DEFAULTS: dict[str, Any] = {
         "output_density": 0,
         "output_porosity": 0,
         "rate_order": 1,
-        "advection_on": 0,
         "volumetric_strain_on": 1,
         "gravity": 0.0,
-        "steady_pressure": 0,
-        "steady_temperature": 0,
         "axisymmetric_on": 0,
         "rel_error_T": 1.0e-2,
         "iterative_controls": {
@@ -126,6 +128,42 @@ def _apply_defaults(
                 print(f"  [CONFIG]   {full_key} = {config[key]}")
 
     return config
+
+
+def _parse_field_mode(value: Any, where: str) -> str:
+    """Validate a field mode; YAML reads a bare `off` as False."""
+    mode = "off" if value is False else value
+    if mode not in FIELD_MODES:
+        raise ValueError(f"physics.{where} = {value!r}; expected one of {FIELD_MODES}")
+    if mode == "off":
+        raise NotImplementedError(f"physics.{where} = 'off' is not yet supported")
+    return str(mode)
+
+
+def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
+    """Resolve the `physics` block into per-domain switches."""
+    block = config["physics"]
+    unknown = set(block) - set(DOMAINS)
+    if unknown:
+        raise ValueError(f"Unknown physics domain(s) {sorted(unknown)}; expected {DOMAINS}")
+
+    resolved: dict[str, DomainPhysics] = {}
+    for domain in DOMAINS:
+        spec = {**block["matrix"], **(block.get(domain) or {})}
+        unknown = set(spec) - {"flow", "heat", "advection"}
+        if unknown:
+            raise ValueError(f"Unknown physics.{domain} field(s) {sorted(unknown)}")
+        if spec["advection"] not in (0, 1):  # also accepts True/False and YAML on/off
+            raise ValueError(f"physics.{domain}.advection = {spec['advection']!r}; expected on/off")
+        resolved[domain] = DomainPhysics(
+            flow=_parse_field_mode(spec["flow"], f"{domain}.flow"),
+            heat=_parse_field_mode(spec["heat"], f"{domain}.heat"),
+            advection=bool(spec["advection"]),
+        )
+        if verbose and domain != "matrix" and resolved[domain] != resolved["matrix"]:
+            print(f"\nPhysics in {domain} differs from matrix: {resolved[domain]}")
+
+    return Physics(**resolved)
 
 
 def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
@@ -160,6 +198,9 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
             print(f"\nDensity computed from CoolProp ({fluid_name}) as a function of T and p.")
     else:  # constant
         controls["density_nonconstant"] = 0
+
+    # Physics switches
+    controls["physics"] = _parse_physics(config, verbose)
 
     # Axisymmetry
     axisymmetric_on = controls["axisymmetric_on"]

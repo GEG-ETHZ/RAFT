@@ -165,8 +165,7 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     unstrained relative to themselves.
     """
     controls_SS = controls.copy()
-    controls_SS["steady_pressure"] = 1
-    controls_SS["steady_temperature"] = 1
+    controls_SS["physics"] = controls["physics"].as_steady()
     controls_SS["fully_coupled"] = False
     controls_SS["volumetric_strain_on"] = 0
     return controls_SS

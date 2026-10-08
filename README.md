@@ -329,6 +329,23 @@ The group follows its specified fluid flux until any node's pressure reaches `ma
 
 Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. Wellbore groups are included when tagging groups for `outflow.log`.
 
+### `physics`
+Physics switches for each domain: `matrix`, `fractures`, and `wells`. Fractures and wells inherit any field not set for them from `matrix`, so a block is only needed where a domain differs.
+
+```yaml
+physics:
+  matrix:
+    flow: transient
+    heat: transient
+    advection: on
+  wells:
+    flow: steady
+```
+
+* **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"steady"` or `"transient"`.
+* **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"steady"` or `"transient"`.
+* **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on. Fracture/well-matrix coupling includes advective exchange if either side has advection on.
+
 ### `simulation`
  Simulation controls
 * **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
@@ -347,11 +364,7 @@ Output Controls
 Physical controls
 
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change. Accepts `1` for a 1st order backwards Euler approximation, or `2` for a 2nd order backwards Euler approximation.
-* **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
 * **`gravity`** *(float, default: `0.0`)*: Set the magnitude of the acceleration due to gravity in $\text{m}/\text{s}^2$, typically `-9.81`. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
-
-* **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
-* **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
 * **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
 
 Numerical solver controls

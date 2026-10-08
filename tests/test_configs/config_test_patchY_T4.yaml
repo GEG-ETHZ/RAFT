@@ -56,6 +56,12 @@ boundary_conditions:
       values: []
       type: flux
 
+physics:
+  matrix:
+    flow: steady
+    heat: steady
+    advection: off
+
 simulation:
   # Time
   t_start: 0.0
@@ -71,10 +77,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 0
   gravity: 0.0    # m/s^2
-  steady_pressure: 1
-  steady_temperature: 1
 
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation
