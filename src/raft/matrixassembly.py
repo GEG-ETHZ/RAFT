@@ -370,14 +370,14 @@ def _vctrzd_quad_point_integration(
     """
     if scalar:
         integrand = np.asarray(integrand, dtype=np.float64)
-    left_T = left_matrix.transpose(0, 2, 1)
 
     # choose between multiply types for scalar vs. non-scalar material properties
     middle = integrand * right_matrix if scalar else integrand @ right_matrix
 
-    K = left_T @ middle * weights.reshape(-1, 1, 1)
-
-    result: npt.NDArray[np.float64] = K.sum(0)
+    # Stack quad points into the contraction: sum_q L_q^T M_q w_q as a single matmul
+    nq, a, n_left = left_matrix.shape
+    weighted = (middle * weights.reshape(-1, 1, 1)).reshape(nq * a, -1)
+    result: npt.NDArray[np.float64] = left_matrix.reshape(nq * a, n_left).T @ weighted
     return result
 
 
@@ -393,12 +393,26 @@ def _vctrzd_qp_vctr_integrate(
     """
     if scalar:
         integrand = np.asarray(integrand, dtype=np.float64)
-    left_T = left_matrix.transpose(0, 2, 1)
 
-    K = left_T @ integrand * weights.reshape(-1, 1, 1)
-
-    result: npt.NDArray[np.float64] = K.sum(0)
+    # Stack quad points into the contraction: sum_q L_q^T f_q w_q as a single matmul
+    nq, a, n_left = left_matrix.shape
+    weighted = (integrand * weights.reshape(-1, 1, 1)).reshape(nq * a, -1)
+    result: npt.NDArray[np.float64] = left_matrix.reshape(nq * a, n_left).T @ weighted
     return result
+
+
+def _lumped_mass(N_q: npt.NDArray[np.float64], wJe_q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Row-sum lumped mass, sum_j int(N_i N_j) = int(N_i) since the shape functions sum to 1."""
+    result: npt.NDArray[np.float64] = wJe_q.reshape(-1) @ N_q[:, 0, :]
+    return result
+
+
+def _diag_matrix(d: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Square matrix with diagonal `d`; `np.diag`'s generality costs more than the fill here."""
+    n = d.size
+    M = np.zeros((n, n))
+    M.flat[:: n + 1] = d
+    return M
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
@@ -1385,14 +1399,19 @@ def _evaluate_element_kinematics(
     T_0: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],
     enodes_dof: npt.NDArray[np.int32] | list[int],
+    *,
+    want_lengths: bool,
 ) -> ElementKinematics:
-    """Slice this element's nodal primary variables and interpolate them to quadrature points."""
+    """Slice this element's nodal primary variables and interpolate them to quadrature points.
+
+    `want_lengths` computes `L_vec` (SUPG only); otherwise it is `_EMPTY`.
+    """
     Te = T[enodes_dof]  # element nodal temperatures
     Te_flow = T_flow[enodes_dof]  # element nodal temperatures, for flow properties
     pe = p[enodes_dof]  # element nodal pressures
     T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
     p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
-    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths
+    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1) if want_lengths else _EMPTY  # element lengths
 
     T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
     T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
@@ -1523,10 +1542,10 @@ def _stack_nodal_state(phi_L: PropertyResult, nodal_fluid: NodalFluidState) -> S
     )  # fmt: skip
     columns: list[slice | None] = []
     start = 0
-    for field in fields:
-        if field.size:
-            columns.append(slice(start, start + field.shape[1]))
-            start += field.shape[1]
+    for arr in fields:
+        if arr.size:
+            columns.append(slice(start, start + arr.shape[1]))
+            start += arr.shape[1]
         else:
             columns.append(None)
     return StackedNodalState(np.hstack([f for f in fields if f.size]), tuple(columns))
@@ -2145,16 +2164,11 @@ def _evaluate_advection_terms(
     darcy_flux = q_D / rho_f_n.value  # Volume flux
 
     # lambda_e is a region constant: scalar-like (isotropic fracture case), (nq, 1, 1)
-    # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast to a uniform shape so
-    # the numba kernel only ever sees consistently-shaped, contiguous arrays. `.copy()` is
-    # required, not just `ascontiguousarray`: when `lambda_e` already has the target shape
-    # (the isotropic bulk case), `broadcast_to` is a no-op view and `ascontiguousarray` skips
-    # copying it, leaving it read-only - a different numba type than the writable array the
-    # other branches produce, which costs a fresh ~1s compiled specialization the first time
-    # that branch is hit.
-    lambda_e_shape = (nq, 1, 1) if isotropic_cond else (nq, nsd, nsd)
-    lambda_e_arr = np.asarray(lambda_e, dtype=np.float64)
-    lambda_e_bcast = np.ascontiguousarray(np.broadcast_to(lambda_e_arr, lambda_e_shape)).copy()
+    # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast into a fresh array so
+    # the numba kernel always sees the same contiguous, writable type; a read-only view would
+    # cost an extra ~1s compiled specialization.
+    lambda_e_bcast = np.empty((nq, 1, 1) if isotropic_cond else (nq, nsd, nsd))
+    lambda_e_bcast[...] = lambda_e
 
     # Volumetric heat capacity and transient rate for the tau transient limit
     phi_q = phi_L.q_n.value
@@ -2843,7 +2857,9 @@ def integrate_residuals(  # noqa
             element_vectors: dict[str, npt.NDArray[np.float64]] = {}
 
             # Evaluate primary variables at quad points and nodes
-            kin = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            kin = _evaluate_element_kinematics(
+                N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof, want_lengths=advection_on
+            )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
@@ -2870,7 +2886,7 @@ def integrate_residuals(  # noqa
                 )  # q_D = mass flux
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
+            m_lump = _lumped_mass(N_q, wJe_q).reshape(-1, 1)
 
             # ------ Conservation of mass
             if not temperature_only:
@@ -3296,7 +3312,9 @@ def integrate_tangent_matrices(  # noqa
             element_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
             # Evaluate primary variables at quad points and nodes
-            kin = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            kin = _evaluate_element_kinematics(
+                N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof, want_lengths=advection_on
+            )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
@@ -3356,7 +3374,7 @@ def integrate_tangent_matrices(  # noqa
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
             phi_L_n = phi_L.q_n
-            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
+            m_lump = _lumped_mass(N_q, wJe_q)
 
             _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
                 phi_L,
@@ -3370,7 +3388,7 @@ def integrate_tangent_matrices(  # noqa
             # ------------------------------------ Conservation of mass wrt pressure
             if not temperature_only:
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
-                element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
+                element_matrices["Kpp"] = _diag_matrix(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
 
                 # Diffusion vector - Fk
                 # dFk/dp
@@ -3403,7 +3421,7 @@ def integrate_tangent_matrices(  # noqa
                     want_tangent_dT=True,
                     want_tangent_dp=fully_coupled,
                 )
-                element_matrices["KTT"] = np.diag(m_lump * integrand_dFCdT_e.ravel())
+                element_matrices["KTT"] = _diag_matrix(m_lump * integrand_dFCdT_e.ravel())
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = (
@@ -3453,7 +3471,7 @@ def integrate_tangent_matrices(  # noqa
             if fully_coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                element_matrices["KpT"] = np.diag(m_lump * integrand_dFsdT_e.ravel())
+                element_matrices["KpT"] = _diag_matrix(m_lump * integrand_dFsdT_e.ravel())
 
                 # Diffusion vector - Fk
                 integrand_dFkdT = dqD_dT
@@ -3461,7 +3479,7 @@ def integrate_tangent_matrices(  # noqa
 
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
-                element_matrices["KTp"] = np.diag(m_lump * integrand_dFCdp_e.ravel())
+                element_matrices["KTp"] = _diag_matrix(m_lump * integrand_dFCdp_e.ravel())
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = phi_L_n.dp * (lambda_f - solid.lambda_s) * kin.gradT * N_q

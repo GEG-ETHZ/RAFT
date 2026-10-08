@@ -119,9 +119,8 @@ def get_viscosity(
 
     if mu0 > 0:
         # Constant Viscosity
-        mu = np.full(T.shape, mu0)
         zeros = _const_array(0.0, T.shape)
-        return PropertyResult(mu, zeros, zeros)
+        return PropertyResult(_const_array(float(mu0), T.shape), zeros, zeros)
 
     # Determine if dT is wanted or not based on lagging.
     want_dT_eff = want_dT and not T_flow_lagged
