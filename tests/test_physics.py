@@ -50,7 +50,7 @@ def test_inheritance_and_yaml_booleans() -> None:
     assert physics.fractures == physics.matrix
     assert physics.wells == DomainPhysics(heat="steady", advection=True)
     assert physics.as_steady().wells == DomainPhysics(flow="steady", heat="steady", advection=True)
-    assert _parse("matrix: {flow: off}\nwells: {flow: transient}").matrix.flow == "off"
+    assert _parse("matrix: {flow: off}\nwells: {flow: steady}").matrix.flow == "off"
 
 
 @pytest.mark.parametrize(
@@ -65,6 +65,11 @@ def test_inheritance_and_yaml_booleans() -> None:
 def test_invalid(physics_yaml: str, error: type[Exception]) -> None:
     with pytest.raises(error):
         _parse(physics_yaml)
+
+
+def test_transient_well_flow_warns() -> None:
+    with pytest.warns(UserWarning, match="quasi-steady"):
+        _parse("wells: {flow: transient}")
 
 
 def test_advection_node_mask() -> None:

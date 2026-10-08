@@ -161,6 +161,12 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
         if verbose and domain != "matrix" and resolved[domain] != resolved["matrix"]:
             print(f"\nPhysics in {domain} differs from matrix: {resolved[domain]}")
 
+    # Only warn when set explicitly; wells inheriting a transient matrix is the default
+    if (block.get("wells") or {}).get("flow") == "transient":
+        warnings.warn(
+            "physics.wells.flow = 'transient' has no effect; well flow is always quasi-steady.", stacklevel=2
+        )
+
     return Physics(**resolved)
 
 
