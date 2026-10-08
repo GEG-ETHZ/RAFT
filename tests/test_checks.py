@@ -301,7 +301,7 @@ def check_advection(
     cp = mat["fluid"]["specific_heat"]
     rho_f = mat["fluid"]["density"]
 
-    # peclet number per length
+    # peclet number
     Pe = L * (q * cp * rho_f) / lambda_e
 
     # analytical solution

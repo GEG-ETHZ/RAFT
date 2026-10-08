@@ -124,7 +124,7 @@ class NodalEnthalpyState:
     """`NodalPropertyState`'s counterpart for `EnthalpyResult`, which also carries `cp`.
 
     Same quad point (`.q`)/element node (`.e`) shape as `NodalPropertyState`, evaluated once at
-    nodes in `_evaluate_flow_and_storage_state` and interpolated to quad points from there,
+    nodes in `_evaluate_nodal_fluid_state` and interpolated to quad points from there,
     rather than re-derived per consumer (`_evaluate_advection_terms`'s `.e_n`/`.q_n`).
     """
 
@@ -1403,73 +1403,59 @@ def _evaluate_element_kinematics(
     return ElementKinematics(Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP)
 
 
-def _evaluate_flow_and_storage_state(
-    kf_0: npt.NDArray[np.float64] | float,
-    kin_n: ElementKinematics,
-    nodal_kin: ElementKinematics,
-    N_q: npt.NDArray[np.float64],
+def _property_derivative_flags(
+    calc_derivatives: bool, temperature_only: bool, pressure_only: bool, fully_coupled: bool
+) -> tuple[bool, bool, bool]:
+    """Resolve (want_dp, want_dT, want_dT_props) for property evaluations."""
+    want_dp = calc_derivatives and (pressure_only or fully_coupled)
+    want_dT = calc_derivatives and (temperature_only or fully_coupled)
+    return want_dp, want_dT, want_dT or not pressure_only
+
+
+def _get_pass_dofs(mesh: dict[str, Any], nn: int, *, is_fracture: bool, is_well: bool) -> slice:
+    """Global DoFs of the bulk, fracture, or well mesh nodes, in local node order."""
+    offset = 0
+    if is_well:
+        offset = mesh["nn_total"] - nn  # wells are numbered last
+    elif is_fracture:
+        offset = mesh["nn"]
+    return slice(offset, offset + nn)
+
+
+@dataclass(frozen=True, slots=True)
+class NodalFluidState:
+    """EOS results at every node of the current mesh pass, gathered per element in the loop."""
+
+    rho_f: PropertyResult
+    u_f: PropertyResult
+    hf: EnthalpyResult
+
+
+def _evaluate_nodal_fluid_state(
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
     fluid: dict[str, Any],
-    solid: RegionSolidData,
-    w0: float,
     *,
-    no_solid: bool,
     calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
     temperature_only: bool = False,
     pressure_only: bool = False,
     fully_coupled: bool = False,
-    volumetric_strain_on: bool = True,
-) -> tuple[
-    PropertyResult,  # kf
-    PropertyResult,  # mu_q
-    NodalPropertyState,  # rho_f
-    NodalPropertyState,  # phi_L
-    NodalPropertyState,  # u_f
-    NodalEnthalpyState,  # hf
-]:
-    """Evaluate permeability, porosity, density, viscosity, and internal energy.
+) -> NodalFluidState:
+    """Evaluate density, internal energy, and enthalpy once per node.
 
-    For fractures/wells, "porosity" is the fracture aperture or well area.
+    Density is evaluated with T_flow for consistency with the mass flow rates.
+    Internal energy is evaluated with T, the current temperature field.
+    Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
     """
-    want_dp = calc_derivatives and (pressure_only or fully_coupled)
-    want_dT = calc_derivatives and (temperature_only or fully_coupled)
-    want_dT_props = want_dT or not pressure_only
-
-    # ---- Quadrature-point flow properties
-    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
-
-    # ---- Porosity
-    if no_solid:
-        # Fracture/well case: phi is replaced by aperture/area, a fixed property pending geomechanics.
-        phi_L_e = PropertyResult(
-            w0 * np.ones_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe)
-        )
-    else:
-        phi_L_e = get_porosity_lagrangian(
-            nodal_kin.pe,
-            nodal_kin.p_0e,
-            nodal_kin.Te_flow,
-            nodal_kin.T_0e,
-            solid.phi_0,
-            solid.K_d,
-            solid.biot,
-            solid.alpha_s,
-            T_flow_lagged,
-            volumetric_strain_on,
-        )
-
-    phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
-    phi_L = NodalPropertyState(q=phi_L_q, e=phi_L_e)
-
-    # ---- Equation of state variables Density, internal energy, and enthalpy.
-    # Density is evaluated with T_flow for consistency with the mass flow rates.
-    # Internal energy is evaluated with T, the current temperature field.
-    # Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
-    rho_f_e, u_f_e, hf_e = get_EOS(
-        nodal_kin.Te,
-        nodal_kin.Te_flow,
-        nodal_kin.pe,
+    want_dp, _, want_dT_props = _property_derivative_flags(
+        calc_derivatives, temperature_only, pressure_only, fully_coupled
+    )
+    rho_f, u_f, hf = get_EOS(
+        T,
+        T_flow,
+        p,
         fluid,
         T_flow_lagged=T_flow_lagged,
         want_density=True,
@@ -1478,7 +1464,128 @@ def _evaluate_flow_and_storage_state(
         want_dp=want_dp,
         want_dT=want_dT_props,
     )
+    return NodalFluidState(rho_f, u_f, hf)
 
+
+def _evaluate_nodal_porosity(
+    p: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    T_0: npt.NDArray[np.float64],
+    solid: RegionSolidData,
+    w0: float,
+    *,
+    no_solid: bool,
+    T_flow_lagged: bool = False,
+    volumetric_strain_on: bool = True,
+) -> PropertyResult:
+    """Evaluate one region's Lagrangian porosity once per node.
+
+    For fractures/wells, "porosity" is the fracture aperture or well area.
+    """
+    if no_solid:
+        # Fracture/well case: phi is replaced by aperture/area, a fixed property pending geomechanics.
+        return PropertyResult(w0 * np.ones_like(p), np.zeros_like(p), np.zeros_like(p))
+    return get_porosity_lagrangian(
+        p,
+        p_0,
+        T_flow,
+        T_0,
+        solid.phi_0,
+        solid.K_d,
+        solid.biot,
+        solid.alpha_s,
+        T_flow_lagged,
+        volumetric_strain_on,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StackedNodalState:
+    """Nodal porosity and EOS fields stacked column-wise, so one `take` gathers an element's rows.
+
+    Per-call numpy overhead dwarfs the copy for 4-row gathers, so one `take` instead of 13 halves
+    the gather cost. `columns` holds each field's column slice, or None for an `_EMPTY` field.
+    """
+
+    stack: npt.NDArray[np.float64]
+    columns: tuple[slice | None, ...]  # phi_L (value, dp, dT), rho_f (3), u_f (3), hf (value, dp, dT, cp)
+
+
+def _stack_nodal_state(phi_L: PropertyResult, nodal_fluid: NodalFluidState) -> StackedNodalState:
+    """Stack one region's nodal porosity with the pass's nodal EOS fields."""
+    rho_f, u_f, hf = nodal_fluid.rho_f, nodal_fluid.u_f, nodal_fluid.hf
+    fields = (
+        phi_L.value, phi_L.dp, phi_L.dT,
+        rho_f.value, rho_f.dp, rho_f.dT,
+        u_f.value, u_f.dp, u_f.dT,
+        hf.value, hf.dp, hf.dT, hf.cp,
+    )  # fmt: skip
+    columns: list[slice | None] = []
+    start = 0
+    for field in fields:
+        if field.size:
+            columns.append(slice(start, start + field.shape[1]))
+            start += field.shape[1]
+        else:
+            columns.append(None)
+    return StackedNodalState(np.hstack([f for f in fields if f.size]), tuple(columns))
+
+
+def _gather_nodal_state(
+    state: StackedNodalState, idx: npt.NDArray[np.intp]
+) -> tuple[PropertyResult, PropertyResult, PropertyResult, EnthalpyResult]:
+    """Gather an element's nodal (phi_L, rho_f, u_f, hf) rows."""
+    rows = state.stack.take(idx, axis=0)
+    f = [_EMPTY if s is None else rows[:, s] for s in state.columns]
+    return (
+        PropertyResult(f[0], f[1], f[2]),
+        PropertyResult(f[3], f[4], f[5]),
+        PropertyResult(f[6], f[7], f[8]),
+        EnthalpyResult(f[9], f[10], f[11], f[12]),
+    )
+
+
+def _evaluate_flow_and_storage_state(
+    kf_0: npt.NDArray[np.float64] | float,
+    kin_n: ElementKinematics,
+    N_q: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    nodal_state: StackedNodalState,
+    enodes: npt.NDArray[np.intp],
+    *,
+    calc_derivatives: bool = False,
+    T_flow_lagged: bool = False,
+    temperature_only: bool = False,
+    pressure_only: bool = False,
+    fully_coupled: bool = False,
+) -> tuple[
+    PropertyResult,  # kf
+    PropertyResult,  # mu_q
+    NodalPropertyState,  # rho_f
+    NodalPropertyState,  # phi_L
+    NodalPropertyState,  # u_f
+    NodalEnthalpyState,  # hf
+]:
+    """Evaluate permeability and viscosity, and gather nodal porosity, density, and internal energy.
+
+    `enodes` indexes this element's rows in `nodal_state`.
+    """
+    want_dp, want_dT, _ = _property_derivative_flags(
+        calc_derivatives, temperature_only, pressure_only, fully_coupled
+    )
+
+    # ---- Quadrature-point flow properties
+    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+
+    phi_L_e, rho_f_e, u_f_e, hf_e = _gather_nodal_state(nodal_state, enodes)
+
+    # ---- Porosity
+    phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
+    phi_L = NodalPropertyState(q=phi_L_q, e=phi_L_e)
+
+    # ---- Equation of state variables: density, internal energy, and enthalpy
     rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
     rho_f = NodalPropertyState(q=rho_f_q, e=rho_f_e)
 
@@ -2670,6 +2777,14 @@ def integrate_residuals(  # noqa
     vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx, ismatrix=False)
     vec_counter = 0  # vectorized storage index counter
 
+    # ----- Nodal states, evaluated once per node rather than once per element node
+    dofs = _get_pass_dofs(mesh, mesh_data.nn, is_fracture=is_fracture, is_well=is_well)
+    p_nodes, T_flow_nodes = p[dofs], T_flow[dofs]
+    p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
+    nodal_fluid = _evaluate_nodal_fluid_state(
+        T[dofs], T_flow_nodes, p_nodes, fluid, T_flow_lagged=temperature_only, pressure_only=pressure_only
+    )
+
     # ----- Matrix integration element loop
     for r in range(mesh_data.num_regions):
         flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
@@ -2680,6 +2795,19 @@ def integrate_residuals(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        # Porosity depends on region solid properties, so nodes shared across regions differ
+        nodal_phi_L = _evaluate_nodal_porosity(
+            p_nodes,
+            p_0_nodes,
+            T_flow_nodes,
+            T_0_nodes,
+            solid,
+            flow.w0,
+            no_solid=on_submesh,
+            T_flow_lagged=temperature_only,
+            volumetric_strain_on=volumetric_strain_on,
+        )
+        nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -2722,15 +2850,12 @@ def integrate_residuals(  # noqa
             kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
                 flow.kf,
                 kin_n,
-                kin,
                 N_q,
                 fluid,
-                solid,
-                flow.w0,
-                no_solid=on_submesh,
+                nodal_state,
+                np.asarray(enodes),
                 T_flow_lagged=temperature_only,
                 pressure_only=pressure_only,
-                volumetric_strain_on=volumetric_strain_on,
             )
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear
@@ -3097,6 +3222,22 @@ def integrate_tangent_matrices(  # noqa
     vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
+    # ----- Nodal states (current iterate), evaluated once per node rather than once per element node
+    dofs = _get_pass_dofs(mesh, mesh_data.nn, is_fracture=is_fracture, is_well=is_well)
+    p_nodes, T_flow_nodes = p[dofs, 0:1], T_flow[dofs, 0:1]
+    p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
+    nodal_fluid = _evaluate_nodal_fluid_state(
+        T[dofs, 0:1],
+        T_flow_nodes,
+        p_nodes,
+        fluid,
+        calc_derivatives=True,
+        T_flow_lagged=T_flow_lagged,
+        temperature_only=temperature_only,
+        pressure_only=pressure_only,
+        fully_coupled=fully_coupled,
+    )
+
     # ----- Matrix integration element loop
     for r in range(mesh_data.num_regions):
         flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
@@ -3107,6 +3248,19 @@ def integrate_tangent_matrices(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        # Porosity depends on region solid properties, so nodes shared across regions differ
+        nodal_phi_L = _evaluate_nodal_porosity(
+            p_nodes,
+            p_0_nodes,
+            T_flow_nodes,
+            T_0_nodes,
+            solid,
+            flow.w0,
+            no_solid=on_submesh,
+            T_flow_lagged=T_flow_lagged,
+            volumetric_strain_on=volumetric_strain_on,
+        )
+        nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -3149,14 +3303,11 @@ def integrate_tangent_matrices(  # noqa
             kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
                 flow.kf,
                 kin_n,
-                kin_n,
                 N_q,
                 fluid,
-                solid,
-                flow.w0,
-                no_solid=on_submesh,
+                nodal_state,
+                np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
-                volumetric_strain_on=volumetric_strain_on,
                 calc_derivatives=True,
                 temperature_only=temperature_only,
                 pressure_only=pressure_only,
