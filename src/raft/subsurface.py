@@ -34,6 +34,10 @@ from .preprocessing import preprocessing
 from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
 
+class TimestepError(RuntimeError):
+    """Raised when the solver fails to converge at the minimum timestep."""
+
+
 def _update_time(  # noqa
     solver_type: str,
     t: float,
@@ -59,11 +63,9 @@ def _update_time(  # noqa
                     )
             else:
                 # Fully coupled or Newton-Raphson failure at minmum timestep
-                if verbose:
-                    print(
-                        "     Minimum timestep reached, unable to converge to solution."  # noqa: E501
-                    )
-                sys.exit()
+                raise TimestepError(
+                    f"Minimum timestep reached at t = {t:.6e}, unable to converge to solution."
+                )
         else:
             if solver_type == "linearized" and timestep_error != -1:
                 # Cut timestep in proportion with error
@@ -624,9 +626,20 @@ def main(  # noqa
             # Check error and update time step
             t0 = t
             dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
-            t, dt, converged = _update_time(
-                controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
-            )
+            try:
+                t, dt, converged = _update_time(
+                    controls["solver_type"],
+                    t,
+                    dt,
+                    controls,
+                    critical_times,
+                    converged,
+                    timestep_error,
+                    verbose,
+                )
+            except TimestepError as err:
+                print(f"     {err}")
+                sys.exit(1)
 
             # Initialize next timestep
             if converged:

@@ -6,7 +6,7 @@ mesh:
         values: [[-51, -50], [102, 75]]
   sizing:  # element sizes, used by scripts/raft_to_geo.py
       outer: 20
-      frac: [[0.25, 0.5, 2], [0.5, 5, 20]]
+      frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
   regions:
       - shape: "sphere"
