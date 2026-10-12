@@ -41,12 +41,18 @@ boundary_conditions:
       type: temperature
   - faces: [z_max]
     hydraulics:
-      values: [-0.0007]
+      values: [-0.00007]
       type: flux
     thermal:
       values: [410]
       type: temperature
 
+
+physics:
+  matrix:
+    flow: steady
+    heat: steady
+    advection: on
 
 simulation:
   # Time
@@ -64,10 +70,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 1
   gravity: 0.0    # m/s^2
-  steady_pressure: 1
-  steady_temperature: 1
 
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation

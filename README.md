@@ -26,6 +26,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [`mesh`](#mesh)
   - [`regions`](#regions)
   - [`fractures` (optional field)](#fractures-optional-field)
+  - [`wells` (optional field)](#wells-optional-field)
   - [`material`](#material)
   - [`initial_conditions`](#initial_conditions)
   - [`boundary_conditions`](#boundary_conditions)
@@ -141,7 +142,6 @@ Fractures use a conforming mesh approach and cut through the existing mesh, crea
 
 > **Current limitation:** Fractures are only supported in 2D analyses (`dimensions: 2`). 3D fracture support is not yet implemented (a warning is printed and the mesh is returned unmodified).
 
-If regions are not defined, homogeneity is assumed (all elements are assigned to region 0).
 
 **Fracture Definition:**
 Each fracture specification requires three fields:
@@ -153,9 +153,36 @@ Each fracture specification requires three fields:
   * $[a,b]$ *(list[float], no default)*: extents. For the ellipse, $a$ = major axis distance, $b$ = minor axis distance. For the rectangle, $a$ = half-length, $b$ = half-width. In 2D, $a$ is taken as the fracture half-length.
   * $[\theta_x, \theta_y, \theta_z]$ *(list[float], no default)*: plane angles in degrees. $\theta_x$ = plane angle with respect to the x-axis, $\theta_y$ = plane angle with respect to the y-axis, , $\theta_z$ = plane angle with respect to the z-axis. In 2D, only $\theta_x$ and $\theta_y$ are considered.
 
-Hydraulic and thermal properties (`aperture`, `nusselt`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
+Hydraulic and thermal properties (`aperture`, `heat_transfer_factor`) are not specified here; they are defined per-fracture under `material.fracture` (see the `material` section below and [Fracture Coupling](theory.md#fracture-coupling) for their role in the governing equations).
 
 > **IMPORTANT NOTE FOR FRACTURE SPECIFICATIONS**: The fracture mesh cutting algorithm can fail! Always check the quality of the cut elements in `domain.vtk`. If the algorithm fails, it can usually be solved by refining the mesh around fractures and/or junctions.
+
+### `wells` (optional field)
+Wells carry fluid from the surface into the rock mass and interact with the surrounding rock mass before the fluid reaches the injection point. Wells always interact thermally and may interact hydraulically in an open perforation interval. See [Well Coupling](theory.md#well-coupling) for the underlying physics. Mesh refinement around wells is often necessary.
+
+> **Current limitation:** Wells are currently only supported in 3D analyses (`dimensions: 3`). This will be extended to support axisymmetric analyses in 2D in the future.
+
+**Well Definition:**
+Each well specification requires two fields:
+* **`alignment`** *(list of list of floats as [start, end] point pairs)*: Each pair defines a line segment (points matching the spatial dimensions).
+  * The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. Lines may extend beyond the reservoir boundary.
+  * If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths.
+* **``dL_max``** *(float, default: L/10)*: Maximum element length for sections of the well which exceed the reservoir boundaries.
+
+Wells that share physical nodes in the mesh are automatically connected. Thus, perforation intervals or branching wells can be specified by having the wells share start or end points.
+
+**Mesh sizing:** when the mesh is built with [raft_to_geo](#mesh-generation), `mesh.sizing.well` sets the element size around the wells, in the same profile form as `frac` and `bc`:
+
+```yaml
+mesh:
+  sizing:
+    outer: 25
+    well: [[5, 10], [5, 50]]   # 5 at the well, growing to 10 over 5 m, then to `outer` over 50 m
+```
+
+Well alignments are discretized in the mesh, so element edges follow them and wells sharing a start or end point share the node that connects them. Alignments extending past the reservoir are clipped to [mesh: domain](#domain) for meshing, with a warning naming the well; `dL_max` applies to those outside sections and so does not affect the mesh.
+
+Hydraulic and thermal properties (`diameter`, `perforation_conductance`, `heat_transfer_factor`, `roughness`) are not specified here; they are defined per-well under `material.wells` (see the `material` section below and [Well Coupling](theory.md#well-coupling) for their role in the governing equations).
 
 ### `material`
 
@@ -197,8 +224,14 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 
 * **`fracture`** *(required if `fractures` are defined in `mesh`)*: Hydraulic and thermal properties of the fracture(s), used in the [fracture governing equations](theory.md#fracture-coupling). Each property is a list indexed the same way as fractures are listed under `mesh.fractures`.
   * **`aperture`** *(list[float], no default)*: Hydraulic aperture of the fracture, $w$, used in the cubic-law in-plane flow and leak-off terms.
-  * **`nusselt`** *(list[float], no default)*: Nusselt number, $Nu$, controlling the fracture-matrix convective heat transfer coefficient.
+  * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the fracture-matrix heat transfer coefficient, which assumes laminar flow between parallel plates. Use 1 for the standard laminar value, values below 1 to reduce heat exchange (0 is perfectly insulated), and large values to approach local thermal equilibrium between fracture and matrix.
 
+* **`wells`** *(required if `wells` are defined in `mesh`)*: Hydraulic and thermal properties of the well(s), used in the [well governing equations](theory.md#well-coupling). Each property is a list indexed the same way as wells are listed under `mesh.wells`.
+  * **`diameter`** *(list[float], no default)*: Hydraulic diameter of the well, $D$, which determines frictional resistance.
+  * **`roughness`** *(list[float], no default)*: Roughness (units of length) used to calculate friction in turbulent flow.
+  * **`perforation_conductance`** *(list[float], no default)*: Conductance from the well to the reservoir in ($m^2/m$). The pressure drop out of the well is typically a function of the skin effect and perforation radius, as well as damaged zones. A value of 0 is an unperforated well. A value of 1 typically large enough to hydraullically link the well and the reservoir while neglecting the pressure drop caused by perforations and skin effects.
+  * **`heat_transfer_factor`** *(list[float], no default)*: Multiplier, $F$, on the well-rock heat transfer coefficient. The coefficient follows the flow regime: constant in laminar flow (Re < 2000), the Gnielinski correlation in turbulent flow (Re > 2300, including the effect of `roughness`), and interpolated between. Use 1 for an uninsulated well, values below 1 for insulated sections (0 is perfectly insulated); values above 1 are permitted.
+> **Injecting and Producing via Wells**: For the well to interact hydraulically with the reservoir (i.e. inject or produce fluid), the connected well chain must have at least one interval with non-zero perforation conductance.
 
 ### `initial_conditions`
 * **`assignment`** (*string, default*: `"constant"`): determine how initial conditions are assigned.
@@ -237,14 +270,15 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 **Geometry Specification (Required):**
 Each boundary condition group must specify nodes using one or a combination of the following methods:
 
-* **`nodes`** *(list of integers)*: Direct node IDs where the boundary condition is applied.
+* **`nodes`** *(list of integers, or string)*: Direct node IDs where the boundary condition is applied. The string `"all"` is also accepted to fix all nodes in the mesh, or `"matrix"` to fix all nodes in the reservoir while leaving fracture and wellbore nodes unconstrained.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the mesh node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
 * **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Fluxes are integrated over the face.
   * Fluid fluxes: Specify `values` in $(\text{m}^3/ \text{s}) / \text{m}^2$.
   * Temperature fluxes: Specify `values` in $\text{W} / \text{m}^2$.
-* **`lines`** *(list of `[start, end]` point pairs)*: Each pair defines a line segment (points matching the spatial dimensions, as in `coords`). The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. The line is snipped to the domain boundaries. If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths. You can view the nodes with `line` boundary conditions in `domain.vtk` under the `line_BC_nodes` field. Fluxes are integrated over the prescribed line.
+* **`lines`** *(list of float `[start, end]` point pairs)*: Each pair defines a line segment (points matching the spatial dimensions, as in `coords`). The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. The line is snipped to the domain boundaries. If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths. You can view the nodes with `line` boundary conditions in `domain.vtk` under the `line_BC_nodes` field. Fluxes are integrated over the prescribed line.
   * Fluid fluxes: Specify `values` in $(\text{m}^3/ \text{s}) / \text{m}$.
   * Temperature fluxes: Specify `values` in $\text{W} / \text{m}$.
+* **`well`** *(list `[index (int), location (string)]`)*: Specify conditions on a well, only valid if `wells` is specified in the mesh. The well boundary condition specification takes the index of the well (corresponding to its 0-indexed position as specified in `mesh`) and the location as a string. Location only accepts `inlet` or `outlet` and respectively map to the first and last coordinate specified by the well alignment.
 
 **Field Blocks (At least one required):**
 * **`hydraulics`**: controls fluid pressure/flux at this group.
@@ -295,6 +329,28 @@ The group follows its specified fluid flux until any node's pressure reaches `ma
 
 Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. Wellbore groups are included when tagging groups for `outflow.log`.
 
+### `physics`
+Physics switches for each domain: `matrix`, `fractures`, and `wells`. Fractures and wells inherit any field not set for them from `matrix`, so a block is only needed where a domain differs.
+
+```yaml
+physics:
+  matrix:          # frozen pressure field, conduction only
+    flow: off
+    heat: transient
+    advection: off
+  wells:
+    flow: steady
+    advection: on
+```
+
+* **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
+* **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
+* **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
+
+An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
+
+Fracture/well-matrix coupling is assembled for a field if either side solves it, and includes advective exchange if either side has advection on.
+
 ### `simulation`
  Simulation controls
 * **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
@@ -313,11 +369,7 @@ Output Controls
 Physical controls
 
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change. Accepts `1` for a 1st order backwards Euler approximation, or `2` for a 2nd order backwards Euler approximation.
-* **`advection_on`** *(integer/boolean, default: `0`)*: Set to `1` to enable heat advection; `0` to disable.
 * **`gravity`** *(float, default: `0.0`)*: Set the magnitude of the acceleration due to gravity in $\text{m}/\text{s}^2$, typically `-9.81`. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
-
-* **`steady_pressure`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state pressure equations; `0` for transient.
-* **`steady_temperature`** *(integer/boolean, default: `0`)*: Set to `1` to solve steady-state temperature equations; `0` for transient.
 * **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
 
 Numerical solver controls
@@ -333,8 +385,9 @@ Numerical solver controls
 
 Gmsh is not a part of RAFT, but to simplify mesh generation the script `scripts/raft_to_geo.py` is provided which generates a Gmsh `.geo` and `.msh` files. Gmsh is not provided with raft and requires separate download and installation. Meshing by hand or from another source is still supported, this script is provided as a convenient option to keep the mesh and config files synchronized. The script `raft_to_geo.py` reads the config file and generates corresponding files to ensure that the mesh contains discretized boundary condition geometries, fractures, and region boundaries:
   - nodes are placed exactly where `coords` boundary conditions exist
-  - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, and region boundary edge lines and faces in 2D and 3D respectively
- Explicit discretization of these features reduces the error introduced by the mesh discretization.
+  - element edges are placed exactly along the specifications of `lines`, fracture lines and faces in 2D and 3D respectively, well alignments in 3D, and region boundary edge lines and faces in 2D and 3D respectively
+
+Explicit discretization of these features reduces the error introduced by the mesh and ensures consistency as the mesh is refined.
 
 **Running the script:**
 ```bash
@@ -368,15 +421,16 @@ mesh:
     outer: 10                                    # size far from any feature
     frac: [[0.05, 0.05, 1, 10], [0.2, 5, 5, 5]]  # size profile off the fractures
     bc: 0.5                                      # a bare number is one stage over `transition`
+    well: [[5, 10], [5, 50]]                     # size profile off the wells (3D only)
     transition: 25        # stage length for bare-number profiles (default: 5*outer)
     region_max: 3         # coarsest size on a region boundary
     boundary_growth: 0.25 # how strongly region boundaries follow nearby features
     quads: false          # Q4 elements instead of T3 (2D only)
 ```
 
-A profile $[[s_1, ..., s_n], [L_1, ..., L_n]]$ sets the element size to $s_1$ at the feature, then ramps $s_1 \rightarrow s_2$ over $L_1$, $s_2 \rightarrow s_3$ over $L_2$, and finally $s_n \rightarrow$ `outer` over $L_n$. Sizes need not increase, so repeating a value holds that size for a set distance: the example above holds 0.05 for 0.2 m, then grows to 1 over 5 m, to 10 over the next 5 m, and to `outer` over the 5 m after that. `frac` and `bc` are independent, so fractures may be finer than boundary conditions or the other way around.
+A profile $[[s_1, ..., s_n], [L_1, ..., L_n]]$ sets the element size to $s_1$ at the feature, then ramps $s_1 \rightarrow s_2$ over $L_1$, $s_2 \rightarrow s_3$ over $L_2$, and finally $s_n \rightarrow$ `outer` over $L_n$. Sizes need not increase, so repeating a value holds that size for a set distance: the example above holds 0.05 for 0.2 m, then grows to 1 over 5 m, to 10 over the next 5 m, and to `outer` over the 5 m after that. `frac`, `bc` and `well` are independent, so fractures may be finer than boundary conditions or wells, or the other way around.
 
-Region boundaries are refined according to their proximity to fractures and boundary conditions, so an interface near a fracture is resolved more finely than one far away. `region_max` caps that refinement and `boundary_growth` sets how strongly it follows the nearby feature. Stretches of a region boundary that lie on the domain boundary are left at `outer`.
+Region boundaries are refined according to their proximity to fractures, wells and boundary conditions, so an interface near a fracture is resolved more finely than one far away. `region_max` caps that refinement and `boundary_growth` sets how strongly it follows the nearby feature. Stretches of a region boundary that lie on the domain boundary are left at `outer`.
 
 ### Command line options
 | Option | Effect |
@@ -388,6 +442,7 @@ Region boundaries are refined according to their proximity to fractures and boun
 | `--size-outer` | Overrides `sizing.outer` |
 | `--size-frac`, `--dist-frac` | Fracture sizes and stage lengths, comma separated (e.g. `--size-frac 0.05,0.05,1,10 --dist-frac 0.2,5,5,5`) |
 | `--size-bc`, `--dist-bc` | The same for point and line boundary conditions |
+| `--size-well`, `--dist-well` | The same for wells |
 | `--transition` | Stage length when only sizes are given |
 | `--size-region-max` | Overrides `sizing.region_max` |
 | `--boundary-growth` | Overrides `sizing.boundary_growth` |

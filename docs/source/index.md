@@ -5,5 +5,6 @@
 
 User Guide <README>
 Theory <theory>
+Verification <verification>
 License <license>
 ```

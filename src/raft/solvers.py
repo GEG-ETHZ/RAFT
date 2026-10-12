@@ -32,6 +32,7 @@ from .matrixassembly import (
     integrate_tangent_matrices,
     warn_nonmonotone_pressure_diffusion,
 )
+from .physics import Physics
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -114,65 +115,24 @@ def _unpack_boundary_conditions(
     return T_fix, T_bar, p_fix, p_bar, F_extT, F_extp
 
 
-def compute_residuals_comp(
-    F_vec: dict[str, Any],
-    F_extp: npt.NDArray[np.float64],
-    F_extT: npt.NDArray[np.float64],
-    *,
-    fully_coupled: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
-) -> dict[str, npt.NDArray[np.float64]]:
-    """Assemble integrated residuals alongside external force vectors."""
-    if pressure_only or fully_coupled:
-        F_Pstorage = F_vec["F_Pstorage"]
-        F_Pdiffusion = F_vec["F_Pdiffusion"]
-
-        R = {"p": F_Pstorage - F_Pdiffusion - F_extp}
-
-    if temperature_only or fully_coupled:
-        F_Tstorage = F_vec["F_Tstorage"]
-        F_Tdiffusion = F_vec["F_Tdiffusion"]
-        F_Tadvection = F_vec["F_Tadvection"]
-        F_Tstab = F_vec["F_Tstab"]
-        F_enth_bnd = F_vec.get("F_enth_bnd", 0)
-        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_extT - F_enth_bnd
-
-        if fully_coupled:
-            R["T"] = RT
-        else:
-            R = {"T": RT}
-
-    return R
-
-
 def compute_residuals(
-    F_vec: dict[str, Any],
-    F_ext: dict[str, Any],
-    *,
-    fully_coupled: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
+    F_vec: dict[str, Any], F_ext: dict[str, Any], keys: list[str]
 ) -> dict[str, npt.NDArray[np.float64]]:
-    """Assemble integrated residuals alongside external force vectors."""
-    if pressure_only or fully_coupled:
-        F_Pstorage = F_vec["F_Pstorage"]
-        F_Pdiffusion = F_vec["F_Pdiffusion"]
+    """Assemble integrated residuals alongside external force vectors for the solved `keys`."""
+    R = {}
+    if "p" in keys:
+        R["p"] = F_vec["F_Pstorage"] - F_vec["F_Pdiffusion"] - F_ext["p"]
 
-        R = {"p": F_Pstorage - F_Pdiffusion - F_ext["p"]}
-
-    if temperature_only or fully_coupled:
-        F_Tstorage = F_vec["F_Tstorage"]
-        F_Tdiffusion = F_vec["F_Tdiffusion"]
-        F_Tadvection = F_vec["F_Tadvection"]
-        F_Tstab = F_vec["F_Tstab"]
+    if "T" in keys:
         F_enth_bnd = F_vec.get("F_enth_bnd", 0)
-        RT = F_Tstorage + F_Tdiffusion - F_Tadvection + F_Tstab - F_ext["T"] - F_enth_bnd
-
-        if fully_coupled:
-            R["T"] = RT
-        else:
-            R = {"T": RT}
+        R["T"] = (
+            F_vec["F_Tstorage"]
+            + F_vec["F_Tdiffusion"]
+            - F_vec["F_Tadvection"]
+            + F_vec["F_Tstab"]
+            - F_ext["T"]
+            - F_enth_bnd
+        )
 
     return R
 
@@ -200,6 +160,7 @@ def _partition_and_solve_matrix(
 def _check_convergence_NR(
     R: dict[str, Any],
     fixed_dofs: dict[str, Any],
+    dirichlet_dofs: dict[str, Any],
     NR: dict[str, Any],
     mesh: dict[str, Any],
     iteration: int,
@@ -219,7 +180,7 @@ def _check_convergence_NR(
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
         numerator = np.linalg.norm(R[key][nF])
-        flux_scale = max(float(np.linalg.norm(R[key][fixed_dofs[key]])), 1.0)
+        flux_scale = max(float(np.linalg.norm(R[key][dirichlet_dofs[key]])), 1.0)
 
         NR[key][iteration] = numerator / flux_scale / nn
         NR["all"][iteration] += NR[key][iteration] ** 2
@@ -342,6 +303,18 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+def _reaction_flow_rates(
+    F_vec: dict[str, Any], F_ext: dict[str, Any], fixed_dofs: dict[str, Any], dirichlet_dofs: dict[str, Any]
+) -> npt.NDArray[np.float64]:
+    """Nodal flow rates: reactions at Dirichlet dofs, prescribed fluxes at free dofs."""
+    R_p = compute_residuals(F_vec, F_ext, ["p"])["p"]
+    q = np.zeros((len(R_p), 1))
+    q[dirichlet_dofs["p"]] = R_p[dirichlet_dofs["p"]]
+    nF_p = np.setdiff1d(np.arange(len(R_p)), fixed_dofs["p"])
+    q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
+    return q
+
+
 def _newton_raphson_loop(  # noqa
     controls: dict[str, Any],
     material: dict[str, Any],
@@ -350,28 +323,28 @@ def _newton_raphson_loop(  # noqa
     BC_config: list[dict[str, Any]],
     T_flow: npt.NDArray[np.float64],
     cv: npt.NDArray[np.float64],  # rate coefficients
-    keys: list[str],
     fixed_dofs: dict[str, Any],
+    dirichlet_dofs: dict[str, Any],
     F_ext: dict[str, Any],
     verbose: bool,
     debug_plot_on: bool,
     *,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
-    fully_coupled: bool = False,
+    physics: Physics,
+    T_flow_lagged: bool,
 ) -> tuple[dict[str, Any], bool, float]:
-    """Perform non-linear Newton-Raphson iterations.
+    """Perform non-linear Newton-Raphson iterations for the fields `physics` solves.
 
-    `T_flow` must be the SAME array object as `primary_variables["T"]` when
-    `fully_coupled=True` (so it tracks the in-loop updates below); for
-    `temperature_only`/`pressure_only` it should be a separate frozen/lagged copy.
+    `T_flow` is a separate frozen/extrapolated copy when `T_flow_lagged`; otherwise it must
+    be the SAME array object as `primary_variables["T"]` so it tracks the in-loop updates below.
     """
+    keys = [key for key, field in (("p", "flow"), ("T", "heat")) if physics.solves(field)]
+    solve_p, solve_T = "p" in keys, "T" in keys
     # Newton-Raphson controls
     iter_max = controls["iterative_controls"]["iter_max"]
     NR_tol = controls["iterative_controls"]["NR_tol"]
     aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     NR_step = controls["iterative_controls"]["NR_step"]
-    one_pass = controls["iterative_controls"]["one_pass"] and temperature_only
+    one_pass = controls["iterative_controls"]["one_pass"] and T_flow_lagged
     converged = False
 
     if one_pass:
@@ -379,7 +352,7 @@ def _newton_raphson_loop(  # noqa
         aitken_on = False
         NR_step = 1.0
 
-    # Initaliaze
+    # Initialize
     iteration = 0
     NR = {"all": np.zeros(iter_max + 1)}  # Store iteration residuals for debugging
     R = {}
@@ -416,13 +389,9 @@ def _newton_raphson_loop(  # noqa
     aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
 
     # Run-type labels
-    if fully_coupled:
+    if solve_p and solve_T:
         label = "FULLY COUPLED"
-
-        # Indexing for updating reaction fluxes each iteration
-        p_dofs_local = primary_variables["p_dofs"]
-        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
-    elif pressure_only:
+    elif solve_p:
         label = "ITERATIVE PRESSURE"
     else:
         label = "ITERATIVE TEMPERATURE"
@@ -441,36 +410,28 @@ def _newton_raphson_loop(  # noqa
             controls,
             cv,
             T_flow,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
         )
 
-        # Update reaction flow rates (fully-coupled only)
-        if fully_coupled:
-            q = np.zeros((len(p_dofs_local), 1))
-            R_p = compute_residuals(F_vec, F_ext, pressure_only=True)["p"]
-            q[fixed_dofs["p"]] = R_p[fixed_dofs["p"]]
-            q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
-            primary_variables["q"] = q
+        # Update reaction flow rates in-loop when coupled, for the enthalpy boundary flux
+        if solve_p and solve_T:
+            primary_variables["q"] = _reaction_flow_rates(F_vec, F_ext, fixed_dofs, dirichlet_dofs)
 
         # Calculate enthalpy boundary fluxes using reaction flow rates
-        if temperature_only or fully_coupled:
+        if solve_T:
             F_enth_bnd = integrate_enthlpy_bndry_residual(
-                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=temperature_only
+                mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=T_flow_lagged
             )
             F_vec["F_enth_bnd"] = F_enth_bnd["F_enth_bnd"]
 
         # Compuate residuals
-        R = compute_residuals(
-            F_vec,
-            F_ext,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
-            fully_coupled=fully_coupled,
-        )
+        R = compute_residuals(F_vec, F_ext, keys)
 
         # Check convergence
-        converged, iteration_error = _check_convergence_NR(R, fixed_dofs, NR, mesh, iteration, NR_tol)
+        converged, iteration_error = _check_convergence_NR(
+            R, fixed_dofs, dirichlet_dofs, NR, mesh, iteration, NR_tol
+        )
 
         if converged and iteration > 0:
             if verbose:
@@ -485,30 +446,17 @@ def _newton_raphson_loop(  # noqa
                 controls,
                 cv,
                 T_flow,
-                pressure_only=pressure_only,
-                temperature_only=temperature_only,
-                fully_coupled=fully_coupled,
-                # T_flow is a frozen copy (not the unknown T) only in the
-                # temperature-only lin-extrap loop; for fully_coupled it is
-                # aliased to the actual unknown, so its derivative must flow through.
-                T_flow_lagged=temperature_only,
+                physics=physics,
+                T_flow_lagged=T_flow_lagged,
             )
 
             # Warnings for poor conditioning
-            if iteration == 0 and (fully_coupled or pressure_only):
+            if iteration == 0 and solve_p:
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
             # Assemble Jacobian - different by case
-            if pressure_only:
-                A = jacobian["Kpp"]
-                b = R["p"]
-            elif temperature_only:
-                K_enth_bnd = integrate_enthlpy_bndry_tangent(
-                    mesh, material, primary_variables, controls, T_flow, BC_config, T_flow_lagged=True
-                )
-                A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
-                b = R["T"]
-            else:  # fully_coupled
+            if solve_p and solve_T:
+                # Fully coupled
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
                     mesh,
                     material,
@@ -537,6 +485,25 @@ def _newton_raphson_loop(  # noqa
                 )
 
                 b = np.vstack((R["p"], R["T"]))
+
+            elif solve_p:
+                # Pressure only
+                A = jacobian["Kpp"]
+                b = R["p"]
+
+            else:
+                # Temperature only
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    T_flow,
+                    BC_config,
+                    T_flow_lagged=T_flow_lagged,
+                )
+                A = jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]
+                b = R["T"]
 
             # Solve system of equations
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
@@ -592,15 +559,9 @@ def _newton_raphson_loop(  # noqa
     if not converged:
         for key in keys:
             primary_variables[key] = vars_orig[key]
-    # Caclulate reaction fluxes
-    if pressure_only:
-        # Reaction fluxes only need computing once. Fully_coupled is calculated in-loop.
-        p_dofs_local = primary_variables["p_dofs"]
-        nF_p = np.setdiff1d(p_dofs_local, fixed_dofs["p"]).astype(int)
-        q = np.zeros((len(p_dofs_local), 1))
-        q[fixed_dofs["p"]] = R["p"][fixed_dofs["p"]]
-        q[nF_p] = q[nF_p] + F_ext["p"][nF_p]
-        primary_variables["q"] = q
+    # Caclulate reaction fluxes once when pressure is solved alone; coupled is calculated in-loop.
+    if solve_p and not solve_T:
+        primary_variables["q"] = _reaction_flow_rates(F_vec, F_ext, fixed_dofs, dirichlet_dofs)
 
     if debug_plot_on or iteration >= iter_max:
         _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
@@ -635,21 +596,26 @@ def lin_extrap_time_integration(  # noqa
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     rate_order = controls["rate_order"]
+    physics = controls["physics"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
 
     # unpack boundary conditions
+    p_off = physics.off_nodes(mesh, "flow")
+    T_off = physics.off_nodes(mesh, "heat")
     T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
         boundary_conditions, p_dofs, T_dofs
     )
-    fixed_dofs = {"p": p_fix, "T": T_fix}
+    fixed_dofs = {"p": np.union1d(p_fix, p_off), "T": np.union1d(T_fix, T_off)}  # off nodes hold their values
+    # Dirichlet dofs with an assembled residual, for reaction fluxes and convergence scaling
+    dirichlet_dofs = {"p": np.setdiff1d(p_fix, p_off), "T": np.setdiff1d(T_fix, T_off)}
     F_ext = {"p": F_extp, "T": F_extT}
 
     # Apply fixed boundary conditions
     p[p_fix, :] = p_bar
     T[T_fix, :] = T_bar
-    nF_T = np.setdiff1d(T_dofs, T_fix).astype(int)  # free temperature DoFs
+    nF_T = np.setdiff1d(T_dofs, fixed_dofs["T"]).astype(int)  # free temperature DoFs
 
     # Extrapolate temperature for free Dofs
     T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
@@ -661,24 +627,30 @@ def lin_extrap_time_integration(  # noqa
     T_flow = T.copy()
 
     # Update pressure with extrapolated temperature
-    primary_variables, p_converged, _ = _newton_raphson_loop(
-        controls,
-        material,
-        mesh,
-        primary_variables,
-        BC_config,
-        T_flow,  # Extrapolated tempearture
-        cv,
-        ["p"],
-        fixed_dofs,
-        F_ext,
-        verbose,
-        debug_pressure_plot_on,
-        pressure_only=True,
-    )
+    if physics.solves("flow"):
+        primary_variables, p_converged, _ = _newton_raphson_loop(
+            controls,
+            material,
+            mesh,
+            primary_variables,
+            BC_config,
+            T_flow,  # Extrapolated tempearture
+            cv,
+            fixed_dofs,
+            dirichlet_dofs,
+            F_ext,
+            verbose,
+            debug_pressure_plot_on,
+            physics=physics.with_off("heat"),
+            T_flow_lagged=False,
+        )
+    else:
+        p_converged = True  # pressure is off everywhere: nothing to solve
 
     # Update temperature only if pressure converged
-    if p_converged:
+    if not p_converged:
+        T_converged = False  # temperature not attempted
+    elif physics.solves("heat"):
         # Update temperature. Use extrapolated temperature for property evaluation,
         # for consistency with pressure.
         primary_variables, T_converged, _ = _newton_raphson_loop(
@@ -689,13 +661,16 @@ def lin_extrap_time_integration(  # noqa
             BC_config,
             T_flow,
             cv,
-            ["T"],
             fixed_dofs,
+            dirichlet_dofs,
             F_ext,
             verbose,
             debug_temperature_plot_on,
-            temperature_only=True,
+            physics=physics.with_off("flow"),
+            T_flow_lagged=True,
         )
+    else:
+        T_converged = True  # temperature is off everywhere: nothing to solve
 
     # ---- Check for extrapolation error
     if p_converged and T_converged:
@@ -731,20 +706,27 @@ def fully_coupled_time_integration(  # noqa
     p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     rate_order = controls["rate_order"]
+    physics = controls["physics"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
 
     # unpack boundary conditions
+    p_off = physics.off_nodes(mesh, "flow")
+    T_off = physics.off_nodes(mesh, "heat")
     T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
         boundary_conditions, p_dofs, T_dofs
     )
-    fixed_dofs = {"p": p_fix, "T": T_fix}
+    fixed_dofs = {"p": np.union1d(p_fix, p_off), "T": np.union1d(T_fix, T_off)}  # off nodes hold their values
+    # Dirichlet dofs with an assembled residual, for reaction fluxes and convergence scaling
+    dirichlet_dofs = {"p": np.setdiff1d(p_fix, p_off), "T": np.setdiff1d(T_fix, T_off)}
     F_ext = {"p": F_extp, "T": F_extT}
 
     # Apply fixed boundary conditions
     primary_variables["p"][p_fix, :] = p_bar
     primary_variables["T"][T_fix, :] = T_bar
+    if not (physics.solves("flow") or physics.solves("heat")):
+        return primary_variables, dt, True, 0.0
 
     primary_variables, converged, iteration_error = _newton_raphson_loop(
         controls,
@@ -754,12 +736,13 @@ def fully_coupled_time_integration(  # noqa
         BC_config,
         primary_variables["T"],  # T_flow must alias primary_variables["T"] for fully_coupled
         cv,
-        ["p", "T"],
         fixed_dofs,
+        dirichlet_dofs,
         F_ext,
         verbose,
         debug_plot_on,
-        fully_coupled=True,
+        physics=physics,
+        T_flow_lagged=False,
     )
 
     return primary_variables, dt, converged, iteration_error

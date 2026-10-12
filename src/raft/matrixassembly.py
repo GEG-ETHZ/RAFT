@@ -35,10 +35,18 @@ from .matprops import (
     PropertyResult,
     get_effective_permeability,
     get_EOS,
+    get_friction_factor,
+    get_nusselt_number,
     get_porosity_lagrangian,
     get_viscosity,
 )
-from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB, getquadrature
+from .physics import Physics
+from .shapefunctions import (
+    GNMATRIX_FUNCS,
+    NMATRIX_FUNCS,
+    getB,
+    getquadrature,
+)
 
 
 # ---- Data classes
@@ -117,7 +125,7 @@ class NodalEnthalpyState:
     """`NodalPropertyState`'s counterpart for `EnthalpyResult`, which also carries `cp`.
 
     Same quad point (`.q`)/element node (`.e`) shape as `NodalPropertyState`, evaluated once at
-    nodes in `_evaluate_flow_and_storage_state` and interpolated to quad points from there,
+    nodes in `_evaluate_nodal_fluid_state` and interpolated to quad points from there,
     rather than re-derived per consumer (`_evaluate_advection_terms`'s `.e_n`/`.q_n`).
     """
 
@@ -139,7 +147,7 @@ class NodalEnthalpyState:
 
 @dataclass(frozen=True, slots=True)
 class RegionMeshData:
-    """Mesh/region data resolved from the bulk mesh, or the fracture mesh when `is_fracture`."""
+    """Mesh/region data resolved from the bulk mesh, or the fracture/well mesh on their recursive passes."""
 
     nn: int
     nsd: int
@@ -150,8 +158,8 @@ class RegionMeshData:
     nq_list: list[int]
     region_lists: list[list[int]]
     num_regions: int
-    fmesh: dict[str, Any]  # {} sentinel when not is_fracture
-    nodes_f: npt.NDArray[np.float64]  # empty sentinel when not is_fracture
+    submesh: dict[str, Any]  # fracture or well mesh; {} sentinel for the bulk mesh
+    submesh_nodes: npt.NDArray[np.float64]  # sub-mesh nodes; empty sentinel for the bulk mesh
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +173,22 @@ class RegionSolidData:
     cp_s: float
     alpha_s: float
     lambda_s: npt.NDArray[np.float64] | float  # anisotropic case is a conductivity tensor
+
+
+@dataclass(frozen=True, slots=True)
+class RegionFlowData:
+    """Per-region flow properties; NaN sentinels where a field does not apply."""
+
+    kf: npt.NDArray[np.float64] | float  # permeability; dummy 1 for wells
+    isotropic_perm: bool
+    nodes_r: npt.NDArray[np.float64]  # fracture: projected nodes; well: 3D nodes, projected per element
+    w0: float  # fracture aperture or well area; scales storage and conduction
+    u: npt.NDArray[np.float64]  # fracture: region tangent (nsd, 1); well: element tangents (ne, nsd)
+    kf_perp: PropertyResult  # fracture transverse permeability, coupling only
+    diameter: float  # well only
+    radius: float  # well only
+    perforation_conductance: float  # well only; well-to-rock conductance per unit wall area (m)
+    roughness: float  # well only
 
 
 # ---- General helpers
@@ -186,6 +210,12 @@ def _make_sparse(
 ) -> csc_matrix:
     """Make sparse matrix from vectorized input."""
     return csc_matrix((vals, (row_vec, col_vec)), shape=(nn_1, nn_2))
+
+
+def _pad_sparse(matrix: csc_matrix, shape: tuple[int, int]) -> csc_matrix:
+    """Zero-pad a sparse matrix to `shape`, keeping entries in the top-left."""
+    coo = matrix.tocoo()
+    return csc_matrix((coo.data, (coo.row, coo.col)), shape=shape)
 
 
 def _lump_diagonal(matrix: csc_matrix) -> csc_matrix:
@@ -341,14 +371,14 @@ def _vctrzd_quad_point_integration(
     """
     if scalar:
         integrand = np.asarray(integrand, dtype=np.float64)
-    left_T = left_matrix.transpose(0, 2, 1)
 
     # choose between multiply types for scalar vs. non-scalar material properties
     middle = integrand * right_matrix if scalar else integrand @ right_matrix
 
-    K = left_T @ middle * weights.reshape(-1, 1, 1)
-
-    result: npt.NDArray[np.float64] = K.sum(0)
+    # Stack quad points into the contraction: sum_q L_q^T M_q w_q as a single matmul
+    nq, a, n_left = left_matrix.shape
+    weighted = (middle * weights.reshape(-1, 1, 1)).reshape(nq * a, -1)
+    result: npt.NDArray[np.float64] = left_matrix.reshape(nq * a, n_left).T @ weighted
     return result
 
 
@@ -364,12 +394,26 @@ def _vctrzd_qp_vctr_integrate(
     """
     if scalar:
         integrand = np.asarray(integrand, dtype=np.float64)
-    left_T = left_matrix.transpose(0, 2, 1)
 
-    K = left_T @ integrand * weights.reshape(-1, 1, 1)
-
-    result: npt.NDArray[np.float64] = K.sum(0)
+    # Stack quad points into the contraction: sum_q L_q^T f_q w_q as a single matmul
+    nq, a, n_left = left_matrix.shape
+    weighted = (integrand * weights.reshape(-1, 1, 1)).reshape(nq * a, -1)
+    result: npt.NDArray[np.float64] = left_matrix.reshape(nq * a, n_left).T @ weighted
     return result
+
+
+def _lumped_mass(N_q: npt.NDArray[np.float64], wJe_q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Row-sum lumped mass, sum_j int(N_i N_j) = int(N_i) since the shape functions sum to 1."""
+    result: npt.NDArray[np.float64] = wJe_q.reshape(-1) @ N_q[:, 0, :]
+    return result
+
+
+def _diag_matrix(d: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Square matrix with diagonal `d`; `np.diag`'s generality costs more than the fill here."""
+    n = d.size
+    M = np.zeros((n, n))
+    M.flat[:: n + 1] = d
+    return M
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
@@ -377,8 +421,8 @@ def _get_parent_coordinates_q4(
     nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Numba kernel: map physical boundary points to Q4 parent coordinates by edge projection."""
-    n_loop = goal_pts.shape[2]
-    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 2))
     x_nodes = nodes[:, 0]
     y_nodes = nodes[:, 1]
     tol = 1.0e-7
@@ -438,8 +482,8 @@ def _get_parent_coordinates_t3(
     nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
     """Numba kernel: map physical points to T3 parent coordinates via the direct linear solve."""
-    n_loop = goal_pts.shape[2]
-    parent_coords = np.empty((nodes.shape[1], 1, n_loop))
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 2))
 
     x1, x2, x3 = nodes[0, 0], nodes[1, 0], nodes[2, 0]
     y1, y2, y3 = nodes[0, 1], nodes[1, 1], nodes[2, 1]
@@ -456,59 +500,135 @@ def _get_parent_coordinates_t3(
     return parent_coords
 
 
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_t4(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical points to T4 parent coordinates via the direct linear solve."""
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.empty((n_loop, 1, 3))
+
+    # Affine map x = x1 + J xi, with J columns the edges from node 0
+    J = np.empty((3, 3))
+    for k in range(3):
+        J[:, k] = nodes[k + 1, :] - nodes[0, :]
+    J_inv = np.linalg.inv(J)
+
+    for gp in range(n_loop):
+        parent_coords[gp, 0, :] = J_inv @ (goal_pts[gp, 0, :] - nodes[0, :])
+
+    return parent_coords
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _get_parent_coordinates_b8(
+    nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Numba kernel: map physical boundary points to B8 parent coordinates by bilinear face inversion."""
+    n_loop = goal_pts.shape[0]
+    parent_coords = np.zeros((n_loop, 1, 3))
+    tol = 1.0e-7 * (np.max(nodes) - np.min(nodes))  # relative to element size
+
+    # B8 faces as (fixed_axis, fixed_value, s_axis, t_axis, nodes at (s, t) = (-,-), (+,-), (+,+), (-,+))
+    fixed_axis = (2, 2, 1, 1, 0, 0)
+    fixed_val = (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+    s_axis = (0, 0, 0, 0, 1, 1)
+    t_axis = (1, 1, 2, 2, 2, 2)
+    face_nodes = np.array(
+        [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [3, 2, 6, 7], [0, 3, 7, 4], [1, 2, 6, 5]]
+    )
+
+    for gp in range(n_loop):
+        x_target = goal_pts[gp, 0, :]
+        for f in range(6):
+            P0 = nodes[face_nodes[f, 0], :]
+            P1 = nodes[face_nodes[f, 1], :]
+            P2 = nodes[face_nodes[f, 2], :]
+            P3 = nodes[face_nodes[f, 3], :]
+            # Bilinear face map x = a + b s + c t + d s t
+            a = 0.25 * (P0 + P1 + P2 + P3)
+            b = 0.25 * (-P0 + P1 + P2 - P3)
+            c = 0.25 * (-P0 - P1 + P2 + P3)
+            d = 0.25 * (P0 - P1 + P2 - P3)
+            r = x_target - a
+
+            # Project to 2D by dropping the axis closest to the face normal
+            normal = np.cross(b, c)
+            drop = np.argmax(np.abs(normal))
+            i, j = (1, 2) if drop == 0 else ((0, 2) if drop == 1 else (0, 1))
+
+            # Eliminating t gives A s^2 + B s + C = 0 (2D cross products)
+            A = b[i] * d[j] - b[j] * d[i]
+            B = (b[i] * c[j] - b[j] * c[i]) - (r[i] * d[j] - r[j] * d[i])
+            C = -(r[i] * c[j] - r[j] * c[i])
+            if abs(A) < 1.0e-12 * abs(B):
+                s_pt = -C / B  # parallelogram face: linear in s
+            else:
+                disc = max(B * B - 4.0 * A * C, 0.0)
+                s_pt = (-B + np.sqrt(disc)) / (2.0 * A)
+                if abs(s_pt) > 1.0 + 1.0e-7:  # take the root inside the face
+                    s_pt = (-B - np.sqrt(disc)) / (2.0 * A)
+            if abs(s_pt) > 1.0 + 1.0e-7:
+                continue
+
+            # Least-squares t along the s-isoline
+            ct = c + d * s_pt
+            t_pt = np.dot(r - b * s_pt, ct) / np.dot(ct, ct)
+            if abs(t_pt) > 1.0 + 1.0e-7:
+                continue
+
+            # Accept the face only if the point lies on it in 3D
+            if np.linalg.norm(a + b * s_pt + c * t_pt + d * s_pt * t_pt - x_target) < tol:
+                parent_coords[gp, 0, fixed_axis[f]] = fixed_val[f]
+                parent_coords[gp, 0, s_axis[f]] = max(-1.0, min(1.0, s_pt))
+                parent_coords[gp, 0, t_axis[f]] = max(-1.0, min(1.0, t_pt))
+                break
+
+    return parent_coords
+
+
 def _get_parent_coordinates(
     etype: str, nodes: npt.NDArray[np.float64], goal_pts: npt.NDArray[np.float64]
 ) -> npt.NDArray[np.float64]:
-    """Determine the parent coordinates of a physical point in an isoparametric element.
+    """Determine the parent coordinates of physical points in an isoparametric element.
 
-    Assumes that the point is on the element boundary.  Used for mapping fracture
-    quadrature points to matrix element boundary points.
+    Q4 assumes the points lie on the element boundary. Used for mapping fracture/well
+    quadrature points to matrix element points. `goal_pts` and the result are (nq, 1, nsd).
     """
     parent_coords: npt.NDArray[np.float64]
-    if etype == "Q4":
-        parent_coords = _get_parent_coordinates_q4(nodes, goal_pts)
-    else:
-        parent_coords = _get_parent_coordinates_t3(nodes, goal_pts)
+    match etype:
+        case "Q4":
+            parent_coords = _get_parent_coordinates_q4(nodes, goal_pts)
+        case "T3":
+            parent_coords = _get_parent_coordinates_t3(nodes, goal_pts)
+        case "T4":
+            parent_coords = _get_parent_coordinates_t4(nodes, goal_pts)
+        case "B8":
+            parent_coords = _get_parent_coordinates_b8(nodes, goal_pts)
+        case _:
+            raise NotImplementedError(f"Parent coordinate mapping for {etype} elements.")
     return parent_coords
 
 
 def _create_fracture_coupling_vectors(
     conn_f: list[list[int]], conn_fm: list[list[int]], conn_m: list[list[int]]
-) -> tuple[
-    int,
-    npt.NDArray[np.int32],
-    npt.NDArray[np.int32],
-    int,
-    npt.NDArray[np.int32],
-    npt.NDArray[np.int32],
-    int,
-    npt.NDArray[np.int32],
-    npt.NDArray[np.int32],
-    int,
-    npt.NDArray[np.int32],
-    npt.NDArray[np.int32],
-    int,
-    npt.NDArray[np.int32],
-]:
+) -> dict[str, npt.NDArray[np.int32]]:
     """Create the row and column vectors for vectorized fracture coupling matrix assembly."""
-    count_vec_ff = 0  # Fracture-fracture on-diagonal counts
-    row_list_ff = []
+    row_list_ff = []  # Fracture-fracture on-diagonal
     col_list_ff = []
 
-    count_vec_fm = 0  # Fracture-matrix off-diagonal counts (row=matrix, col=fracture)
-    row_list_fm = []
+    row_list_fm = []  # Fracture-matrix off-diagonal (row=matrix, col=fracture)
     col_list_fm = []
 
-    count_vec_mf = 0  # Matrix-fracture off-diagonal counts (row=fracture, col=matrix)
-    row_list_mf = []
+    row_list_mf = []  # Matrix-fracture off-diagonal (row=fracture, col=matrix)
     col_list_mf = []
 
-    count_vec_mm = 0  # Matrix-matrix on-diagonal counts
-    row_list_mm = []
+    row_list_mm = []  # Matrix-matrix on-diagonal
     col_list_mm = []
 
-    count_vec_flux_m = 0  # Matrix-side scatter target for the coupling *residual* (a vector, so
-    row_list_flux_m = []  # one row index per matrix node per match - no column/nne_m^2 term)
+    # Matrix-side scatter target for the coupling *residual* (a vector, so
+    # one row index per matrix node per match - no column/nne_m^2 term)
+    row_list_flux_m = []
 
     ne_f = len(conn_f)
     for e_f in range(ne_f):
@@ -518,60 +638,53 @@ def _create_fracture_coupling_vectors(
             e_nodes_m = conn_m[e_m]
             nne_m = len(e_nodes_m)
 
-            # ff
+            # ff: nne_f * nne_f entries
             row_list_ff.append(
                 np.repeat(np.array(e_nodes_f, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
             )
             col_list_ff.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_f)).ravel())
-            count_vec_ff += nne_f * nne_f
-            # fm
+            # fm: nne_m * nne_f entries
             row_list_fm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_f, axis=1).ravel()
             )
             col_list_fm.append(np.tile(np.array(e_nodes_f, dtype=np.int32), (1, nne_m)).ravel())
-            count_vec_fm += nne_f * nne_m
-            # mf
+            # mf: nne_f * nne_m entries
             row_list_mf.append(
                 np.repeat(np.array(e_nodes_f, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
             )
             col_list_mf.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_f)).ravel())
-            count_vec_mf += nne_f * nne_m
-            # mm
+            # mm: nne_m * nne_m entries
             row_list_mm.append(
                 np.repeat(np.array(e_nodes_m, dtype=np.int32).reshape(-1, 1), nne_m, axis=1).ravel()
             )
             col_list_mm.append(np.tile(np.array(e_nodes_m, dtype=np.int32), (1, nne_m)).ravel())
-            count_vec_mm += nne_m * nne_m
-            # flux (residual, matrix-side)
+            # flux (residual, matrix-side): nne_m entries
             row_list_flux_m.append(np.array(e_nodes_m, dtype=np.int32))
-            count_vec_flux_m += nne_m
 
-    row_vec_ff = np.concatenate(row_list_ff).astype(np.int32)
-    col_vec_ff = np.concatenate(col_list_ff).astype(np.int32)
-    row_vec_fm = np.concatenate(row_list_fm).astype(np.int32)
-    col_vec_fm = np.concatenate(col_list_fm).astype(np.int32)
-    row_vec_mf = np.concatenate(row_list_mf).astype(np.int32)
-    col_vec_mf = np.concatenate(col_list_mf).astype(np.int32)
-    row_vec_mm = np.concatenate(row_list_mm).astype(np.int32)
-    col_vec_mm = np.concatenate(col_list_mm).astype(np.int32)
-    row_vec_flux_m = np.concatenate(row_list_flux_m).astype(np.int32)
+    return {
+        "row_vec_ff": np.concatenate(row_list_ff).astype(np.int32),
+        "col_vec_ff": np.concatenate(col_list_ff).astype(np.int32),
+        "row_vec_fm": np.concatenate(row_list_fm).astype(np.int32),
+        "col_vec_fm": np.concatenate(col_list_fm).astype(np.int32),
+        "row_vec_mf": np.concatenate(row_list_mf).astype(np.int32),
+        "col_vec_mf": np.concatenate(col_list_mf).astype(np.int32),
+        "row_vec_mm": np.concatenate(row_list_mm).astype(np.int32),
+        "col_vec_mm": np.concatenate(col_list_mm).astype(np.int32),
+        "row_vec_flux_m": np.concatenate(row_list_flux_m).astype(np.int32),
+    }
 
-    return (
-        count_vec_ff,
-        row_vec_ff,
-        col_vec_ff,
-        count_vec_fm,
-        row_vec_fm,
-        col_vec_fm,
-        count_vec_mf,
-        row_vec_mf,
-        col_vec_mf,
-        count_vec_mm,
-        row_vec_mm,
-        col_vec_mm,
-        count_vec_flux_m,
-        row_vec_flux_m,
-    )
+
+def _get_fracture_coupling_vectors(
+    mesh: dict[str, Any], mesh_data: RegionMeshData
+) -> dict[str, npt.NDArray[np.int32]]:
+    """Fracture-matrix coupling index vectors, built once and cached on the fracture mesh."""
+    fmesh = mesh_data.submesh
+    if "vec_mat_asmbl" not in fmesh:
+        fmesh["vec_mat_asmbl"] = _create_fracture_coupling_vectors(
+            mesh_data.conn, fmesh["matrix_conn"], mesh["conn"]
+        )
+    vectors: dict[str, npt.NDArray[np.int32]] = fmesh["vec_mat_asmbl"]
+    return vectors
 
 
 def _iter_fracture_matrix_matches(
@@ -598,7 +711,7 @@ def _iter_fracture_matrix_matches(
         etype = etype_list_m[bisect.bisect_left(elem_indx_m, e_m)]
         getN_m = NMATRIX_FUNCS[etype]
         Q = _get_parent_coordinates(etype, nodes_m[enodes_m, :], N_q @ nodes_f[enodes_f, :])
-        N_qm = np.array([getN_m(Q[q, :].flatten()) for q in range(np.size(Q, -1))])
+        N_qm = np.array([getN_m(Q[q, 0, :]) for q in range(Q.shape[0])])
 
         yield e_m, enodes_m, nne_m, N_qm
 
@@ -654,8 +767,129 @@ def _stack_fracture_vectors(
     return body_vectors
 
 
-def _get_region_mesh_data(mesh: dict[str, Any], *, is_fracture: bool) -> RegionMeshData:
-    """Resolve mesh/region data from the bulk mesh, or the fracture mesh when `is_fracture`."""
+def _create_well_coupling_vectors(
+    conn_w: list[list[int]],
+    matrix_conn: list[list[int]],
+    matrix_node_conn: list[list[int]],
+    elem_order: npt.NDArray[np.int64],
+) -> dict[str, npt.NDArray[np.int32]]:
+    """Create the row and column vectors for vectorized well coupling matrix assembly.
+
+    Wells couple directly to the coincident matrix nodes, so every block is nne x nne.
+    """
+    # Coupled elements in integration order; elements outside the domain have no matrix nodes
+    coupled = [e for e in elem_order if matrix_conn[e] != [-1]]
+    e_nodes_w = np.asarray([conn_w[e] for e in coupled], dtype=np.int32).reshape(-1, 2)
+    e_nodes_m = np.asarray([matrix_node_conn[e] for e in coupled], dtype=np.int32).reshape(-1, 2)
+    nne = e_nodes_w.shape[1]
+
+    return {
+        # ww: Well-well on-diagonal; nne * nne entries
+        "row_vec_ww": np.repeat(e_nodes_w, nne, axis=1).ravel(),
+        "col_vec_ww": np.tile(e_nodes_w, (1, nne)).ravel(),
+        # wm: Well-matrix off-diagonal (row=matrix, col=well); nne * nne entries
+        "row_vec_wm": np.repeat(e_nodes_m, nne, axis=1).ravel(),
+        "col_vec_wm": np.tile(e_nodes_w, (1, nne)).ravel(),
+        # mw: Matrix-well off-diagonal (row=well, col=matrix); nne * nne entries
+        "row_vec_mw": np.repeat(e_nodes_w, nne, axis=1).ravel(),
+        "col_vec_mw": np.tile(e_nodes_m, (1, nne)).ravel(),
+        # mm: Matrix-matrix on-diagonal; nne * nne entries
+        "row_vec_mm": np.repeat(e_nodes_m, nne, axis=1).ravel(),
+        "col_vec_mm": np.tile(e_nodes_m, (1, nne)).ravel(),
+        # flux (residual, matrix-side): matrix-side scatter target, nne entries
+        "row_vec_flux_m": e_nodes_m.ravel(),
+    }
+
+
+def _get_well_coupling_vectors(mesh_data: RegionMeshData) -> dict[str, npt.NDArray[np.int32]]:
+    """Well-matrix coupling index vectors, built once and cached on the well mesh."""
+    wmesh = mesh_data.submesh
+    if "vec_mat_asmbl" not in wmesh:
+        wmesh["vec_mat_asmbl"] = _create_well_coupling_vectors(
+            mesh_data.conn,
+            wmesh["matrix_conn"],
+            wmesh["matrix_node_conn"],
+            np.concatenate(mesh_data.region_lists),
+        )
+    vectors: dict[str, npt.NDArray[np.int32]] = wmesh["vec_mat_asmbl"]
+    return vectors
+
+
+def _stack_well_matrices(
+    body_matrices: dict[str, csc_matrix[Any]],
+    well_matrices: dict[str, csc_matrix[Any]],
+    nn_m: int,
+    nn_f: int,
+    nn_w: int,
+) -> dict[str, csc_matrix[Any]]:
+    """Stack the well and (matrix + fracture) matrices along with their off-diagonal coupling matrices.
+
+    Wells couple to matrix nodes only, so coupling matrices are zero-padded over the fracture nodes.
+    """
+    nn_b = nn_m + nn_f  # matrix + fracture
+    for name in body_matrices:
+        # On-diagonal well matrix
+        if name in well_matrices:
+            well_matrix = well_matrices[name].tocoo()
+        else:
+            well_matrix = csc_matrix((nn_w, nn_w)).tocoo()
+
+        # on-diagonal correction to the well's own block
+        if name + "_ww" in well_matrices:
+            well_matrix = well_matrix + well_matrices[name + "_ww"].tocoo()
+
+        # Off-diagonal coupling matrix (row=matrix, col=well)
+        if name + "_wm" in well_matrices:
+            wm_matrix = _pad_sparse(well_matrices[name + "_wm"], (nn_b, nn_w)).tocoo()
+        else:
+            wm_matrix = csc_matrix((nn_b, nn_w)).tocoo()
+
+        # Off-diagonal coupling matrix (row=well, col=matrix)
+        if name + "_mw" in well_matrices:
+            mw_matrix = _pad_sparse(well_matrices[name + "_mw"], (nn_w, nn_b)).tocoo()
+        else:
+            mw_matrix = csc_matrix((nn_w, nn_b)).tocoo()
+
+        # on-diagonal correction to the matrix's own block
+        matrix_matrix = body_matrices[name].tocoo()
+        if name + "_mm" in well_matrices:
+            matrix_matrix = matrix_matrix + _pad_sparse(well_matrices[name + "_mm"], (nn_b, nn_b)).tocoo()
+
+        row1 = hstack([matrix_matrix.tocoo(), wm_matrix])
+        row2 = hstack([mw_matrix, well_matrix])
+        body_matrices[name] = vstack([row1, row2]).tocsc()
+    return body_matrices
+
+
+def _stack_well_vectors(
+    body_vectors: dict[str, csc_matrix[Any]],
+    well_vectors: dict[str, csc_matrix[Any]],
+) -> dict[str, csc_matrix[Any]]:
+    """Stack body-mesh and well-mesh residual vectors into one `(nn_m + nn_f + nn_w, 1)` vector."""
+    for name in body_vectors:
+        body_vectors[name] = vstack([body_vectors[name], well_vectors[name]]).tocsc()
+    return body_vectors
+
+
+def _get_region_mesh_data(mesh: dict[str, Any], *, is_fracture: bool, is_well: bool) -> RegionMeshData:
+    """Resolve mesh/region data from the bulk mesh, or the fracture/well mesh."""
+    # Well case: 1D elements along the well
+    if is_well:
+        wmesh = mesh["well_mesh"]
+        return RegionMeshData(
+            wmesh["nn"],
+            1,
+            wmesh["conn"],
+            wmesh["nne"],
+            wmesh["element_type"],
+            wmesh["elem_indx"],
+            wmesh["n_quadrature"],
+            wmesh["region_lists"],
+            len(wmesh["region_lists"]),
+            wmesh,
+            wmesh["nodes"],
+        )
+    # Fracture case
     if is_fracture:
         fmesh = mesh["fracture_mesh"]
         return RegionMeshData(
@@ -693,45 +927,80 @@ def _get_region_flow_data(
     r: int,
     *,
     is_fracture: bool,
-) -> tuple[
-    npt.NDArray[np.float64] | float,  # kf, permeability
-    bool,  # isotropic_perm
-    npt.NDArray[np.float64],  # nodes_r
-    float,  # w, fracture aperture; NaN sentinel when not is_fracture
-    npt.NDArray[np.float64],  # u, fracture tangent; NaN sentinel when not is_fracture
-    PropertyResult,  # kf_perp, transverse permeability, coupling only; NaN sentinel when not is_fracture
-]:
+    is_well: bool,
+) -> RegionFlowData:
     """Resolve per-region permeability and node-projection data."""
+    nan = float("nan")
+
+    # Well case
+    if is_well:
+        wells = material["wells"]
+        nan_arr = np.asarray(np.nan)
+        A = wells["area"][r]
+        return RegionFlowData(
+            kf=A**2 / 8 / np.pi,
+            isotropic_perm=True,
+            nodes_r=mesh_data.submesh_nodes,  # projected per element by its tangent
+            w0=A,
+            u=mesh_data.submesh["well_tangent"],
+            kf_perp=PropertyResult(nan_arr, nan_arr, nan_arr),  # leak-off uses perforation_conductance
+            diameter=wells["diameter"][r],
+            radius=wells["radius"][r],
+            perforation_conductance=wells["perforation_conductance"][r],
+            roughness=wells["roughness"][r],
+        )
+
     # Fracture case
     if is_fracture:
         w = material["fracture"]["aperture"][r]
-        kf = w**3 / 12  # longitudinal permeability, cubic law
         kf_perp = np.asarray(w / 12)  # transverse permeability, coupling only; constant, so zero derivatives
-        u = mesh_data.fmesh["fracture_tangent"][r].reshape(-1, 1)
-        nodes_r = mesh_data.nodes_f @ u  # project mesh nodes into local coordinates
+        u = mesh_data.submesh["fracture_tangent"][r].reshape(-1, 1)
         zeros = np.zeros_like(kf_perp)
-        return kf, True, nodes_r, w, u, PropertyResult(kf_perp, zeros, zeros)
+        return RegionFlowData(
+            kf=w**3 / 12,  # longitudinal permeability, cubic law
+            isotropic_perm=True,
+            nodes_r=mesh_data.submesh_nodes @ u,  # project mesh nodes into local coordinates
+            w0=w,
+            u=u,
+            kf_perp=PropertyResult(kf_perp, zeros, zeros),
+            diameter=nan,
+            radius=nan,
+            perforation_conductance=nan,
+            roughness=nan,
+        )
 
     # Bulk case
     kf = material["solid"]["permeability_eff"][r]
-    isotropic_perm = bool(isinstance(kf, (float, int)))
-    nan = np.asarray(np.nan)
-    kf_perp_sentinel = PropertyResult(nan, nan, nan)
-    return kf, isotropic_perm, mesh["nodes"], float("nan"), np.full((1, 1), np.nan), kf_perp_sentinel
+    nan_arr = np.asarray(np.nan)
+    return RegionFlowData(
+        kf=kf,
+        isotropic_perm=bool(isinstance(kf, (float, int))),
+        nodes_r=mesh["nodes"],
+        w0=nan,
+        u=np.full((1, 1), np.nan),
+        kf_perp=PropertyResult(nan_arr, nan_arr, nan_arr),
+        diameter=nan,
+        radius=nan,
+        perforation_conductance=nan,
+        roughness=nan,
+    )
 
 
-def _get_region_thermal_data(material: dict[str, Any], r: int, *, is_fracture: bool) -> tuple[bool, float]:
-    """Resolve the region's isotropic-conductivity flag and interface heat transfer coefficient.
+def _get_region_thermal_data(
+    material: dict[str, Any], r: int, *, is_fracture: bool, is_well: bool
+) -> tuple[bool, float]:
+    """Resolve the region's isotropic-conductivity flag and heat transfer factor.
 
-    `hc` is a NaN sentinel when not `is_fracture` (coupling-only quantity).
+    The heat transfer factor multiplies the fracture/well heat transfer coefficient; it is a
+    NaN sentinel for the bulk mesh (coupling-only quantity).
     """
+    # Well case
+    if is_well:
+        return True, material["wells"]["heat_transfer_factor"][r]
+
     # Fracture case
     if is_fracture:
-        w = material["fracture"]["aperture"][r]
-        lambda_f = material["fluid"]["therm_cond"]
-        nusselt = material["fracture"]["nusselt"][r]
-        hc = nusselt * lambda_f / 2 / w  # interface heat transfer coefficient, coupling only
-        return True, hc
+        return True, material["fracture"]["heat_transfer_factor"][r]
 
     # Bulk case
     lambda_e = material["solid"]["therm_cond_eff"][r]
@@ -739,13 +1008,13 @@ def _get_region_thermal_data(material: dict[str, Any], r: int, *, is_fracture: b
     return isotropic_cond, float("nan")
 
 
-def _get_region_solid_data(material: dict[str, Any], r: int, *, is_fracture: bool) -> RegionSolidData:
+def _get_region_solid_data(material: dict[str, Any], r: int, *, no_solid: bool) -> RegionSolidData:
     """Resolve per-region solid properties.
 
-    Fractures are void space with no solid properties.
+    Fractures and wells are void space with no solid properties.
     """
-    # Fracture case
-    if is_fracture:
+    # Fracture/well case
+    if no_solid:
         zero = 0.0
         return RegionSolidData(
             K_d=zero, phi_0=zero, biot=zero, rho_s=zero, cp_s=zero, alpha_s=zero, lambda_s=zero
@@ -805,6 +1074,8 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
 
 # Sentinel for a tangent-only input/output not needed when want_tangent_*=False.
 _EMPTY = np.empty((0, 0))
+_EMPTY_3D = np.empty((0, 0, 0))  # sliceable like a quad-point history field
+_EMPTY_PROPERTY = PropertyResult(_EMPTY, _EMPTY, _EMPTY)
 
 
 def _evaluate_fracture_leakoff_flux(
@@ -840,8 +1111,33 @@ def _evaluate_fracture_leakoff_flux(
     return flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm
 
 
+def _evaluate_fracture_heat_transfer_coefficient(
+    heat_transfer_factor: float, lambda_f: float, aperture: float
+) -> float:
+    """Fracture-matrix heat transfer coefficient h = factor * Nu * lambda_f / (2w)."""
+    # Cubic-law flow is laminar: the dummy Re = 1 (and Pr = 1) always evaluates the laminar Nu
+    Nu, _, _ = get_nusselt_number(np.ones(1), np.ones(1), 0.0, parallel_plates=True)
+    return float(heat_transfer_factor * Nu.item() * lambda_f / (2.0 * aperture))  # hydraulic diameter 2w
+
+
+def _evaluate_well_heat_transfer_coefficient(
+    heat_transfer_factor: float,
+    lambda_f: float,
+    radius: float,
+    roughness: float,
+    Re: npt.NDArray[np.float64],
+    Pr: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Well-matrix heat transfer coefficient h = factor * Nu(Re, Pr) * lambda_f / (2R), and dh/dRe, dh/dPr."""
+    Nu, dNu_dRe, dNu_dPr = get_nusselt_number(Re, Pr, roughness / (2.0 * radius), parallel_plates=False)
+    h_scale = heat_transfer_factor * lambda_f / (2.0 * radius)  # hydraulic diameter 2R
+    return h_scale * Nu, h_scale * dNu_dRe, h_scale * dNu_dPr
+
+
 def _evaluate_fracture_conduction_flux(
-    hc: float,
+    heat_transfer_factor: float,
+    lambda_f: float,
+    aperture: float,
     T_f_q: npt.NDArray[np.float64],
     T_m_q: npt.NDArray[np.float64],
     *,
@@ -852,6 +1148,7 @@ def _evaluate_fracture_conduction_flux(
     npt.NDArray[np.float64] | float,  # dfluxc_dTm, `_EMPTY` unless want_tangent_dT
 ]:
     """Evaluate the fracture-matrix convective conduction flux and optionally its temperature tangent."""
+    hc = _evaluate_fracture_heat_transfer_coefficient(heat_transfer_factor, lambda_f, aperture)
     flux_hc_T_q = hc * (T_f_q - T_m_q)  # convection heat flux
     dfluxc_dTf: npt.NDArray[np.float64] | float = _EMPTY
     dfluxc_dTm: npt.NDArray[np.float64] | float = _EMPTY
@@ -929,6 +1226,165 @@ def _evaluate_fracture_advection_flux(
     return flux_adv_T_q, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm
 
 
+def _evaluate_well_leakoff_flux(
+    rhof_q: PropertyResult,
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m); 0 is unperforated
+    radius: float,
+    mu_q: PropertyResult,
+    p_w_q: npt.NDArray[np.float64],
+    p_m_q: npt.NDArray[np.float64],
+    *,
+    want_tangent_dp: bool = False,
+    want_tangent_dT: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_p_q
+    npt.NDArray[np.float64],  # dfluxp_dpw, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dpm, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dTw, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxp_dTm, `_EMPTY` unless want_tangent_dT
+]:
+    """Evaluate the well-matrix leak-off mass flux per unit well length and optionally its tangents.
+
+    Flux = P C rho / mu (p_w - p_m), with wetted perimeter P = 2 pi R and perforation conductance C.
+    """
+    leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance  # per unit well length (m^2)
+    flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
+    flux_p_q = flux_coeff * (p_w_q - p_m_q)  # leak-off mass flux
+
+    dfluxp_dpw = dfluxp_dpm = dfluxp_dTw = dfluxp_dTm = _EMPTY
+    if want_tangent_dp:
+        dcoeff_dp = rhof_q.dp * leakoff_conductance - flux_coeff * mu_q.dp
+        dfluxp_dpw = flux_coeff + dcoeff_dp / mu_q.value * (p_w_q - p_m_q)
+        dfluxp_dpm = -flux_coeff
+    if want_tangent_dT:
+        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
+        dfluxp_dTw = dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
+        dfluxp_dTm = np.zeros_like(dfluxp_dTw)  # Flux properties are evaluated with well state
+
+    return flux_p_q, dfluxp_dpw, dfluxp_dpm, dfluxp_dTw, dfluxp_dTm
+
+
+def _evaluate_well_conduction_flux(
+    heat_transfer_factor: float,
+    lambda_f: float,
+    radius: float,
+    roughness: float,
+    Re_c: npt.NDArray[np.float64],  # element (midpoint) Reynolds number
+    mu_c: PropertyResult,  # midpoint viscosity
+    cp_c: npt.NDArray[np.float64],  # midpoint specific heat, lagged in the tangent
+    N_c: npt.NDArray[np.float64],  # midpoint shape functions
+    N_q: npt.NDArray[np.float64],
+    T_w_q: npt.NDArray[np.float64],
+    T_m_q: npt.NDArray[np.float64],
+    *,
+    dRe_dp: npt.NDArray[np.float64] = _EMPTY,
+    dRe_dT: npt.NDArray[np.float64] = _EMPTY,
+    want_tangent_dT: bool = False,
+    want_tangent_dp: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_hc_T_q
+    npt.NDArray[np.float64],  # dfluxc_dTw, (nq, 1, nne); `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxc_dTm, (nq, 1, nne); `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxc_dpw, (nq, 1, nne); `_EMPTY` unless want_tangent_dp
+]:
+    """Evaluate the well-matrix convective conduction flux per unit well length and its well node tangents.
+
+    Flux = h P (T_w - T_m), with wetted perimeter P = 2 pi R and
+    h = heat_transfer_factor * Nu(Re, Pr) * lambda_f / D, Pr = mu cp / lambda_f, evaluated once
+    per element at its midpoint.
+    """
+    # Element heat transfer coefficient from the pipe Nusselt number
+    Pr = mu_c.value * cp_c / lambda_f
+    hc, dh_dRe, dh_dPr = _evaluate_well_heat_transfer_coefficient(
+        heat_transfer_factor, lambda_f, radius, roughness, Re_c, Pr
+    )
+
+    perimeter = 2.0 * np.pi * radius  # wetted perimeter: h is per unit wall area
+    dT_q = T_w_q - T_m_q
+    flux_hc_T_q = hc * perimeter * dT_q  # convection heat flux per unit length
+
+    # h depends on the well state through Re (flow) and Pr (viscosity; cp lagged)
+    dfluxc_dTw = dfluxc_dTm = dfluxc_dpw = _EMPTY
+    if want_tangent_dT:
+        dh_dTw = dh_dRe * dRe_dT + dh_dPr * cp_c / lambda_f * mu_c.dT * N_c
+        dfluxc_dTw = perimeter * (hc * N_q + dT_q * dh_dTw)
+        dfluxc_dTm = -perimeter * hc * N_q
+    if want_tangent_dp:
+        dh_dpw = dh_dRe * dRe_dp + dh_dPr * cp_c / lambda_f * mu_c.dp * N_c
+        dfluxc_dpw = perimeter * dT_q * dh_dpw
+    return flux_hc_T_q, dfluxc_dTw, dfluxc_dTm, dfluxc_dpw
+
+
+def _evaluate_well_advection_flux(
+    p_w_q: npt.NDArray[np.float64],
+    p_m_q: npt.NDArray[np.float64],
+    p_w_q_lag: npt.NDArray[np.float64],
+    p_m_q_lag: npt.NDArray[np.float64],
+    T_w_q: npt.NDArray[np.float64],
+    T_m_q: npt.NDArray[np.float64],
+    T_flow_wq: npt.NDArray[np.float64],
+    T_flow_mq: npt.NDArray[np.float64],
+    flux_p_q: npt.NDArray[np.float64],  # Mass flux
+    fluid: dict[str, Any],
+    perforation_conductance: float,  # matching the leak-off flux
+    radius: float,
+    mu_q: PropertyResult,
+    rhof_q: PropertyResult,
+    *,
+    dfluxp_dpw: npt.NDArray[np.float64] = _EMPTY,
+    dfluxp_dpm: npt.NDArray[np.float64] = _EMPTY,
+    want_tangent: bool = False,
+    T_flow_lagged: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # flux_adv_T_q
+    npt.NDArray[np.float64],  # dqadv_dTw, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dTm, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dpw, `_EMPTY` unless want_tangent
+    npt.NDArray[np.float64],  # dqadv_dpm, `_EMPTY` unless want_tangent
+]:
+    """Evaluate the well-matrix advective enthalpy flux and tangents, with the well leak-off conductance.
+
+    Upwind direction is picked from the lagged pressures `p_w_q_lag`/`p_m_q_lag`.
+    """
+    well_upwind = np.mean(p_w_q_lag) > np.mean(p_m_q_lag)
+    if well_upwind:
+        # Use well properties
+        T_eval, T_flow_eval, p_eval = T_w_q, T_flow_wq, p_w_q
+    else:
+        # Use matrix properties
+        T_eval, T_flow_eval, p_eval = T_m_q, T_flow_mq, p_m_q
+
+    _, _, hf_q = get_EOS(
+        T_eval,
+        T_flow_eval,
+        p_eval,
+        fluid,
+        T_flow_lagged=T_flow_lagged,
+        want_enthalpy=True,
+        want_dp=want_tangent,
+        want_dT=want_tangent,
+    )
+    flux_adv_T_q = hf_q.value * flux_p_q  # Advective heat flux
+
+    dqadv_dTw = dqadv_dTm = dqadv_dpw = dqadv_dpm = _EMPTY
+    if want_tangent:
+        leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance
+        flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
+        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
+        if well_upwind:
+            dqadv_dTw = hf_q.dT * flux_p_q + hf_q.value * dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
+            dqadv_dTm = np.zeros_like(dqadv_dTw)
+            dqadv_dpw = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpw
+            dqadv_dpm = hf_q.value * dfluxp_dpm
+        else:
+            dqadv_dTw = hf_q.value * dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
+            dqadv_dTm = hf_q.dT * flux_p_q
+            dqadv_dpw = hf_q.value * dfluxp_dpw
+            dqadv_dpm = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpm
+
+    return flux_adv_T_q, dqadv_dTw, dqadv_dTm, dqadv_dpw, dqadv_dpm
+
+
 # Sentinel default for an optional `ElementKinematics` parameter (mirrors `_EMPTY` for arrays
 # and `PropertyResult(_EMPTY, _EMPTY, _EMPTY)` for an optional `PropertyResult` parameter).
 _EMPTY_KINEMATICS = ElementKinematics(
@@ -946,40 +1402,182 @@ def _evaluate_element_kinematics(
     T_0: npt.NDArray[np.float64],
     p_0: npt.NDArray[np.float64],
     enodes_dof: npt.NDArray[np.int32] | list[int],
+    *,
+    want_lengths: bool,
+    want_flow: bool,
 ) -> ElementKinematics:
-    """Slice this element's nodal primary variables and interpolate them to quadrature points."""
+    """Slice this element's nodal primary variables and interpolate them to quadrature points.
+
+    `want_lengths` computes `L_vec` (SUPG only); `want_flow` computes the flow inputs `T_flow_q`,
+    `p_q`, and `gradP`. Skipped fields are empty.
+    """
     Te = T[enodes_dof]  # element nodal temperatures
     Te_flow = T_flow[enodes_dof]  # element nodal temperatures, for flow properties
     pe = p[enodes_dof]  # element nodal pressures
     T_0e = T_0[enodes_dof].reshape(-1, 1)  # element reference temperatures
     p_0e = p_0[enodes_dof].reshape(-1, 1)  # element reference pressures
-    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1)  # element lengths
+    L_vec = (xI.max(axis=0) - xI.min(axis=0)).reshape(-1, 1) if want_lengths else _EMPTY  # element lengths
 
     T_q = N_q @ Te  # quadrature point temperatures, nq x 1 x (n, n-1, n-2, n-3)
-    T_flow_q = N_q @ Te_flow  # quadrature point temperatures, for flow properties
-    p_q = N_q @ pe  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
+    T_flow_q = N_q @ Te_flow if want_flow else _EMPTY_3D  # quadrature point temperatures, for flow properties
+    p_q = N_q @ pe if want_flow else _EMPTY_3D  # quadrature point pressures, nq x 1 x (n, n-1, n-2, n-3)
     gradT = B_q @ Te[:, 0:1]  # qudarature point temperature gradient, nq x nsd x 1
-    gradP = B_q @ pe[:, 0:1]  # quadrature point pressure gradient, nq x nsd x 1
+    gradP = B_q @ pe[:, 0:1] if want_flow else _EMPTY  # quadrature point pressure gradient, nq x nsd x 1
 
     return ElementKinematics(Te, Te_flow, pe, T_0e, p_0e, L_vec, T_q, T_flow_q, p_q, gradT, gradP)
+
+
+def _property_derivative_flags(calc_derivatives: bool, solve_p: bool, solve_T: bool) -> tuple[bool, bool]:
+    """Resolve (want_dp, want_dT) for property evaluations: only wrt fields solved in this domain."""
+    return calc_derivatives and solve_p, calc_derivatives and solve_T
+
+
+def _get_pass_dofs(mesh: dict[str, Any], nn: int, *, is_fracture: bool, is_well: bool) -> slice:
+    """Global DoFs of the bulk, fracture, or well mesh nodes, in local node order."""
+    offset = 0
+    if is_well:
+        offset = mesh["nn_total"] - nn  # wells are numbered last
+    elif is_fracture:
+        offset = mesh["nn"]
+    return slice(offset, offset + nn)
+
+
+@dataclass(frozen=True, slots=True)
+class NodalFluidState:
+    """EOS results at every node of the current mesh pass, gathered per element in the loop."""
+
+    rho_f: PropertyResult
+    u_f: PropertyResult
+    hf: EnthalpyResult
+
+
+def _evaluate_nodal_fluid_state(
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    *,
+    calc_derivatives: bool = False,
+    T_flow_lagged: bool = False,
+    solve_p: bool = True,
+    solve_T: bool = True,
+    want_energy: bool = True,
+) -> NodalFluidState:
+    """Evaluate density, internal energy, and enthalpy once per node.
+
+    Density is evaluated with T_flow for consistency with the mass flow rates.
+    Internal energy is evaluated with T, the current temperature field.
+    Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
+    """
+    want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
+    rho_f, u_f, hf = get_EOS(
+        T,
+        T_flow,
+        p,
+        fluid,
+        T_flow_lagged=T_flow_lagged,
+        want_density=True,
+        want_internal_energy=want_energy,
+        want_enthalpy=want_energy,
+        want_dp=want_dp,
+        want_dT=want_dT or want_energy,
+    )
+    return NodalFluidState(rho_f, u_f, hf)
+
+
+def _evaluate_nodal_porosity(
+    p: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],
+    T_0: npt.NDArray[np.float64],
+    solid: RegionSolidData,
+    w0: float,
+    *,
+    no_solid: bool,
+    T_flow_lagged: bool = False,
+    volumetric_strain_on: bool = True,
+) -> PropertyResult:
+    """Evaluate one region's Lagrangian porosity once per node.
+
+    For fractures/wells, "porosity" is the fracture aperture or well area.
+    """
+    if no_solid:
+        # Fracture/well case: phi is replaced by aperture/area, a fixed property pending geomechanics.
+        return PropertyResult(w0 * np.ones_like(p), np.zeros_like(p), np.zeros_like(p))
+    return get_porosity_lagrangian(
+        p,
+        p_0,
+        T_flow,
+        T_0,
+        solid.phi_0,
+        solid.K_d,
+        solid.biot,
+        solid.alpha_s,
+        T_flow_lagged,
+        volumetric_strain_on,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class StackedNodalState:
+    """Nodal porosity and EOS fields stacked column-wise, so one `take` gathers an element's rows.
+
+    Per-call numpy overhead dwarfs the copy for 4-row gathers, so one `take` instead of 13 halves
+    the gather cost. `columns` holds each field's column slice, or None for an `_EMPTY` field.
+    """
+
+    stack: npt.NDArray[np.float64]
+    columns: tuple[slice | None, ...]  # phi_L (value, dp, dT), rho_f (3), u_f (3), hf (value, dp, dT, cp)
+
+
+def _stack_nodal_state(phi_L: PropertyResult, nodal_fluid: NodalFluidState) -> StackedNodalState:
+    """Stack one region's nodal porosity with the pass's nodal EOS fields."""
+    rho_f, u_f, hf = nodal_fluid.rho_f, nodal_fluid.u_f, nodal_fluid.hf
+    fields = (
+        phi_L.value, phi_L.dp, phi_L.dT,
+        rho_f.value, rho_f.dp, rho_f.dT,
+        u_f.value, u_f.dp, u_f.dT,
+        hf.value, hf.dp, hf.dT, hf.cp,
+    )  # fmt: skip
+    columns: list[slice | None] = []
+    start = 0
+    for arr in fields:
+        if arr.size:
+            columns.append(slice(start, start + arr.shape[1]))
+            start += arr.shape[1]
+        else:
+            columns.append(None)
+    return StackedNodalState(np.hstack([f for f in fields if f.size]), tuple(columns))
+
+
+def _gather_nodal_state(
+    state: StackedNodalState, idx: npt.NDArray[np.intp]
+) -> tuple[PropertyResult, PropertyResult, PropertyResult, EnthalpyResult]:
+    """Gather an element's nodal (phi_L, rho_f, u_f, hf) rows."""
+    rows = state.stack.take(idx, axis=0)
+    f = [_EMPTY if s is None else rows[:, s] for s in state.columns]
+    return (
+        PropertyResult(f[0], f[1], f[2]),
+        PropertyResult(f[3], f[4], f[5]),
+        PropertyResult(f[6], f[7], f[8]),
+        EnthalpyResult(f[9], f[10], f[11], f[12]),
+    )
 
 
 def _evaluate_flow_and_storage_state(
     kf_0: npt.NDArray[np.float64] | float,
     kin_n: ElementKinematics,
-    nodal_kin: ElementKinematics,
     N_q: npt.NDArray[np.float64],
     fluid: dict[str, Any],
-    solid: RegionSolidData,
-    w0: float,
+    nodal_state: StackedNodalState,
+    enodes: npt.NDArray[np.intp],
     *,
-    is_fracture: bool,
     calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
-    temperature_only: bool = False,
-    pressure_only: bool = False,
-    fully_coupled: bool = False,
-    volumetric_strain_on: bool = True,
+    solve_p: bool = True,
+    solve_T: bool = True,
+    want_energy: bool = True,
+    want_flow: bool = True,
 ) -> tuple[
     PropertyResult,  # kf
     PropertyResult,  # mu_q
@@ -988,62 +1586,30 @@ def _evaluate_flow_and_storage_state(
     NodalPropertyState,  # u_f
     NodalEnthalpyState,  # hf
 ]:
-    """Evaluate permeability, porosity, density, viscosity, and internal energy.
+    """Evaluate permeability and viscosity, and gather nodal porosity, density, and internal energy.
 
-    In the fracture case, "porosity" is the fracture aperture.
+    `enodes` indexes this element's rows in `nodal_state`.
     """
-    want_dp = calc_derivatives and (pressure_only or fully_coupled)
-    want_dT = calc_derivatives and (temperature_only or fully_coupled)
-    want_dT_props = want_dT or not pressure_only
+    want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
 
-    # ---- Quadrature-point flow properties
-    kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-    mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    # ---- Quadrature-point flow properties, only for Darcy flux and matrix coupling
+    if want_flow:
+        kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+        mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+    else:
+        kf = mu_q = _EMPTY_PROPERTY
+
+    phi_L_e, rho_f_e, u_f_e, hf_e = _gather_nodal_state(nodal_state, enodes)
 
     # ---- Porosity
-    if is_fracture:
-        # Fracture case: phi is replaced by aperture, a fixed property pending geomechanics.
-        phi_L_e = PropertyResult(
-            w0 * np.ones_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe), np.zeros_like(nodal_kin.pe)
-        )
-    else:
-        phi_L_e = get_porosity_lagrangian(
-            nodal_kin.pe,
-            nodal_kin.p_0e,
-            nodal_kin.Te_flow,
-            nodal_kin.T_0e,
-            solid.phi_0,
-            solid.K_d,
-            solid.biot,
-            solid.alpha_s,
-            T_flow_lagged,
-            volumetric_strain_on,
-        )
-
     phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
     phi_L = NodalPropertyState(q=phi_L_q, e=phi_L_e)
 
-    # ---- Equation of state variables Density, internal energy, and enthalpy.
-    # Density is evaluated with T_flow for consistency with the mass flow rates.
-    # Internal energy is evaluated with T, the current temperature field.
-    # Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
-    rho_f_e, u_f_e, hf_e = get_EOS(
-        nodal_kin.Te,
-        nodal_kin.Te_flow,
-        nodal_kin.pe,
-        fluid,
-        T_flow_lagged=T_flow_lagged,
-        want_density=True,
-        want_internal_energy=not pressure_only,
-        want_enthalpy=not pressure_only,
-        want_dp=want_dp,
-        want_dT=want_dT_props,
-    )
-
+    # ---- Equation of state variables: density, internal energy, and enthalpy
     rho_f_q = PropertyResult(N_q @ rho_f_e.value, N_q @ rho_f_e.dp[:, 0:1], N_q @ rho_f_e.dT[:, 0:1])
     rho_f = NodalPropertyState(q=rho_f_q, e=rho_f_e)
 
-    if not pressure_only:
+    if want_energy:
         u_f_q = PropertyResult(N_q @ u_f_e.value, N_q @ u_f_e.dp[:, 0:1], N_q @ u_f_e.dT[:, 0:1])
         hf_q = EnthalpyResult(
             N_q @ hf_e.value, N_q @ hf_e.dp[:, 0:1], N_q @ hf_e.dT[:, 0:1], N_q @ hf_e.cp[:, 0:1]
@@ -1087,26 +1653,158 @@ def _evaluate_darcy_flux(
         term_2 = (
             kfmu * rho_f_n.dp
             + rho_f_n.value / mu_q.value * kf.dp
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
+            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
         )
         if isotropic_perm:
-            dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * N_q) + term_2 * gradP_mod * N_q
+            dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * N_q) + term_2 @ gradP_mod * N_q
+            dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * g_r * N_q) + term_2 @ gradP_mod * N_q
 
     dqD_dT = _EMPTY
     if want_tangent_dT:
         term_2 = (
             kfmu * rho_f_n.dT
             + rho_f_n.value / mu_q.value * kf.dT
-            + rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
+            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
         )
         if isotropic_perm:
-            dqD_dT = rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
+            dqD_dT = -rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
-            dqD_dT = rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
+            dqD_dT = -rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
 
     return darcy_flux, q_D, dqD_dp, dqD_dT
+
+
+_WELL_FLOW_TOL = 1.0e-10  # relative tolerance of the well momentum residual
+_WELL_FLOW_MAX_ITER = 50
+_WELL_FLOW_MAX_HALVINGS = 20
+_N_MID_L2 = np.full((1, 1, 2), 0.5)  # L2 shape functions at the element midpoint
+
+
+def _well_flow_residual(
+    q: npt.NDArray[np.float64],
+    G: npt.NDArray[np.float64],
+    rho: npt.NDArray[np.float64],
+    mu: npt.NDArray[np.float64],
+    grad_rhof: npt.NDArray[np.float64],
+    radius: float,
+    rel_roughness: float,
+) -> tuple[npt.NDArray[np.float64], ...]:
+    """Well momentum residual F = q|q| (f - sign(q) 4R drho/ds / rho) + 4 rho pi^2 R^5 G and dF/dq.
+
+    Written with phi = f Re and |q| = a Re so it stays finite at zero flow.
+    """
+    a = 0.5 * np.pi * radius * mu  # |q| = a Re
+    Re = np.abs(q) / a
+    phi, dphi = get_friction_factor(Re, rel_roughness)
+    c = 4.0 * radius * grad_rhof / rho  # density gradient (acceleration) coefficient
+    K = 4.0 * rho * np.pi**2 * radius**5
+
+    F = a * phi * q - c * q**2 + K * G
+    dF_dq = a * (phi + Re * dphi) - 2.0 * c * q
+    F_scale = np.abs(K * G) + np.abs(a * phi * q) + np.abs(c * q**2)  # convergence reference
+    return F, dF_dq, F_scale, Re, phi, dphi
+
+
+def _evaluate_well_flow(
+    N_c: npt.NDArray[np.float64],
+    B_c: npt.NDArray[np.float64],
+    gradP: npt.NDArray[np.float64],
+    g_r: npt.NDArray[np.float64],
+    mu_c: PropertyResult,
+    rho_e: PropertyResult,
+    radius: float,
+    roughness: float,
+    *,
+    want_tangent_dp: bool = False,
+    want_tangent_dT: bool = False,
+) -> tuple[
+    npt.NDArray[np.float64],  # volume flow rate
+    npt.NDArray[np.float64],  # q_w, mass flow rate
+    npt.NDArray[np.float64],  # dqD_dp, (1, 1, nne); `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dqD_dT, (1, 1, nne); `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # Re, Reynolds number
+    npt.NDArray[np.float64],  # dRe_dp, (1, 1, nne); `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dRe_dT, (1, 1, nne); `_EMPTY` unless want_tangent_dT
+]:
+    """Evaluate the well element's mass flow rate, Reynolds number, and nodal derivatives.
+
+    Solves q|q| (f - sign(q) 4R/rho drho/ds) = -4 rho pi^2 R^5 (dp/ds + rho g dz/ds) by
+    safeguarded Newton, with the Churchill Darcy friction factor f(Re). On an L2 element the
+    pressure and density gradients are constant, so one evaluation at the midpoint (shape
+    functions N_c, gradients B_c) gives the element flow; rho is the average nodal density, the
+    exact element mean of the gravity term. Derivatives follow `_evaluate_darcy_flux`'s sign
+    convention (dqD_dp = -dq/dp).
+    """
+    mu = mu_c.value
+    rel_roughness = roughness / (2.0 * radius)
+
+    # Element density, modified pressure gradient, and density gradient
+    rho = N_c @ rho_e.value  # average nodal density
+    G = gradP - rho * g_r  # modified pressure gradient
+    grad_rhof = B_c @ rho_e.value  # density gradient along the well
+
+    # Initial guess without acceleration: lesser of the laminar and explicit Colebrook flow rates
+    a = 0.5 * np.pi * radius * mu  # |q| = a Re
+    Lam = 16.0 * rho * radius**3 * np.abs(G) / mu**2  # known f Re^2
+    sqrt_Lam = np.maximum(np.sqrt(Lam), np.finfo(float).tiny)
+    Re_lam = Lam / 64.0
+    Re_turb = sqrt_Lam * -2.0 * np.log10(rel_roughness / 3.7 + 2.51 / sqrt_Lam)
+    Re_0 = np.where(Re_turb > 0.0, np.minimum(Re_lam, Re_turb), Re_lam)
+    q = -np.sign(G) * a * Re_0
+
+    # Safeguarded Newton on the signed mass flow rate
+    for _ in range(_WELL_FLOW_MAX_ITER):
+        F, dF_dq, F_scale, _, _, _ = _well_flow_residual(q, G, rho, mu, grad_rhof, radius, rel_roughness)
+        if np.all(np.abs(F) <= _WELL_FLOW_TOL * F_scale):
+            break
+        dq = -F / np.where(dF_dq != 0.0, dF_dq, np.finfo(float).tiny)
+
+        # Backtrack: halve the step wherever it does not reduce |F|
+        step = np.ones_like(q)
+        for _ in range(_WELL_FLOW_MAX_HALVINGS):
+            F_trial = _well_flow_residual(q + step * dq, G, rho, mu, grad_rhof, radius, rel_roughness)[0]
+            worse = np.abs(F_trial) > np.abs(F)
+            if not np.any(worse):
+                break
+            step = np.where(worse, 0.5 * step, step)
+        q = q + step * dq
+    else:
+        warnings.warn("Well flow rate did not converge in some well elements.", stacklevel=2)
+
+    vol_flow = q / rho  # volume flow rate
+
+    Re = 2.0 * np.abs(q) / (np.pi * radius * mu)  # Reynolds number
+
+    dqD_dp = dqD_dT = dRe_dp = dRe_dT = _EMPTY
+    if want_tangent_dp or want_tangent_dT:
+        # Implicit function theorem: dq/dX = -dF_dX / dF_dq at the converged root
+        _, dF_dq, _, Re, phi, dphi = _well_flow_residual(q, G, rho, mu, grad_rhof, radius, rel_roughness)
+        dF_dG = 4.0 * rho * np.pi**2 * radius**5
+        dF_drho = 4.0 * np.pi**2 * radius**5 * G + 4.0 * radius * grad_rhof * q**2 / rho**2
+        dF_dgrad_rhof = -4.0 * radius * q**2 / rho
+        dF_dmu = 0.5 * np.pi * radius * q * (phi - Re * dphi)
+
+    if want_tangent_dp:
+        drho_dp = N_c * rho_e.dp.T  # exact nodal derivative of the average density
+        dG_dp = B_c - g_r * drho_dp
+        dF_dp = (
+            dF_dG * dG_dp + dF_drho * drho_dp + dF_dgrad_rhof * (B_c * rho_e.dp.T) + dF_dmu * mu_c.dp * N_c
+        )
+        dqD_dp = dF_dp / dF_dq  # = -dq/dp
+        # Re = 2|q| / (pi R mu)
+        dRe_dp = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dp - Re / mu * mu_c.dp * N_c
+
+    if want_tangent_dT:
+        drho_dT = N_c * rho_e.dT.T
+        dG_dT = -g_r * drho_dT
+        dF_dT = (
+            dF_dG * dG_dT + dF_drho * drho_dT + dF_dgrad_rhof * (B_c * rho_e.dT.T) + dF_dmu * mu_c.dT * N_c
+        )
+        dqD_dT = dF_dT / dF_dq  # = -dq/dT
+        dRe_dT = -2.0 * np.sign(q) / (np.pi * radius * mu) * dqD_dT - Re / mu * mu_c.dT * N_c
+
+    return vol_flow, q, dqD_dp, dqD_dT, Re, dRe_dp, dRe_dT
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
@@ -1117,10 +1815,10 @@ def _total_energy_values(
     u_f_value: npt.NDArray[np.float64],
     rho_s: float,
     cp_s: float,
-    is_fracture: bool,
+    no_solid: bool,
 ) -> npt.NDArray[np.float64]:
     """Numba kernal for total stored energy."""
-    solid_factor = 0.0 if is_fracture else 1.0
+    solid_factor = 0.0 if no_solid else 1.0
     return (1 - phi_L_value) * rho_s * cp_s * T * solid_factor + phi_L_value * rho_f_value * u_f_value
 
 
@@ -1211,7 +1909,7 @@ def _energy_storage_integrands_values(
     cp_s: float,
     cv: npt.NDArray[np.float64],
     steady_temp: float,
-    is_fracture: bool,
+    no_solid: bool,
     kin_n_Te: npt.NDArray[np.float64],
     want_tangent_dT: bool,
     want_tangent_dp: bool,
@@ -1219,10 +1917,10 @@ def _energy_storage_integrands_values(
     npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
 ]:
     """Numba kernel for energy storage integrands."""
-    E_e = _total_energy_values(Te, phi_L_e_value, rho_f_e_value, u_f_e_value, rho_s, cp_s, is_fracture)
+    E_e = _total_energy_values(Te, phi_L_e_value, rho_f_e_value, u_f_e_value, rho_s, cp_s, no_solid)
     energy_dot_e = (1 - steady_temp) * (cv[0] * E_e[:, 0:1] + cv[1] * E_e[:, 1:2] + cv[2] * E_e[:, 2:3])
 
-    solid_factor = 0.0 if is_fracture else 1.0
+    solid_factor = 0.0 if no_solid else 1.0
     integrand_dFCdT_e = _EMPTY
     if want_tangent_dT:
         integrand_dFCdT_e = (
@@ -1258,7 +1956,7 @@ def _evaluate_energy_storage_integrands(
     cv: npt.NDArray[np.float64],
     steady_temp: float,
     *,
-    is_fracture: bool,
+    no_solid: bool,
     kin_n: ElementKinematics = _EMPTY_KINEMATICS,
     want_tangent_dT: bool = False,
     want_tangent_dp: bool = False,
@@ -1293,7 +1991,7 @@ def _evaluate_energy_storage_integrands(
         solid.cp_s,
         cv,
         steady_temp,
-        is_fracture,
+        no_solid,
         kin_n.Te,
         want_tangent_dT,
         want_tangent_dp,
@@ -1308,14 +2006,14 @@ def _evaluate_effective_conductivity(
     lambda_f: float,
     nsd: int,
     *,
-    is_fracture: bool,
+    no_solid: bool,
     isotropic_cond: bool,
 ) -> npt.NDArray[np.float64] | float:
     """Evaluate the region's effective thermal conductivity."""
     phi_L_n = phi_L.q_n
     lambda_s = solid.lambda_s
     lambda_e: npt.NDArray[np.float64] | float
-    if is_fracture:
+    if no_solid:
         lambda_e = w0 * lambda_f
     else:
         lambda_e = (
@@ -1364,6 +2062,8 @@ def _supg_tau_values(
     q_D: npt.NDArray[np.float64],
     L_vec: npt.NDArray[np.float64],
     lambda_e: npt.NDArray[np.float64],
+    heat_capacity: npt.NDArray[np.float64],  # volumetric heat capacity at quad points
+    rate: float,  # transient rate, cv[0] (= 1/dt for first order); 0 when steady
     nsd: int,
     isotropic_cond: bool,
 ) -> npt.NDArray[np.float64]:
@@ -1400,7 +2100,9 @@ def _supg_tau_values(
 
         # Peclet number
         Pe = dl_eff * flux_mag / lambda_e_projected
-        t = dl_eff / (2 * flux_mag) * (1 + 9 / Pe**2) ** (-0.5)
+        # Advective, diffusive and transient (Tezduyar, 2002) limits
+        inv_t_sq = (2 * flux_mag / dl_eff) ** 2 * (1 + 9 / Pe**2) + (2 * heat_capacity[q, 0, 0] * rate) ** 2
+        t = inv_t_sq ** (-0.5)
         if no_flow:
             t = 0.0
         tau[q, 0, 0] = t
@@ -1415,12 +2117,12 @@ def _evaluate_total_energy(
     u_f: PropertyResult,
     solid: RegionSolidData,
     *,
-    is_fracture: bool,
+    no_solid: bool,
 ) -> npt.NDArray[np.float64]:
     """Evaluate the total (solid + fluid) stored energy."""
     # Evaluated in numba kernel.
     E: npt.NDArray[np.float64] = _total_energy_values(
-        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, is_fracture
+        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, no_solid
     )
     return E
 
@@ -1435,14 +2137,14 @@ def _evaluate_advection_terms(
     solid: RegionSolidData,  # solid mat props object
     q_D: npt.NDArray[np.float64],  # mass flux
     rho_f: NodalPropertyState,  # fluid density
-    phi_L: PropertyState,  # Lagrangian porosity or aperture (fracture case)
+    phi_L: PropertyState,  # Lagrangian porosity, or aperture/area (fracture/well case)
     u_f: NodalPropertyState,  # Internal energy
     hf: NodalEnthalpyState,  # Enthalpy
     lambda_e: npt.NDArray[np.float64] | float,  # thermal conductivity
     cv: npt.NDArray[np.float64],  # rate coefficient
     steady_temp: float,  # steady-state temperature control
     *,
-    is_fracture: bool,
+    no_solid: bool,
     isotropic_cond: bool,
     dqD_dT: npt.NDArray[np.float64] = _EMPTY,  # mass flux temperature partial  derivative
     dqD_dp: npt.NDArray[np.float64] = _EMPTY,  # mass flux pressure partial derivative
@@ -1463,23 +2165,24 @@ def _evaluate_advection_terms(
     darcy_flux = q_D / rho_f_n.value  # Volume flux
 
     # lambda_e is a region constant: scalar-like (isotropic fracture case), (nq, 1, 1)
-    # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast to a uniform shape so
-    # the numba kernel only ever sees consistently-shaped, contiguous arrays. `.copy()` is
-    # required, not just `ascontiguousarray`: when `lambda_e` already has the target shape
-    # (the isotropic bulk case), `broadcast_to` is a no-op view and `ascontiguousarray` skips
-    # copying it, leaving it read-only - a different numba type than the writable array the
-    # other branches produce, which costs a fresh ~1s compiled specialization the first time
-    # that branch is hit.
-    lambda_e_shape = (nq, 1, 1) if isotropic_cond else (nq, nsd, nsd)
-    lambda_e_arr = np.asarray(lambda_e, dtype=np.float64)
-    lambda_e_bcast = np.ascontiguousarray(np.broadcast_to(lambda_e_arr, lambda_e_shape)).copy()
+    # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast into a fresh array so
+    # the numba kernel always sees the same contiguous, writable type; a read-only view would
+    # cost an extra ~1s compiled specialization.
+    lambda_e_bcast = np.empty((nq, 1, 1) if isotropic_cond else (nq, nsd, nsd))
+    lambda_e_bcast[...] = lambda_e
 
+    # Volumetric heat capacity and transient rate for the tau transient limit
+    phi_q = phi_L.q_n.value
+    heat_capacity = np.ascontiguousarray(
+        (1 - phi_q) * rho_s * cp_s * (1 - no_solid) + phi_q * rho_f_n.value * hf_q.cp
+    )
+    rate = (1 - steady_temp) * cv[0]
     # Evaluated in numba kernel.
-    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, nsd, isotropic_cond)
+    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, heat_capacity, rate, nsd, isotropic_cond)
 
     # Discretized strong form residual at quadrature points
     # Energy rate
-    E_q = _evaluate_total_energy(kin.T_q, phi_L.q, rho_f.q, u_f.q, solid, is_fracture=is_fracture)
+    E_q = _evaluate_total_energy(kin.T_q, phi_L.q, rho_f.q, u_f.q, solid, no_solid=no_solid)
     energy_dot = (1 - steady_temp) * (
         cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
     )
@@ -1512,7 +2215,7 @@ def _evaluate_advection_terms(
             (1 - steady_temp)
             * cv[0]
             * (
-                (1 - phi_L_n.value) * rho_s * cp_s * (1 - is_fracture)
+                (1 - phi_L_n.value) * rho_s * cp_s * (1 - no_solid)
                 + phi_L_n.dT * internal_energy_term
                 + phi_L_n.value * (rho_f_n.dT * u_f_n.value + rho_f_n.value * u_f_n.dT)
             )
@@ -1557,7 +2260,7 @@ def _evaluate_advection_terms(
 # ---- Integration functions
 
 
-def _integrate_fracture_matrix_coupling_residual(  # noqa
+def _integrate_fracture_coupling_residual(  # noqa
     e: int,  # fracture element
     enodes_f: list[int],  # fracture element connectivity
     nodes_f: npt.NDArray[np.float64],  # fracture element nodes
@@ -1565,8 +2268,8 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
     fluid: dict[str, Any],  # fluid mat props object
-    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
     kin_n: ElementKinematics,  # current-iterate slice
+    pe_lag: npt.NDArray[np.float64],  # fracture element lagged pressures - upwind decision only
     p: npt.NDArray[np.float64],  # Full pressure vector
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
@@ -1574,7 +2277,9 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     kf_perp: PropertyResult,  # fracture transverse permeability at quad points
     mu_q: PropertyResult,  # viscosity at quad points
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
-    hc: float,  # convective heat transfer coefficient
+    heat_transfer_factor: float,  # heat transfer coefficient multiplier
+    lambda_f: float,  # fluid thermal conductivity
+    aperture: float,
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -1594,7 +2299,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
 
     rhof_q = rho_f.q_n
     p_f_q = N_q @ kin_n.pe
-    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
+    p_f_q_lag = N_q @ pe_lag  # lagged fracture pressure, upwind decision only
     T_f_q = N_q @ kin_n.Te
     Rf_p = np.zeros((len(enodes_f), 1))
     Rf_T = np.zeros((len(enodes_f), 1))
@@ -1608,13 +2313,16 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
                 rhof_q, kf_perp, mu_q, p_f_q, p_m_q
             )  # mass flux
 
+        # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
         if pressure_coupling:
-            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)  # Fracture
-            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_p_q, wJe_q, True)
+            Rf_p = Rf_p + _vctrzd_qp_vctr_integrate(N_q, -flux_p_q, wJe_q, True)  # Fracture
+            matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, flux_p_q, wJe_q, True)
 
         if thermal_coupling:
             T_m_q = N_qm @ T[enodes_m]  # matrix temperature
-            flux_hc_T_q, _, _ = _evaluate_fracture_conduction_flux(hc, T_f_q, T_m_q)
+            flux_hc_T_q, _, _ = _evaluate_fracture_conduction_flux(
+                heat_transfer_factor, lambda_f, aperture, T_f_q, T_m_q
+            )
             Rf_T = Rf_T + _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
             matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_qm, -flux_hc_T_q, wJe_q, True)
 
@@ -1639,10 +2347,8 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
                     rhof_q,
                     T_flow_lagged=T_flow_lagged,
                 )
-                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
-                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
-                    N_qm, -flux_adv_T_q, wJe_q, True
-                )
+                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_qm, flux_adv_T_q, wJe_q, True)
 
         matches.append((nne_m, matrix_vectors))
 
@@ -1655,7 +2361,7 @@ def _integrate_fracture_matrix_coupling_residual(  # noqa
     return fracture_vectors, matches
 
 
-def _integrate_fracture_matrix_coupling_tangent(
+def _integrate_fracture_coupling_tangent(
     e: int,
     enodes_f: list[int],
     nodes_f: npt.NDArray[np.float64],
@@ -1663,8 +2369,8 @@ def _integrate_fracture_matrix_coupling_tangent(
     wJe_q: npt.NDArray[np.float64],
     mesh: dict[str, Any],
     fluid: dict[str, Any],
-    kin: ElementKinematics,  # fracture element's own kinematics; `.pe[:, 1:2]` is the lag slice
     kin_n: ElementKinematics,  # current-iterate slice
+    pe_lag: npt.NDArray[np.float64],  # fracture element lagged pressures - upwind decision only
     p: npt.NDArray[np.float64],  # Full pressure vector
     p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
     T: npt.NDArray[np.float64],  # Full temperature vector
@@ -1672,7 +2378,9 @@ def _integrate_fracture_matrix_coupling_tangent(
     kf_perp: PropertyResult,
     mu_q: PropertyResult,  # viscosity at quad points
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
-    hc: float,
+    heat_transfer_factor: float,  # heat transfer coefficient multiplier
+    lambda_f: float,  # fluid thermal conductivity
+    aperture: float,
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -1685,7 +2393,7 @@ def _integrate_fracture_matrix_coupling_tangent(
 
     rhof_q = rho_f.q_n
     p_f_q = N_q @ kin_n.pe  # fracture pressure
-    p_f_q_lag = N_q @ kin.pe[:, 1:2]  # lagged fracture pressure, upwind decision only
+    p_f_q_lag = N_q @ pe_lag  # lagged fracture pressure, upwind decision only
 
     for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         ff_matrices: dict[str, npt.NDArray[np.float64]] = {}
@@ -1700,16 +2408,16 @@ def _integrate_fracture_matrix_coupling_tangent(
             )  # Mass flux
 
         if pressure_coupling:
-            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpf, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_q, wJe_q, True)
-            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_qm, wJe_q, True)
-            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, dfluxp_dpm, N_qm, wJe_q, True)
+            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_q, wJe_q, True)
+            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpf, N_q, wJe_q, True)
+            mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_qm, wJe_q, True)
+            mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_qm, wJe_q, True)
 
         if thermal_coupling:
             T_f_q = N_q @ kin_n.Te
             T_m_q = N_qm @ T[enodes_m]
             _, dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
-                hc, T_f_q, T_m_q, want_tangent_dT=True
+                heat_transfer_factor, lambda_f, aperture, T_f_q, T_m_q, want_tangent_dT=True
             )  # convection contribution
 
             RTT_ff = _vctrzd_quad_point_integration(N_q, dfluxc_dTf, N_q, wJe_q, True)
@@ -1743,25 +2451,27 @@ def _integrate_fracture_matrix_coupling_tangent(
                 )
 
                 # fm/mf coefficients use the derivative wrt the column's temperature
-                RTT_ff = RTT_ff + _vctrzd_quad_point_integration(N_q, -dqadv_dTf, N_q, wJe_q, True)
-                RTT_fm = RTT_fm + _vctrzd_quad_point_integration(N_qm, dqadv_dTf, N_q, wJe_q, True)
-                RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_qm, wJe_q, True)
-                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, dqadv_dTm, N_qm, wJe_q, True)
+                RTT_ff = RTT_ff + _vctrzd_quad_point_integration(N_q, dqadv_dTf, N_q, wJe_q, True)
+                RTT_fm = RTT_fm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTf, N_q, wJe_q, True)
+                RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
+                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
 
                 if fully_coupled:
-                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTf, N_q, wJe_q, True)
+                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_q, wJe_q, True)
                     fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
-                        N_qm, -dfluxp_dTm, N_q, wJe_q, True
+                        N_qm, -dfluxp_dTf, N_q, wJe_q, True
                     )
-                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_qm, wJe_q, True)
+                    mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_qm, wJe_q, True)
                     mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(
-                        N_qm, dfluxp_dTm, N_qm, wJe_q, True
+                        N_qm, -dfluxp_dTm, N_qm, wJe_q, True
                     )
 
-                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpf, N_q, wJe_q, True)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_qm, wJe_q, True)
-                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_qm, dqadv_dpm, N_qm, wJe_q, True)
+                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
+                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dpf, N_q, wJe_q, True)
+                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
+                        N_qm, -dqadv_dpm, N_qm, wJe_q, True
+                    )
 
             ff_matrices["KTT_ff"] = RTT_ff
             fm_matrices["KTT_fm"] = RTT_fm
@@ -1770,6 +2480,244 @@ def _integrate_fracture_matrix_coupling_tangent(
         entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
 
     return entries
+
+
+def _integrate_well_coupling_residual(
+    enodes_m: list[int],  # matrix nodes coincident with the well element nodes
+    N_q: npt.NDArray[np.float64],  # well shape functions, shared by the coincident matrix nodes
+    wJe_q: npt.NDArray[np.float64],
+    fluid: dict[str, Any],  # fluid mat props object
+    kin_n: ElementKinematics,  # current-iterate slice
+    pe_lag: npt.NDArray[np.float64],  # well element lagged pressures - upwind decision only
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m)
+    mu_q: PropertyResult,  # viscosity at quad points
+    rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
+    heat_transfer_factor: float,  # heat transfer coefficient multiplier
+    lambda_f: float,  # fluid thermal conductivity
+    radius: float,
+    roughness: float,
+    mu_c: PropertyResult,  # element midpoint viscosity
+    Re_c: npt.NDArray[np.float64],  # element midpoint Reynolds number
+    hf: NodalEnthalpyState,  # enthalpy; nodal `cp` used only when thermal_coupling
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+    advection_on: bool,
+    T_flow_lagged: bool,
+) -> tuple[dict[str, npt.NDArray[np.float64]], dict[str, npt.NDArray[np.float64]]]:
+    """Integrate the well-matrix exchange flux into well and matrix residual vectors.
+
+    Returns `(well_vectors, matrix_vectors)`; the exchange is integrated once per well element.
+    """
+    well_vectors: dict[str, npt.NDArray[np.float64]] = {}
+    matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
+    if not pressure_coupling and not thermal_coupling:
+        return well_vectors, matrix_vectors
+
+    # Well and coincident matrix states at the well quadrature points
+    rhof_q = rho_f.q_n
+    p_w_q = N_q @ kin_n.pe
+    p_m_q = N_q @ p[enodes_m]
+
+    # Leak-off mass flux
+    if pressure_coupling or advection_on:
+        flux_p_q, _, _, _, _ = _evaluate_well_leakoff_flux(
+            rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q
+        )
+
+    # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
+    if pressure_coupling:
+        well_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, -flux_p_q, wJe_q, True)
+        matrix_vectors["F_Pdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_p_q, wJe_q, True)
+
+    if thermal_coupling:
+        # Conduction exchange
+        T_w_q = N_q @ kin_n.Te
+        T_m_q = N_q @ T[enodes_m]
+        flux_hc_T_q, _, _, _ = _evaluate_well_conduction_flux(
+            heat_transfer_factor,
+            lambda_f,
+            radius,
+            roughness,
+            Re_c,
+            mu_c,
+            _N_MID_L2 @ hf.e_n.cp,  # midpoint cp from the nodal values
+            _N_MID_L2,
+            N_q,
+            T_w_q,
+            T_m_q,
+        )
+        well_vectors["F_Tdiffusion"] = _vctrzd_qp_vctr_integrate(N_q, flux_hc_T_q, wJe_q, True)
+        matrix_vectors["F_Tdiffusion_mm"] = _vctrzd_qp_vctr_integrate(N_q, -flux_hc_T_q, wJe_q, True)
+
+        # Advective exchange, upwinded on lagged pressures
+        if advection_on:
+            flux_adv_T_q, _, _, _, _ = _evaluate_well_advection_flux(
+                p_w_q,
+                p_m_q,
+                N_q @ pe_lag,
+                N_q @ p_lag[enodes_m],
+                T_w_q,
+                T_m_q,
+                N_q @ kin_n.Te_flow,
+                N_q @ T_flow[enodes_m],
+                flux_p_q,
+                fluid,
+                perforation_conductance,
+                radius,
+                mu_q,
+                rhof_q,
+                T_flow_lagged=T_flow_lagged,
+            )
+            well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+            matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
+
+    return well_vectors, matrix_vectors
+
+
+def _integrate_well_coupling_tangent(  # noqa
+    enodes_m: list[int],  # matrix nodes coincident with the well element nodes
+    N_q: npt.NDArray[np.float64],  # well shape functions, shared by the coincident matrix nodes
+    wJe_q: npt.NDArray[np.float64],
+    fluid: dict[str, Any],
+    kin_n: ElementKinematics,  # current-iterate slice
+    pe_lag: npt.NDArray[np.float64],  # well element lagged pressures - upwind decision only
+    p: npt.NDArray[np.float64],  # Full pressure vector
+    p_lag: npt.NDArray[np.float64],  # Full pressure vector, lagged - upwind decision only
+    T: npt.NDArray[np.float64],  # Full temperature vector
+    T_flow: npt.NDArray[np.float64],  # Temperature vector for property evaluation
+    perforation_conductance: float,  # well-to-rock conductance per unit wall area (m)
+    mu_q: PropertyResult,  # viscosity at quad points
+    rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
+    heat_transfer_factor: float,  # heat transfer coefficient multiplier
+    lambda_f: float,  # fluid thermal conductivity
+    radius: float,
+    roughness: float,
+    mu_c: PropertyResult,  # element midpoint viscosity
+    Re_c: npt.NDArray[np.float64],  # element midpoint Reynolds number
+    dRe_dp: npt.NDArray[
+        np.float64
+    ],  # element Reynolds number pressure tangent; `_EMPTY` unless fully_coupled
+    dRe_dT: npt.NDArray[np.float64],  # element Reynolds number temperature tangent
+    hf: NodalEnthalpyState,  # enthalpy; nodal `cp` (lagged) used only when thermal_coupling
+    *,
+    pressure_coupling: bool,
+    thermal_coupling: bool,
+    fully_coupled: bool,
+    advection_on: bool,
+    T_flow_lagged: bool,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Integrate one well element's coupling tangent contribution to its coincident matrix nodes."""
+    ww_matrices: dict[str, npt.NDArray[np.float64]] = {}
+    wm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+    mw_matrices: dict[str, npt.NDArray[np.float64]] = {}
+    mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+
+    # Well and coincident matrix states at the well quadrature points
+    rhof_q = rho_f.q_n
+    p_w_q = N_q @ kin_n.pe
+    p_m_q = N_q @ p[enodes_m]
+
+    # Leak-off mass flux and tangents
+    if pressure_coupling or advection_on:
+        flux_p_q, dfluxp_dpw, dfluxp_dpm, dfluxp_dTw, dfluxp_dTm = _evaluate_well_leakoff_flux(
+            rhof_q,
+            perforation_conductance,
+            radius,
+            mu_q,
+            p_w_q,
+            p_m_q,
+            want_tangent_dp=True,
+            want_tangent_dT=thermal_coupling,
+        )
+
+    if pressure_coupling:
+        ww_matrices["Kpp_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpw, N_q, wJe_q, True)
+        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
+        mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
+        mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpm, N_q, wJe_q, True)
+
+    if thermal_coupling:
+        # Conduction exchange
+        T_w_q = N_q @ kin_n.Te
+        T_m_q = N_q @ T[enodes_m]
+        _, dfluxc_dTw, dfluxc_dTm, dfluxc_dpw = _evaluate_well_conduction_flux(
+            heat_transfer_factor,
+            lambda_f,
+            radius,
+            roughness,
+            Re_c,
+            mu_c,
+            _N_MID_L2 @ hf.e_n.cp,  # midpoint cp from the nodal values
+            _N_MID_L2,
+            N_q,
+            T_w_q,
+            T_m_q,
+            dRe_dp=dRe_dp,
+            dRe_dT=dRe_dT,
+            want_tangent_dT=True,
+            want_tangent_dp=fully_coupled,
+        )
+        # Tangent arrays carry the column node shape functions; well rows +flux, matrix rows -flux
+        RTT_ww = _vctrzd_qp_vctr_integrate(N_q, dfluxc_dTw, wJe_q, False)
+        RTT_wm = _vctrzd_qp_vctr_integrate(N_q, -dfluxc_dTw, wJe_q, False)
+        RTT_mw = _vctrzd_qp_vctr_integrate(N_q, dfluxc_dTm, wJe_q, False)
+        RTT_mm = _vctrzd_qp_vctr_integrate(N_q, -dfluxc_dTm, wJe_q, False)
+
+        # Conduction depends on well pressure through h
+        if fully_coupled:
+            ww_matrices["KTp_ww"] = _vctrzd_qp_vctr_integrate(N_q, dfluxc_dpw, wJe_q, False)
+            wm_matrices["KTp_wm"] = _vctrzd_qp_vctr_integrate(N_q, -dfluxc_dpw, wJe_q, False)
+
+        # Advective exchange, upwinded on lagged pressures
+        if advection_on:
+            _, dqadv_dTw, dqadv_dTm, dqadv_dpw, dqadv_dpm = _evaluate_well_advection_flux(
+                p_w_q,
+                p_m_q,
+                N_q @ pe_lag,
+                N_q @ p_lag[enodes_m],
+                T_w_q,
+                T_m_q,
+                N_q @ kin_n.Te_flow,
+                N_q @ T_flow[enodes_m],
+                flux_p_q,
+                fluid,
+                perforation_conductance,
+                radius,
+                mu_q,
+                rhof_q,
+                dfluxp_dpw=dfluxp_dpw,
+                dfluxp_dpm=dfluxp_dpm,
+                want_tangent=True,
+                T_flow_lagged=T_flow_lagged,
+            )
+            RTT_ww = RTT_ww + _vctrzd_quad_point_integration(N_q, dqadv_dTw, N_q, wJe_q, True)
+            RTT_wm = RTT_wm + _vctrzd_quad_point_integration(N_q, -dqadv_dTw, N_q, wJe_q, True)
+            RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
+            RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
+
+            # Off-diagonal pressure/temperature coupling
+            if fully_coupled:
+                ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
+                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
+                mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
+                mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
+
+                ww_matrices["KTp_ww"] += _vctrzd_quad_point_integration(N_q, dqadv_dpw, N_q, wJe_q, True)
+                wm_matrices["KTp_wm"] += _vctrzd_quad_point_integration(N_q, -dqadv_dpw, N_q, wJe_q, True)
+                mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
+                mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
+
+        ww_matrices["KTT_ww"] = RTT_ww
+        wm_matrices["KTT_wm"] = RTT_wm
+        mw_matrices["KTT_mw"] = RTT_mw
+        mm_matrices["KTT_mm"] = RTT_mm
+
+    return ww_matrices, wm_matrices, mw_matrices, mm_matrices
 
 
 def integrate_residuals(  # noqa
@@ -1781,8 +2729,9 @@ def integrate_residuals(  # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for property evaluations
     *,
     is_fracture: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
+    is_well: bool = False,
+    physics: Physics,  # fields solved in this call; `off` fields are not assembled
+    T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
     p = primary_variables["p"]
@@ -1793,61 +2742,52 @@ def integrate_residuals(  # noqa
 
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
-    advection_on = bool(controls["advection_on"])
+    wells_on = bool(controls["wells_on"])
+    on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
+    domain = physics.domain(is_fracture=is_fracture, is_well=is_well)
+    solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
+    need_flux = solve_p or (solve_T and advection_on)
+    need_flow_props = need_flux or on_submesh  # matrix coupling uses viscosity
+    # matrix coupling is assembled for a field if either side solves (or advects) it
+    pressure_coupling = solve_p or physics.matrix.solve_flow
+    thermal_coupling = solve_T or physics.matrix.solve_heat
+    coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = controls["steady_pressure"]
-    steady_temp = controls["steady_temperature"]
+    steady_pres = float(domain.steady_flow)
+    steady_temp = float(domain.steady_heat)
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["F_Pstorage", "F_Pdiffusion"]
-    if not pressure_only:
+    if physics.solves("heat"):
         list_of_matrices = ["F_Tstorage", "F_Tdiffusion", "F_Tadvection", "F_Tstab"] + list_of_matrices
 
-    # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture)
+    # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture, is_well=is_well)
 
     if is_fracture:
-        fmesh = mesh_data.fmesh
+        fmesh = mesh_data.submesh
         conn_global = fmesh["conn_global"]
         nn_m = mesh["nn"]
 
         # Connectivity-only fracture/matrix coupling index vectors, cached on fmesh.
-        if "vec_mat_asmbl" not in fmesh:
-            (
-                _vec_count_ff,
-                row_vec_ff,
-                col_vec_ff,
-                _vec_count_fm,
-                row_vec_fm,
-                col_vec_fm,
-                _vec_count_mf,
-                row_vec_mf,
-                col_vec_mf,
-                _vec_count_mm,
-                row_vec_mm,
-                col_vec_mm,
-                _vec_count_flux_m,
-                row_vec_flux_m,
-            ) = _create_fracture_coupling_vectors(mesh_data.conn, fmesh["matrix_conn"], mesh["conn"])
-            fmesh["vec_mat_asmbl"] = {
-                "row_vec_ff": row_vec_ff,
-                "col_vec_ff": col_vec_ff,
-                "row_vec_fm": row_vec_fm,
-                "col_vec_fm": col_vec_fm,
-                "row_vec_mf": row_vec_mf,
-                "col_vec_mf": col_vec_mf,
-                "row_vec_mm": row_vec_mm,
-                "col_vec_mm": col_vec_mm,
-                "row_vec_flux_m": row_vec_flux_m,
-            }
-        row_vec_flux_m = fmesh["vec_mat_asmbl"]["row_vec_flux_m"]
-        coupling_flux_names = (["F_Pdiffusion_mm"] if not temperature_only else []) + (
-            ["F_Tdiffusion_mm"] if not pressure_only else []
+        row_vec_flux_m = _get_fracture_coupling_vectors(mesh, mesh_data)["row_vec_flux_m"]
+
+    if is_well:
+        wmesh = mesh_data.submesh
+        conn_global = wmesh["conn_global"]
+        nn_m = mesh["nn"]
+
+        # Connectivity-only well/matrix coupling index vectors, cached on wmesh.
+        row_vec_flux_m = _get_well_coupling_vectors(mesh_data)["row_vec_flux_m"]
+
+    if on_submesh:
+        coupling_flux_names = (["F_Pdiffusion_mm"] if pressure_coupling else []) + (
+            ["F_Tdiffusion_mm"] if thermal_coupling else []
         )
-        if not pressure_only and advection_on:
+        if thermal_coupling and coupling_advection:
             coupling_flux_names = coupling_flux_names + ["F_Tadvection_mm"]
 
         vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
@@ -1859,16 +2799,38 @@ def integrate_residuals(  # noqa
     vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx, ismatrix=False)
     vec_counter = 0  # vectorized storage index counter
 
-    # ----- Matrix integration element loop
-    for r in range(mesh_data.num_regions):
-        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, mesh_data, r, is_fracture=is_fracture
-        )
+    # ----- Nodal states, evaluated once per node rather than once per element node
+    dofs = _get_pass_dofs(mesh, mesh_data.nn, is_fracture=is_fracture, is_well=is_well)
+    p_nodes, T_flow_nodes = p[dofs], T_flow[dofs]
+    p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
+    nodal_fluid = _evaluate_nodal_fluid_state(
+        T[dofs], T_flow_nodes, p_nodes, fluid, T_flow_lagged=T_flow_lagged, want_energy=thermal_coupling
+    )
+
+    # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
+    active = solve_p or solve_T or on_submesh
+    for r in range(mesh_data.num_regions if active else 0):
+        flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
-        # the reduced dimensionality of the fracture's own gradP/B_q.
-        g_r = (u.T @ g) if is_fracture else g
-        isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
-        solid = _get_region_solid_data(material, r, is_fracture=is_fracture)
+        # the reduced dimensionality of the fracture's own gradP/B_q. Wells project per element.
+        g_r = (flow.u.T @ g) if is_fracture else g
+        isotropic_cond, heat_transfer_factor = _get_region_thermal_data(
+            material, r, is_fracture=is_fracture, is_well=is_well
+        )
+        solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        # Porosity depends on region solid properties, so nodes shared across regions differ
+        nodal_phi_L = _evaluate_nodal_porosity(
+            p_nodes,
+            p_0_nodes,
+            T_flow_nodes,
+            T_0_nodes,
+            solid,
+            flow.w0,
+            no_solid=on_submesh,
+            T_flow_lagged=T_flow_lagged,
+            volumetric_strain_on=volumetric_strain_on,
+        )
+        nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -1885,8 +2847,14 @@ def integrate_residuals(  # noqa
                 elem_type_counter = new_type_idx
 
             enodes = mesh_data.conn[e]  # local element nodes
-            enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T/p
-            xI = nodes_r[enodes, :]
+            enodes_dof = conn_global[e] if on_submesh else enodes  # global DoF index, for T/p
+            if is_well:
+                # Project onto the element tangent for 1D local coordinates and gravity
+                t_e = flow.u[e].reshape(-1, 1)
+                xI = flow.nodes_r[enodes, :] @ t_e
+                g_r = t_e.T @ g
+            else:
+                xI = flow.nodes_r[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, mesh_data.nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
@@ -1898,53 +2866,75 @@ def integrate_residuals(  # noqa
             element_vectors: dict[str, npt.NDArray[np.float64]] = {}
 
             # Evaluate primary variables at quad points and nodes
-            kin = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            kin = _evaluate_element_kinematics(
+                N_q,
+                B_q,
+                xI,
+                T,
+                T_flow,
+                p,
+                T_0,
+                p_0,
+                enodes_dof,
+                want_lengths=advection_on,
+                want_flow=need_flow_props,
+            )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
             kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
-                kf_0,
+                flow.kf,
                 kin_n,
-                kin,
                 N_q,
                 fluid,
-                solid,
-                w0,
-                is_fracture=is_fracture,
-                T_flow_lagged=temperature_only,
-                pressure_only=pressure_only,
-                volumetric_strain_on=volumetric_strain_on,
+                nodal_state,
+                np.asarray(enodes),
+                T_flow_lagged=T_flow_lagged,
+                want_energy=thermal_coupling,
+                want_flow=need_flow_props,
             )
-            _, q_D, _, _ = _evaluate_darcy_flux(
-                N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=isotropic_perm
-            )  # q_D = mass flux
+            if is_well:
+                # Element flow from the midpoint state: L2 gradients are constant and T is linear
+                mu_c = get_viscosity(_N_MID_L2 @ kin_n.Te_flow, _N_MID_L2 @ kin_n.pe, fluid, T_flow_lagged)
+                _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
+                    _N_MID_L2, B_q[0:1], kin.gradP[0:1], g_r, mu_c, rho_f.e_n, flow.radius, flow.roughness
+                )
+                q_D = np.repeat(q_c, nq, axis=0)  # q_D = mass flow rate, constant along the element
+            elif need_flux:
+                _, q_D, _, _ = _evaluate_darcy_flux(
+                    N_q, B_q, kin.gradP, g_r, kf, mu_q, rho_f, isotropic_perm=flow.isotropic_perm
+                )  # q_D = mass flux
+            else:
+                q_D = _EMPTY
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
-            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1).reshape(-1, 1)
+            m_lump = _lumped_mass(N_q, wJe_q).reshape(-1, 1)
 
             # ------ Conservation of mass
-            if not temperature_only:
+            if solve_p:
                 # Mass storage vector
                 mass_dot_e, _, _ = _evaluate_mass_storage_integrands(phi_L, rho_f, cv, steady_pres)
-                element_vectors["F_Pstorage"] = m_lump * mass_dot_e
+                element_vectors["F_Pstorage"] = m_lump * mass_dot_e * (1 - is_well)  # wells are quasi-steady
 
                 # Diffusion vector
-                element_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(B_q, q_D, wJe_q, isotropic_perm)
+                element_vectors["F_Pdiffusion"] = _vctrzd_qp_vctr_integrate(
+                    B_q, q_D, wJe_q, flow.isotropic_perm
+                )
 
             # ------ Conservation of energy
-            if not pressure_only:
+            if solve_T:
                 # thermal conductivity
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
                     solid,
-                    w0,
+                    flow.w0,
                     lambda_f,
                     mesh_data.nsd,
-                    is_fracture=is_fracture,
+                    no_solid=on_submesh,
                     isotropic_cond=isotropic_cond,
                 )
                 _, energy_dot_e, _, _ = _evaluate_energy_storage_integrands(
-                    kin, phi_L, rho_f, u_f, solid, cv, steady_temp, is_fracture=is_fracture
+                    kin, phi_L, rho_f, u_f, solid, cv, steady_temp, no_solid=on_submesh
                 )
                 # Energy storage
                 element_vectors["F_Tstorage"] = m_lump * energy_dot_e
@@ -1972,42 +2962,44 @@ def integrate_residuals(  # noqa
                         lambda_e,
                         cv,
                         steady_temp,
-                        is_fracture=is_fracture,
+                        no_solid=on_submesh,
                         isotropic_cond=isotropic_cond,
                     )
                     # Raw avection
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_advection, wJe_q, isotropic_perm
+                        B_q, integrand_advection, wJe_q, flow.isotropic_perm
                     )
                     # Stabilization
                     element_vectors["F_Tstab"] = _vctrzd_qp_vctr_integrate(
-                        B_q, integrand_SUPG, wJe_q, isotropic_perm
+                        B_q, integrand_SUPG, wJe_q, flow.isotropic_perm
                     )
 
             # ----- Fracture-matrix leak-off/convective-exchange coupling
             if is_fracture:
-                fracture_flux_vectors, matches = _integrate_fracture_matrix_coupling_residual(
+                fracture_flux_vectors, matches = _integrate_fracture_coupling_residual(
                     e,
                     enodes,
-                    mesh_data.nodes_f,
+                    mesh_data.submesh_nodes,
                     N_q,
                     wJe_q,
                     mesh,
                     fluid,
-                    kin,
                     kin_n,
+                    kin.pe[:, 1:2],
                     p[:, 0:1],
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    kf_perp,
+                    flow.kf_perp,
                     mu_q,
                     rho_f,
-                    hc,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
-                    advection_on=advection_on,
-                    T_flow_lagged=temperature_only,
+                    heat_transfer_factor,
+                    lambda_f,
+                    flow.w0,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    advection_on=coupling_advection,
+                    T_flow_lagged=T_flow_lagged,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
 
@@ -2015,6 +3007,40 @@ def integrate_residuals(  # noqa
                     stop = vec_counter_flux_m + nne_m  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_flux_m, matrix_vectors, vec_counter_flux_m, stop)
                     vec_counter_flux_m = stop
+
+            # ----- Well-matrix leak-off/convective-exchange coupling
+            if is_well and wmesh["matrix_conn"][e] != [-1]:  # none outside the domain
+                well_flux_vectors, matrix_vectors = _integrate_well_coupling_residual(
+                    wmesh["matrix_node_conn"][e],
+                    N_q,
+                    wJe_q,
+                    fluid,
+                    kin_n,
+                    kin.pe[:, 1:2],
+                    p[:, 0:1],
+                    p[:, 1:2],
+                    T[:, 0:1],
+                    T_flow[:, 0:1],
+                    flow.perforation_conductance,
+                    mu_q,
+                    rho_f,
+                    heat_transfer_factor,
+                    lambda_f,
+                    flow.radius,
+                    flow.roughness,
+                    mu_c,
+                    Re_c,
+                    hf,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    advection_on=coupling_advection,
+                    T_flow_lagged=T_flow_lagged,
+                )
+                _accumulate_element_matrices(element_vectors, well_flux_vectors)
+
+                stop = vec_counter_flux_m + nne  # vectorized index count end
+                _store_vctrzd_element_matrix(vec_flux_m, matrix_vectors, vec_counter_flux_m, stop)
+                vec_counter_flux_m = stop
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne  # vectorized index count end
@@ -2032,7 +3058,7 @@ def integrate_residuals(  # noqa
         isvector=True,
     )
 
-    if is_fracture:  # Fracture residuals to be updated
+    if on_submesh:  # Fracture/well residuals to be updated
         # Leak-off contributions into matrix. Assembled in the recursion call.
         for name in vec_flux_m:
             integrated_vectors[name] = _make_sparse(
@@ -2050,8 +3076,8 @@ def integrate_residuals(  # noqa
             cv,
             T_flow,
             is_fracture=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
         )
         # Fold the matrix-side "_mm" flux from the fracture pass into the matrix residual.
         for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
@@ -2060,6 +3086,27 @@ def integrate_residuals(  # noqa
                 integrated_vectors[name] = integrated_vectors[name] + flux_mm
         # Combine fracture and matrix vectors into one
         integrated_vectors = _stack_fracture_vectors(integrated_vectors, integrated_fracture_vectors)
+
+    if wells_on:
+        # Recursion call
+        integrated_well_vectors = integrate_residuals(
+            mesh,
+            material,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            is_well=True,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
+        )
+        # Fold the matrix-side "_mm" flux from the well pass into the matrix residual.
+        for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
+            if name + "_mm" in integrated_well_vectors:
+                flux_mm = _pad_sparse(integrated_well_vectors[name + "_mm"], integrated_vectors[name].shape)
+                integrated_vectors[name] = integrated_vectors[name] + flux_mm
+        # Combine well and (matrix + fracture) vectors into one
+        integrated_vectors = _stack_well_vectors(integrated_vectors, integrated_well_vectors)
 
     return integrated_vectors
 
@@ -2073,9 +3120,8 @@ def integrate_tangent_matrices(  # noqa
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     *,
     is_fracture: bool = False,
-    pressure_only: bool = False,
-    temperature_only: bool = False,
-    fully_coupled: bool = False,
+    is_well: bool = False,
+    physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
 ) -> dict[str, Any]:
     """Integrate tangent matrices.
@@ -2091,59 +3137,65 @@ def integrate_tangent_matrices(  # noqa
 
     axisymmetry = bool(controls["axisymmetric_on"])
     fracture_on = bool(controls["fracture_on"])
-    advection_on = bool(controls["advection_on"])
+    wells_on = bool(controls["wells_on"])
+    on_submesh = is_fracture or is_well  # fracture/well pass: no solid, global DoF numbering
+    domain = physics.domain(is_fracture=is_fracture, is_well=is_well)
+    solve_p, solve_T, advection_on = domain.solve_flow, domain.solve_heat, domain.advection
+    coupled = solve_p and solve_T  # off-diagonal KpT/KTp blocks
+    need_flux = solve_p or (solve_T and advection_on)
+    need_flow_props = need_flux or on_submesh  # matrix coupling uses viscosity
+    # matrix coupling is assembled for a field if either side solves (or advects) it
+    pressure_coupling = solve_p or physics.matrix.solve_flow
+    thermal_coupling = solve_T or physics.matrix.solve_heat
+    coupling_cross = pressure_coupling and thermal_coupling
+    coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    steady_pres = controls["steady_pressure"]
-    steady_temp = controls["steady_temperature"]
-
-    if fully_coupled:
-        # Overwrite bad combination if it occurs
-        pressure_only = False
-        temperature_only = False
+    steady_pres = float(domain.steady_flow)
+    steady_temp = float(domain.steady_heat)
 
     fluid = material["fluid"]
     lambda_f = fluid["therm_cond"]
 
     # fixed accumulator buckets; new nonlinear terms just sum onto one
     list_of_matrices = ["Kpp"]
-    if not pressure_only:
+    if physics.solves("heat"):
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
-    # ----- mesh data: bulk (matrix) mesh, or the fracture mesh on the recursive pass
-    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture)
+    # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture, is_well=is_well)
 
     if is_fracture:
-        fmesh = mesh_data.fmesh
+        fmesh = mesh_data.submesh
         conn_global = fmesh["conn_global"]
 
-        # Connectivity-only index vectors, cached by integrate_residuals.
-        cached_cv = fmesh["vec_mat_asmbl"]
+        # Connectivity-only index vectors, cached on fmesh.
+        cached_cv = _get_fracture_coupling_vectors(mesh, mesh_data)
         row_vec_ff, col_vec_ff = cached_cv["row_vec_ff"], cached_cv["col_vec_ff"]
         row_vec_fm, col_vec_fm = cached_cv["row_vec_fm"], cached_cv["col_vec_fm"]
         row_vec_mf, col_vec_mf = cached_cv["row_vec_mf"], cached_cv["col_vec_mf"]
         row_vec_mm, col_vec_mm = cached_cv["row_vec_mm"], cached_cv["col_vec_mm"]
 
-        ktp_on = not pressure_only and advection_on and fully_coupled
+        ktp_on = coupling_cross and coupling_advection
         coupling_ff_names = (
-            (["Kpp_ff"] if not temperature_only else [])
-            + (["KTT_ff"] if not pressure_only else [])
+            (["Kpp_ff"] if pressure_coupling else [])
+            + (["KTT_ff"] if thermal_coupling else [])
             + (["KTp_ff"] if ktp_on else [])
             + (["KpT_ff"] if ktp_on else [])
         )
         coupling_fm_names = (
-            (["Kpp_fm"] if not temperature_only else [])
-            + (["KTT_fm"] if not pressure_only else [])
+            (["Kpp_fm"] if pressure_coupling else [])
+            + (["KTT_fm"] if thermal_coupling else [])
             + (["KTp_fm"] if ktp_on else [])
             + (["KpT_fm"] if ktp_on else [])
         )
         coupling_mf_names = (
-            (["Kpp_mf"] if not temperature_only else [])
-            + (["KTT_mf"] if not pressure_only else [])
+            (["Kpp_mf"] if pressure_coupling else [])
+            + (["KTT_mf"] if thermal_coupling else [])
             + (["KTp_mf"] if ktp_on else [])
             + (["KpT_mf"] if ktp_on else [])
         )
         coupling_mm_names = (
-            (["Kpp_mm"] if not temperature_only else [])
-            + (["KTT_mm"] if not pressure_only else [])
+            (["Kpp_mm"] if pressure_coupling else [])
+            + (["KTT_mm"] if thermal_coupling else [])
             + (["KTp_mm"] if ktp_on else [])
             + (["KpT_mm"] if ktp_on else [])
         )
@@ -2157,22 +3209,99 @@ def integrate_tangent_matrices(  # noqa
         vec_counter_mf = 0
         vec_counter_mm = 0
 
+    if is_well:
+        wmesh = mesh_data.submesh
+        conn_global = wmesh["conn_global"]
+
+        # Connectivity-only index vectors, cached on wmesh.
+        cached_wv = _get_well_coupling_vectors(mesh_data)
+        row_vec_ww, col_vec_ww = cached_wv["row_vec_ww"], cached_wv["col_vec_ww"]
+        row_vec_wm, col_vec_wm = cached_wv["row_vec_wm"], cached_wv["col_vec_wm"]
+        row_vec_mw, col_vec_mw = cached_wv["row_vec_mw"], cached_wv["col_vec_mw"]
+        row_vec_mm, col_vec_mm = cached_wv["row_vec_mm"], cached_wv["col_vec_mm"]
+
+        ktp_on = coupling_cross and coupling_advection
+        well_ktp_on = coupling_cross  # conduction h depends on well pressure
+        coupling_ww_names = (
+            (["Kpp_ww"] if pressure_coupling else [])
+            + (["KTT_ww"] if thermal_coupling else [])
+            + (["KTp_ww"] if well_ktp_on else [])
+            + (["KpT_ww"] if ktp_on else [])
+        )
+        coupling_wm_names = (
+            (["Kpp_wm"] if pressure_coupling else [])
+            + (["KTT_wm"] if thermal_coupling else [])
+            + (["KTp_wm"] if well_ktp_on else [])
+            + (["KpT_wm"] if ktp_on else [])
+        )
+        coupling_mw_names = (
+            (["Kpp_mw"] if pressure_coupling else [])
+            + (["KTT_mw"] if thermal_coupling else [])
+            + (["KTp_mw"] if well_ktp_on else [])
+            + (["KpT_mw"] if ktp_on else [])
+        )
+        coupling_mm_names = (
+            (["Kpp_mm"] if pressure_coupling else [])
+            + (["KTT_mm"] if thermal_coupling else [])
+            + (["KTp_mm"] if well_ktp_on else [])
+            + (["KpT_mm"] if ktp_on else [])
+        )
+        vec_ww = {name: np.zeros(row_vec_ww.size) for name in coupling_ww_names}
+        vec_wm = {name: np.zeros(row_vec_wm.size) for name in coupling_wm_names}
+        vec_mw = {name: np.zeros(row_vec_mw.size) for name in coupling_mw_names}
+        vec_mm = {name: np.zeros(row_vec_mm.size) for name in coupling_mm_names}
+
+        vec_counter_ww = 0
+        vec_counter_wm = 0
+        vec_counter_mw = 0
+        vec_counter_mm = 0
+
     # ----- gravity vector
     g = _get_gravity(mesh["nsd"], controls["gravity"])
 
     vec = _initiate_vectors(list_of_matrices, mesh_data.nne_list, mesh_data.elem_indx)
     vec_counter = 0  # vectorized storage index counter
 
-    # ----- Matrix integration element loop
-    for r in range(mesh_data.num_regions):
-        kf_0, isotropic_perm, nodes_r, w0, u, kf_perp = _get_region_flow_data(
-            mesh, material, mesh_data, r, is_fracture=is_fracture
-        )
+    # ----- Nodal states (current iterate), evaluated once per node rather than once per element node
+    dofs = _get_pass_dofs(mesh, mesh_data.nn, is_fracture=is_fracture, is_well=is_well)
+    p_nodes, T_flow_nodes = p[dofs, 0:1], T_flow[dofs, 0:1]
+    p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
+    nodal_fluid = _evaluate_nodal_fluid_state(
+        T[dofs, 0:1],
+        T_flow_nodes,
+        p_nodes,
+        fluid,
+        calc_derivatives=True,
+        T_flow_lagged=T_flow_lagged,
+        solve_p=solve_p,
+        solve_T=solve_T,
+        want_energy=thermal_coupling,
+    )
+
+    # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
+    active = solve_p or solve_T or on_submesh
+    for r in range(mesh_data.num_regions if active else 0):
+        flow = _get_region_flow_data(mesh, material, mesh_data, r, is_fracture=is_fracture, is_well=is_well)
         # Gravity projected onto the fracture's own local (tangential) coordinate, matching
-        # the reduced dimensionality of the fracture's own gradP/B_q.
-        g_r = (u.T @ g) if is_fracture else g
-        isotropic_cond, hc = _get_region_thermal_data(material, r, is_fracture=is_fracture)
-        solid = _get_region_solid_data(material, r, is_fracture=is_fracture)
+        # the reduced dimensionality of the fracture's own gradP/B_q. Wells project per element.
+        g_r = (flow.u.T @ g) if is_fracture else g
+        isotropic_cond, heat_transfer_factor = _get_region_thermal_data(
+            material, r, is_fracture=is_fracture, is_well=is_well
+        )
+        solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        # Porosity depends on region solid properties, so nodes shared across regions differ
+        nodal_phi_L = _evaluate_nodal_porosity(
+            p_nodes,
+            p_0_nodes,
+            T_flow_nodes,
+            T_0_nodes,
+            solid,
+            flow.w0,
+            no_solid=on_submesh,
+            T_flow_lagged=T_flow_lagged,
+            volumetric_strain_on=volumetric_strain_on,
+        )
+        nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
         # find element type of first element in region
         elem_type_counter = -1  # force an update on the first element
@@ -2189,8 +3318,14 @@ def integrate_tangent_matrices(  # noqa
                 elem_type_counter = new_type_idx
 
             enodes = mesh_data.conn[e]  # local element nodes
-            enodes_dof = conn_global[e] if is_fracture else enodes  # global DoF index, for T/p
-            xI = nodes_r[enodes, :]
+            enodes_dof = conn_global[e] if on_submesh else enodes  # global DoF index, for T/p
+            if is_well:
+                # Project onto the element tangent for 1D local coordinates and gravity
+                t_e = flow.u[e].reshape(-1, 1)
+                xI = flow.nodes_r[enodes, :] @ t_e
+                g_r = t_e.T @ g
+            else:
+                xI = flow.nodes_r[enodes, :]
             B_q, detJe_q = getB(GN_q, xI, mesh_data.nsd)
             wJe_q = W * detJe_q  # Weight * det(Jacobian), used in every integrand
             if axisymmetry:
@@ -2202,71 +3337,110 @@ def integrate_tangent_matrices(  # noqa
             element_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
             # Evaluate primary variables at quad points and nodes
-            kin = _evaluate_element_kinematics(N_q, B_q, xI, T, T_flow, p, T_0, p_0, enodes_dof)
+            kin = _evaluate_element_kinematics(
+                N_q,
+                B_q,
+                xI,
+                T,
+                T_flow,
+                p,
+                T_0,
+                p_0,
+                enodes_dof,
+                want_lengths=advection_on,
+                want_flow=need_flow_props,
+            )
             kin_n = kin.n  # current-iterate (column 0) slice, reused throughout below
 
             # Evaluate dependent variables at quad points and nodes
             kf, mu_q, rho_f, phi_L, u_f, hf = _evaluate_flow_and_storage_state(
-                kf_0,
-                kin_n,
+                flow.kf,
                 kin_n,
                 N_q,
                 fluid,
-                solid,
-                w0,
-                is_fracture=is_fracture,
+                nodal_state,
+                np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
-                volumetric_strain_on=volumetric_strain_on,
                 calc_derivatives=True,
-                temperature_only=temperature_only,
-                pressure_only=pressure_only,
-                fully_coupled=fully_coupled,
+                solve_p=solve_p,
+                solve_T=solve_T,
+                want_energy=thermal_coupling,
+                want_flow=need_flow_props,
             )
-            _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
-                N_q,
-                B_q,
-                kin.gradP,
-                g_r,
-                kf,
-                mu_q,
-                rho_f,
-                isotropic_perm=isotropic_perm,
-                want_tangent_dp=not temperature_only,
-                want_tangent_dT=not pressure_only and (advection_on or fully_coupled),
-            )
+            if is_well:
+                # Element flow from the midpoint state: L2 gradients are constant and T is linear.
+                # dT tangents whenever temperature is solved: conduction h depends on Re.
+                mu_c = get_viscosity(
+                    _N_MID_L2 @ kin_n.Te_flow,
+                    _N_MID_L2 @ kin_n.pe,
+                    fluid,
+                    T_flow_lagged,
+                    want_dp=solve_p,
+                    want_dT=solve_T,
+                )
+                _, q_c, dqD_dp_c, dqD_dT_c, Re_c, dRe_dp, dRe_dT = _evaluate_well_flow(
+                    _N_MID_L2,
+                    B_q[0:1],
+                    kin.gradP[0:1],
+                    g_r,
+                    mu_c,
+                    rho_f.e_n,
+                    flow.radius,
+                    flow.roughness,
+                    want_tangent_dp=solve_p,
+                    want_tangent_dT=solve_T,
+                )
+                # Broadcast the element flow and its tangents to the quad points
+                q_D = np.repeat(q_c, nq, axis=0)
+                dqD_dp = np.repeat(dqD_dp_c, nq, axis=0) if solve_p else _EMPTY
+                dqD_dT = np.repeat(dqD_dT_c, nq, axis=0) if solve_T else _EMPTY
+            elif need_flux:
+                _, q_D, dqD_dp, dqD_dT = _evaluate_darcy_flux(
+                    N_q,
+                    B_q,
+                    kin.gradP,
+                    g_r,
+                    kf,
+                    mu_q,
+                    rho_f,
+                    isotropic_perm=flow.isotropic_perm,
+                    want_tangent_dp=solve_p,
+                    want_tangent_dT=solve_T and (advection_on or solve_p),
+                )
+            else:
+                q_D = dqD_dp = dqD_dT = _EMPTY
 
             # Storage terms use mass lumping to prevent oscillations, so use nodal values.
             phi_L_n = phi_L.q_n
-            m_lump = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJe_q, True).sum(axis=1)
-
-            _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
-                phi_L,
-                rho_f,
-                cv,
-                steady_pres,
-                want_tangent_dp=not temperature_only,
-                want_tangent_dT=fully_coupled,
-            )
+            m_lump = _lumped_mass(N_q, wJe_q)
 
             # ------------------------------------ Conservation of mass wrt pressure
-            if not temperature_only:
+            if solve_p:
+                _, integrand_dFsdp_e, integrand_dFsdT_e = _evaluate_mass_storage_integrands(
+                    phi_L,
+                    rho_f,
+                    cv,
+                    steady_pres,
+                    want_tangent_dp=True,
+                    want_tangent_dT=coupled,
+                )
                 # Storage vector - Fs (lumped: nodal dFs/dp times the lumped mass weight)
-                element_matrices["Kpp"] = np.diag(m_lump * integrand_dFsdp_e.ravel())
+                element_matrices["Kpp"] = _diag_matrix(m_lump * integrand_dFsdp_e.ravel()) * (1 - is_well)
 
                 # Diffusion vector - Fk
                 # dFk/dp
                 # dqD_dp already contains the RHS matrices, integrate like a vector
                 element_matrices["Kpp"] += _vctrzd_qp_vctr_integrate(B_q, dqD_dp, wJe_q, False)
 
-            if not pressure_only:
+            if solve_T:
                 # -------------------------------- Conservation of energy wrt temperature
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
                     solid,
-                    w0,
+                    flow.w0,
                     lambda_f,
                     mesh_data.nsd,
-                    is_fracture=is_fracture,
+                    no_solid=on_submesh,
                     isotropic_cond=isotropic_cond,
                 )
 
@@ -2279,12 +3453,12 @@ def integrate_tangent_matrices(  # noqa
                     solid,
                     cv,
                     steady_temp,
-                    is_fracture=is_fracture,
+                    no_solid=on_submesh,
                     kin_n=kin_n,
                     want_tangent_dT=True,
-                    want_tangent_dp=fully_coupled,
+                    want_tangent_dp=coupled,
                 )
-                element_matrices["KTT"] = np.diag(m_lump * integrand_dFCdT_e.ravel())
+                element_matrices["KTT"] = _diag_matrix(m_lump * integrand_dFCdT_e.ravel())
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = (
@@ -2318,12 +3492,12 @@ def integrate_tangent_matrices(  # noqa
                         lambda_e,
                         cv,
                         steady_temp,
-                        is_fracture=is_fracture,
+                        no_solid=on_submesh,
                         isotropic_cond=isotropic_cond,
                         dqD_dT=dqD_dT,
                         dqD_dp=dqD_dp,
                         want_tangent_dT=True,
-                        want_tangent_dp=fully_coupled,
+                        want_tangent_dp=coupled,
                     )
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection_dT, wJe_q, False
@@ -2331,10 +3505,10 @@ def integrate_tangent_matrices(  # noqa
                     element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dT, wJe_q, False)
 
             # Fully coupled - off diagonal matrices
-            if fully_coupled:
+            if coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
-                element_matrices["KpT"] = np.diag(m_lump * integrand_dFsdT_e.ravel())
+                element_matrices["KpT"] = _diag_matrix(m_lump * integrand_dFsdT_e.ravel())
 
                 # Diffusion vector - Fk
                 integrand_dFkdT = dqD_dT
@@ -2342,7 +3516,7 @@ def integrate_tangent_matrices(  # noqa
 
                 # ----------- Conservation of energy wrt pressure
                 # Energy storage vector - FC
-                element_matrices["KTp"] = np.diag(m_lump * integrand_dFCdp_e.ravel())
+                element_matrices["KTp"] = _diag_matrix(m_lump * integrand_dFCdp_e.ravel())
 
                 # Themal diffusion vector
                 integrand_dFlambdadT = phi_L_n.dp * (lambda_f - solid.lambda_s) * kin.gradT * N_q
@@ -2357,28 +3531,30 @@ def integrate_tangent_matrices(  # noqa
 
             # ----- Fracture-matrix leak-off/convective-exchange coupling
             if is_fracture:
-                coupling_entries = _integrate_fracture_matrix_coupling_tangent(
+                coupling_entries = _integrate_fracture_coupling_tangent(
                     e,
                     enodes,
-                    mesh_data.nodes_f,
+                    mesh_data.submesh_nodes,
                     N_q,
                     wJe_q,
                     mesh,
                     fluid,
-                    kin,
                     kin_n,
+                    kin.pe[:, 1:2],
                     p[:, 0:1],
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    kf_perp,
+                    flow.kf_perp,
                     mu_q,
                     rho_f,
-                    hc,
-                    pressure_coupling=not temperature_only,
-                    thermal_coupling=not pressure_only,
-                    fully_coupled=fully_coupled,
-                    advection_on=advection_on,
+                    heat_transfer_factor,
+                    lambda_f,
+                    flow.w0,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    fully_coupled=coupling_cross,
+                    advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
 
@@ -2395,6 +3571,51 @@ def integrate_tangent_matrices(  # noqa
                     stop = vec_counter_mm + nne_m * nne_m  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
                     vec_counter_mm = stop
+
+            # ----- Well-matrix leak-off/convective-exchange coupling
+            if is_well and wmesh["matrix_conn"][e] != [-1]:  # none outside the domain
+                ww_matrices, wm_matrices, mw_matrices, mm_matrices = _integrate_well_coupling_tangent(
+                    wmesh["matrix_node_conn"][e],
+                    N_q,
+                    wJe_q,
+                    fluid,
+                    kin_n,
+                    kin.pe[:, 1:2],
+                    p[:, 0:1],
+                    p[:, 1:2],
+                    T[:, 0:1],
+                    T_flow[:, 0:1],
+                    flow.perforation_conductance,
+                    mu_q,
+                    rho_f,
+                    heat_transfer_factor,
+                    lambda_f,
+                    flow.radius,
+                    flow.roughness,
+                    mu_c,
+                    Re_c,
+                    dRe_dp,
+                    dRe_dT,
+                    hf,
+                    pressure_coupling=pressure_coupling,
+                    thermal_coupling=thermal_coupling,
+                    fully_coupled=coupling_cross,
+                    advection_on=coupling_advection,
+                    T_flow_lagged=T_flow_lagged,
+                )
+                # Direct node coupling: every block is nne x nne
+                stop = vec_counter_ww + nne * nne  # vectorized index count end
+                _store_vctrzd_element_matrix(vec_ww, ww_matrices, vec_counter_ww, stop)
+                vec_counter_ww = stop
+                stop = vec_counter_wm + nne * nne  # vectorized index count end
+                _store_vctrzd_element_matrix(vec_wm, wm_matrices, vec_counter_wm, stop)
+                vec_counter_wm = stop
+                stop = vec_counter_mw + nne * nne  # vectorized index count end
+                _store_vctrzd_element_matrix(vec_mw, mw_matrices, vec_counter_mw, stop)
+                vec_counter_mw = stop
+                stop = vec_counter_mm + nne * nne  # vectorized index count end
+                _store_vctrzd_element_matrix(vec_mm, mm_matrices, vec_counter_mm, stop)
+                vec_counter_mm = stop
 
             # ----- Assemble element contributions into global matrices
             stop = vec_counter + nne * nne  # vectorized index count end
@@ -2424,6 +3645,19 @@ def integrate_tangent_matrices(  # noqa
             integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
 
+    if is_well:
+        # Assembly of coupling vectors in recursion call
+        nn, nn_m = mesh_data.nn, mesh["nn"]
+        for name in vec_ww:
+            integrated_matrices[name] = _make_sparse(vec_ww[name], row_vec_ww, col_vec_ww, nn, nn)
+        for name in vec_wm:
+            integrated_matrices[name] = _make_sparse(vec_wm[name], row_vec_wm, col_vec_wm, nn_m, nn)
+        for name in vec_mw:
+            integrated_matrices[name] = _make_sparse(vec_mw[name], row_vec_mw, col_vec_mw, nn, nn_m)
+        for name in vec_mm:
+            integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
+        return integrated_matrices
+
     if fracture_on:
         # Recursion call
         integrated_fracture_matrices = integrate_tangent_matrices(
@@ -2434,14 +3668,31 @@ def integrate_tangent_matrices(  # noqa
             cv,
             T_flow,
             is_fracture=True,
-            pressure_only=pressure_only,
-            temperature_only=temperature_only,
-            fully_coupled=fully_coupled,
+            physics=physics,
             T_flow_lagged=T_flow_lagged,
         )
         # Combine fracture and matrix matrices into one
         integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, mesh_data.nn, mesh["fracture_mesh"]["nn"]
+        )
+
+    if wells_on:
+        # Recursion call
+        integrated_well_matrices = integrate_tangent_matrices(
+            mesh,
+            material,
+            primary_variables,
+            controls,
+            cv,
+            T_flow,
+            is_well=True,
+            physics=physics,
+            T_flow_lagged=T_flow_lagged,
+        )
+        # Combine well and (matrix + fracture) matrices into one
+        nn_f = mesh["fracture_mesh"]["nn"] if fracture_on else 0
+        integrated_matrices = _stack_well_matrices(
+            integrated_matrices, integrated_well_matrices, mesh_data.nn, nn_f, mesh["well_mesh"]["nn"]
         )
 
     return integrated_matrices
@@ -2463,10 +3714,10 @@ def integrate_enthlpy_bndry_residual(
     We use the existing assembled Jacobians and vectors rather than
     re-performing the matrix integration.
     """
-    advection_off = not bool(controls["advection_on"])
+    advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
 
-    if advection_off:
+    if not advection_nodes.any():
         return {"F_enth_bnd": csc_matrix((nn_total, 1), dtype=float)}
 
     F_enth_bnd = np.zeros((nn_total, 1))
@@ -2479,6 +3730,9 @@ def integrate_enthlpy_bndry_residual(
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            nodes_i = nodes_i[advection_nodes[nodes_i]]  # no enthalpy outflow where advection is off
+            if nodes_i.size == 0:
+                continue
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]
@@ -2517,10 +3771,10 @@ def integrate_enthlpy_bndry_tangent(
     the latter is nonzero only for a Dirichlet-pressure node under
     `fully_coupled`, via the Kpp/KpT cross-terms.
     """
-    advection_off = not bool(controls["advection_on"])
+    advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
 
-    if advection_off:
+    if not advection_nodes.any():
         if fully_coupled:
             return {
                 "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
@@ -2540,6 +3794,9 @@ def integrate_enthlpy_bndry_tangent(
     for group in BC_config:
         if "hydraulics" in group and "thermal" not in group:
             nodes_i = np.asarray(group["nodes"], dtype=np.int32)
+            nodes_i = nodes_i[advection_nodes[nodes_i]]  # no enthalpy outflow where advection is off
+            if nodes_i.size == 0:
+                continue
             q_i = q[nodes_i, 0]
             T_i = T[nodes_i, 0]
             T_flow_i = T_flow[nodes_i, 0]

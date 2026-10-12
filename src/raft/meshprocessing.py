@@ -29,6 +29,7 @@ import scipy as sp
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection, PolyCollection
 from matplotlib.tri import Triangulation
+from scipy.sparse.csgraph import dijkstra
 
 
 def _element_colors(n_elems: int, cmap_name: str = "tab20") -> npt.NDArray[np.float64]:
@@ -456,6 +457,8 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
     mesh["boundaries"]["x_all"] = x_all
     mesh["boundaries"]["y_all"] = y_all
     mesh["boundaries"]["z_all"] = z_all
+
+    # Create an all nodes case
     mesh["boundaries"]["n_all"] = np.arange(0, mesh["nn"])
 
     if nsd == 2:
@@ -2035,7 +2038,7 @@ def _get_element_type(nsd: int, nne: int) -> tuple[int, str]:
             nq, etyp = 3, "Q9"
         case (2, 3):  # T3
             nq, etyp = 2, "T3"
-        case (2, 2):  # L2
+        case (2, 2) | (3, 2):  # L2 (fracture in 2D, well in 3D)
             nq, etyp = 2, "L2"
     return nq, etyp
 
@@ -2080,6 +2083,193 @@ def _extract_key_mesh_values(mesh: dict[str, Any]) -> dict[str, Any]:
     return mesh
 
 
+def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
+    # Local node-index pairs for each element edge (distinct from face lists:
+    # for 3D solids a face has >2 nodes, an edge always has 2).
+    if nne == 8:  # B8
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [1, 2],
+            "edge2": [2, 3],
+            "edge3": [3, 0],
+            "edge4": [4, 5],
+            "edge5": [5, 6],
+            "edge6": [6, 7],
+            "edge7": [7, 4],
+            "edge8": [0, 4],
+            "edge9": [1, 5],
+            "edge10": [2, 6],
+            "edge11": [3, 7],
+        }
+    elif nne == 4 and nsd == 3:  # T4
+        edges = {
+            "edge0": [0, 1],
+            "edge1": [0, 2],
+            "edge2": [0, 3],
+            "edge3": [1, 2],
+            "edge4": [1, 3],
+            "edge5": [2, 3],
+        }
+    elif nsd == 2:  # Q4 / T3 -- edges coincide with the face (boundary-segment) list
+        return _get_element_face_lists(nne, nsd)
+    else:
+        raise NotImplementedError(f"Edge extraction for {nne}-node elements in {nsd} dimensions.")
+    return edges
+
+
+def _build_edge_element_map(mesh: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
+    """Map each unique mesh edge (sorted node pair) to the elements that contain it."""
+    conn = mesh["conn"]
+    nne = mesh["nne"]
+    ne = mesh["ne"]
+    nsd = mesh["nsd"]
+    elem_indx = mesh["elem_indx"]
+
+    edge_to_elems: dict[tuple[int, int], list[int]] = {}
+    edge_lists = _get_element_edge_lists(nne[0], nsd)
+    counter = 0
+
+    for elem in range(ne):
+        if elem > elem_indx[counter]:
+            counter += 1
+            edge_lists = _get_element_edge_lists(nne[counter], nsd)
+
+        elem_conn = conn[elem]
+        for local_edge in edge_lists.values():
+            n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
+            key = (n1, n2) if n1 < n2 else (n2, n1)
+            edge_to_elems.setdefault(key, []).append(elem)
+
+    return edge_to_elems
+
+
+def _build_mesh_edge_graph(
+    mesh: dict[str, Any], edge_to_elems: dict[tuple[int, int], list[int]]
+) -> sp.sparse.csr_matrix:
+    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
+    nodes = mesh["nodes"]
+
+    row, col, weight = [], [], []
+    for n1, n2 in edge_to_elems:
+        d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
+        row += [n1, n2]
+        col += [n2, n1]
+        weight += [d, d]
+
+    return sp.sparse.csr_matrix((weight, (row, col)), shape=(mesh["nn"], mesh["nn"]))
+
+
+_LINE_DEVIATION_TOL = 1.0e-3  # 1 mm; assumes mesh coordinates are in meters
+
+
+def _clip_line_params(
+    A: npt.NDArray[np.float64],
+    B: npt.NDArray[np.float64],
+    mins: npt.NDArray[np.float64],
+    maxs: npt.NDArray[np.float64],
+) -> tuple[float, float]:
+    """Parameters (t0, t1) of segment A-B inside the bounding box (slab method); t0 > t1 if none."""
+    d = B - A
+    t0, t1 = 0.0, 1.0
+    for axis in range(len(A)):
+        if abs(d[axis]) < 1e-14:
+            if A[axis] < mins[axis] or A[axis] > maxs[axis]:
+                return 1.0, 0.0
+            continue
+        t_near = (mins[axis] - A[axis]) / d[axis]
+        t_far = (maxs[axis] - A[axis]) / d[axis]
+        t0 = max(t0, min(t_near, t_far))
+        t1 = min(t1, max(t_near, t_far))
+        if t0 > t1:
+            return 1.0, 0.0
+
+    return t0, t1
+
+
+def _clip_line_to_domain(
+    A: npt.NDArray[np.float64],
+    B: npt.NDArray[np.float64],
+    mins: npt.NDArray[np.float64],
+    maxs: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Clip segment A-B to the mesh's axis-aligned bounding box."""
+    t0, t1 = _clip_line_params(A, B, mins, maxs)
+    if t0 > t1:
+        raise RuntimeError("Requested line does not intersect the mesh domain.")
+    d = B - A
+    return A + t0 * d, A + t1 * d
+
+
+def _find_lineBC_connectivity(
+    mesh: dict[str, Any], line: list[list[float]], edge_to_elems: dict[tuple[int, int], list[int]]
+) -> tuple[list[int], list[list[int]]]:
+    """Find the connectivity of a line (boundary condition or well).
+    Lines follow the shortest path between the start and end points
+    along pre-existing nodes and edges in the mesh.
+
+    Throws a warning if the deviation is large.
+    """
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # Calculate line direction vector
+    A = np.asarray(line[0], dtype=float)[:nsd]
+    B = np.asarray(line[1], dtype=float)[:nsd]
+    length_AB = float(np.linalg.norm(B - A))
+
+    if length_AB == 0.0:
+        raise RuntimeError("Line start and end points are identical.")
+
+    u = (B - A) / length_AB  # tangent vector
+
+    # Clip to the domain so points prescribed outside the mesh snap to the
+    # nearest node at the line/boundary intersection, not to some arbitrary
+    # far-off corner node.
+    mins = nodes[:, :nsd].min(axis=0)
+    maxs = nodes[:, :nsd].max(axis=0)
+    A_clipped, B_clipped = _clip_line_to_domain(A, B, mins, maxs)
+
+    start_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - A_clipped, axis=1)))
+    end_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - B_clipped, axis=1)))
+
+    if start_node == end_node:
+        raise RuntimeError("Line start and end nodes snap to the same mesh node.")
+
+    # Shortest path A -> B weighted by edge length, following existing mesh edges
+    graph = _build_mesh_edge_graph(mesh, edge_to_elems)
+    dist, predecessors = dijkstra(
+        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
+    )
+    dist, predecessors = dist[0], predecessors[0]
+
+    if np.isinf(dist[end_node]):
+        raise RuntimeError("No connected path of mesh edges found between the line endpoints.")
+
+    path = [end_node]
+    node = end_node
+    while node != start_node:
+        node = int(predecessors[node])
+        path.append(node)
+    path.reverse()
+
+    line_nodes = path
+    line_conn = [[path[i], path[i + 1]] for i in range(len(path) - 1)]
+
+    # Check deviation of the snapped path from the requested line
+    rel = nodes[line_nodes, :nsd] - A
+    perp = rel - np.outer(rel @ u, u)
+    deviation = np.linalg.norm(perp, axis=1)
+
+    if np.any(deviation > _LINE_DEVIATION_TOL):
+        warnings.warn(
+            f"Exact line not found in mesh, snapping to nearest nodes. "
+            f"True line distance = {length_AB}, mesh path distance = {dist[end_node]}",
+            stacklevel=2,
+        )
+
+    return line_nodes, line_conn
+
+
 def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
     """For each boundary's exterior element list, add the corresponding list of element regions."""
     regions = np.asarray(mesh["regions"])
@@ -2089,6 +2279,141 @@ def _assign_exterior_element_regions(mesh: dict[str, Any]) -> dict[str, Any]:
     for elems_key in elems_keys:
         region_key = elems_key.replace("_elems", "_regions")
         boundaries[region_key] = regions[boundaries[elems_key]]
+
+    return mesh
+
+
+def _mesh_outside_well_part(
+    P: npt.NDArray[np.float64], Q: npt.NDArray[np.float64], well: dict[str, Any], tol: float
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]], list[list[int]]]:
+    """Node chain, [-1] matrix_conn, and [-1, -1] matrix_node_conn for a well part outside the domain.
+
+    Empty if negligible.
+    """
+    length = float(np.linalg.norm(Q - P))
+    if length <= tol:
+        return [], [], []
+
+    # Evenly spaced nodes, element length at most dL_max (default: part length / 10)
+    dL_max = well.get("dL_max", length / 10)
+    n_el = max(1, int(np.ceil(length / dL_max)))
+    chain = np.linspace(P, Q, n_el + 1)
+
+    # No neighbouring matrix elements or nodes outside the domain
+    return [chain], [[-1]] * n_el, [[-1, -1]] * n_el
+
+
+def _create_well_section(
+    mesh: dict[str, Any],
+    section: list[list[float]],
+    well: dict[str, Any],
+    edge_to_elems: dict[tuple[int, int], list[int]],
+    tol: float,
+) -> tuple[list[npt.NDArray[np.float64]], list[list[int]], list[list[int]]]:
+    """Node chains, per-element matrix_conn, and per-element matrix_node_conn for one well section."""
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # Section endpoints and the parameter range inside the domain
+    A = np.asarray(section[0], dtype=float)[:nsd]
+    B = np.asarray(section[1], dtype=float)[:nsd]
+    d = B - A
+    t0, t1 = _clip_line_params(A, B, nodes.min(axis=0), nodes.max(axis=0))
+
+    # Section entirely outside the domain
+    if (t1 - t0) * np.linalg.norm(d) <= tol:
+        return _mesh_outside_well_part(A, B, well, tol)
+
+    # Inside part follows the matrix edge path
+    path, path_conn = _find_lineBC_connectivity(mesh, [A + t0 * d, A + t1 * d], edge_to_elems)
+    # Matrix elements sharing each path edge (any number in 3D)
+    path_matrix_conn = [list(edge_to_elems[(min(n1, n2), max(n1, n2))]) for n1, n2 in path_conn]
+
+    # Outside parts end on the snapped boundary nodes so deduplication joins them to the path
+    chains_in, conn_in, node_conn_in = _mesh_outside_well_part(A, nodes[path[0]], well, tol)
+    chains_out, conn_out, node_conn_out = _mesh_outside_well_part(nodes[path[-1]], B, well, tol)
+
+    # Assemble in order along the section: entry, inside, exit
+    chains = chains_in + [nodes[path]] + chains_out
+    matrix_conn = conn_in + path_matrix_conn + conn_out
+    # Matrix nodes coincident with each element's well nodes, in element node order
+    matrix_node_conn = node_conn_in + path_conn + node_conn_out
+    return chains, matrix_conn, matrix_node_conn
+
+
+def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
+    """Create 1D well mesh along existing matrix element edges."""
+    well_specs = config_mesh["wells"]
+    nsd = config_mesh["dimensions"]
+    nodes = mesh["nodes"]
+
+    if nsd != 3:
+        print("Wells in 2D not yet supported.")
+        return mesh
+    # Initialize
+    if well_specs is None:
+        raise ValueError(
+            """Wells block included but no wells specified.
+            Remove wells block from config if not needed."""
+        )
+
+    # Node distance tolerance from domain size
+    L = float(np.prod(np.ptp(nodes, axis=0))) ** (1 / nsd)
+    tol = L * 1.0e-9
+
+    # Map matrix edges to the elements that share them
+    edge_to_elems = _build_edge_element_map(mesh)
+
+    # Accumulators across all wells
+    well_nodes: list[npt.NDArray[np.float64]] = []
+    well_conn: list[list[int]] = []
+    matrix_conn: list[list[int]] = []
+    matrix_node_conn: list[list[int]] = []
+    region_lists: list[npt.NDArray[np.int64]] = []
+    nn_w = 0
+
+    # Loop through each well and its sections
+    for well in well_specs:
+        ne_prior = len(well_conn)
+        for section in well["alignment"]:
+            chains, section_matrix_conn, section_node_conn = _create_well_section(
+                mesh, section, well, edge_to_elems, tol
+            )
+            # L2 connectivity along each chain, offset past the accumulated well nodes
+            for chain in chains:
+                well_nodes.append(chain)
+                well_conn.extend([[nn_w + i, nn_w + i + 1] for i in range(len(chain) - 1)])
+                nn_w += len(chain)
+            matrix_conn.extend(section_matrix_conn)
+            matrix_node_conn.extend(section_node_conn)
+        # Well elements belonging to this well
+        region_lists.append(np.arange(ne_prior, len(well_conn)))
+
+    # Merge coincident nodes, connecting sections and wells sharing endpoints
+    w_nodes, w_conn, _ = _deduplicate_split_nodes(np.vstack(well_nodes), np.zeros((nn_w, 0)), well_conn, nsd)
+
+    # Unit tangent of each well element
+    w_conn_arr = np.asarray(w_conn)
+    tangent = w_nodes[w_conn_arr[:, 1]] - w_nodes[w_conn_arr[:, 0]]
+    tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
+
+    # Assemble well mesh and evaluate key values
+    wmesh: dict[str, Any] = {
+        "nodes": w_nodes,
+        "conn": w_conn,
+        "matrix_conn": matrix_conn,
+        "matrix_node_conn": matrix_node_conn,  # coincident matrix nodes; [-1, -1] outside the domain
+        "region_lists": region_lists,  # regions correspond to the well number
+        "well_tangent": tangent,
+    }
+    wmesh = _extract_key_mesh_values(wmesh)
+    # conn_global is well connectivity in combined matrix+fracture+well global numbering.
+    wmesh["conn_global"] = [[node + mesh["nn_total"] for node in elem] for elem in w_conn]
+    mesh["well_mesh"] = wmesh
+
+    # Append well nodes to the combined node set
+    mesh["nodes_total"] = np.vstack([mesh["nodes_total"], w_nodes])
+    mesh["nn_total"] = mesh["nn_total"] + wmesh["nn"]
 
     return mesh
 
@@ -2112,6 +2437,9 @@ def load_mesh(config_mesh: dict[str, Any], verbose: bool) -> dict[str, Any]:
     mesh = _extract_key_mesh_values(mesh)
     if "fractures" in config_mesh:
         mesh = _create_fracture_mesh(config_mesh, mesh)
+
+    if "wells" in config_mesh:
+        mesh = _create_well_mesh(config_mesh, mesh)
 
     # Import regions
     mesh = _import_regions(config_mesh, mesh)

@@ -165,8 +165,7 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     unstrained relative to themselves.
     """
     controls_SS = controls.copy()
-    controls_SS["steady_pressure"] = 1
-    controls_SS["steady_temperature"] = 1
+    controls_SS["physics"] = controls["physics"].as_steady()
     controls_SS["fully_coupled"] = False
     controls_SS["volumetric_strain_on"] = 0
     return controls_SS
@@ -196,6 +195,7 @@ def _assign_ic_gradient(
 
 
 def _assign_ic_bc_compatible(  # noqa
+    config_ini: dict[str, Any],
     controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -220,6 +220,10 @@ def _assign_ic_bc_compatible(  # noqa
         primary_variables["p"][:, :] = _broadcast_to_history(
             _fit_affine_from_dirichlet(mesh["nodes_total"], p_dirichlet)
         )
+    # The seed is only a solver guess; `off` fields are never solved, so they hold *_ini
+    physics = controls["physics"]
+    primary_variables["p"][physics.off_nodes(mesh, "flow"), :] = config_ini["p_ini"]
+    primary_variables["T"][physics.off_nodes(mesh, "heat"), :] = config_ini["T_ini"]
 
     controls_SS = _build_steady_state_controls(controls)
     # Initialized reference values -> set as current values and neglect
@@ -249,7 +253,9 @@ def _assign_ic_bc_compatible(  # noqa
             )
             primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
             # For debugging
-            postprocessing(n + i, mesh, controls, material, BC_config, primary_variables, 0, verbose)  # noqa
+            postprocessing(
+                n + i, mesh, controls, material, BC_config, primary_variables, 0, [1, 1, 1], verbose
+            )  # noqa
         # Perform fully coupled solution
         if verbose:
             print("   Solving for fully-coupled steady-state condition...")
@@ -307,6 +313,7 @@ def _assign_initial_conditions(
         primary_variables = _assign_ic_gradient(config_ini, mesh, primary_variables)
     elif assign_type == "BC_compatible":
         primary_variables = _assign_ic_bc_compatible(
+            config_ini,
             controls,
             mesh,
             material,
@@ -581,7 +588,7 @@ def main(  # noqa
         # --- Export initial condition
         if verbose:
             print("Export initial condition")
-        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
         n += 1
 
         # ---- Time integration
@@ -615,6 +622,7 @@ def main(  # noqa
 
             # Check error and update time step
             t0 = t
+            dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
             t, dt, converged = _update_time(
                 controls["solver_type"], t, dt, controls, critical_times, converged, timestep_error, verbose
             )
@@ -623,7 +631,9 @@ def main(  # noqa
             if converged:
                 if verbose:
                     print("     Postprocessing...")
-                postprocessing(n, mesh, controls, material, BC_config, primary_variables, t0, verbose)
+                postprocessing(
+                    n, mesh, controls, material, BC_config, primary_variables, t0, dt_step, verbose
+                )
                 n += 1
                 # rollover update primary variables, column 0 gets overwritten in time integration
                 primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
