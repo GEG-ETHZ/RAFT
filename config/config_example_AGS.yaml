@@ -97,7 +97,11 @@ boundary_conditions:
 
 physics:
   matrix:
-    flow: transient
+    flow: off
+    heat: transient
+    advection: off
+  wells:
+    flow: steady
     heat: transient
     advection: on
 
