@@ -458,6 +458,48 @@ def _find_well_BC_node(mesh: dict[str, Any], config_mesh: dict[str, Any], well_B
     return int(mesh["nn_total"] - wmesh["nn"] + local_node)
 
 
+_EXTERNAL_TYPES = {"hydraulics": ("pressure", "flux"), "thermal": ("temperature",)}
+_EXTERNAL_INTERPOLATION = ("step", "linear")
+
+
+def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
+    """Check BC fields with function "external" and mark them with spec["external"] = True."""
+    tags = [group["tag"] for group in BC_groups if "tag" in group]
+    for group in BC_groups:
+        external_fields = [
+            field for field in ("hydraulics", "thermal") if group.get(field, {}).get("function") == "external"
+        ]
+        if not external_fields:
+            continue
+
+        tag = group.get("tag")
+        if tag is None:
+            raise ValueError(f"External boundary condition fields {external_fields} require a 'tag'.")
+        if tags.count(tag) > 1:
+            raise ValueError(f"External boundary condition tag '{tag}' is not unique.")
+
+        for field in external_fields:
+            spec = group[field]
+            if spec["type"] not in _EXTERNAL_TYPES[field]:
+                raise ValueError(
+                    f"External {field} on '{tag}' has type '{spec['type']}'; "
+                    f"expected one of {_EXTERNAL_TYPES[field]}."
+                )
+            spec.setdefault("interpolation", "step")
+            if spec["interpolation"] not in _EXTERNAL_INTERPOLATION:
+                raise ValueError(
+                    f"External {field} on '{tag}' has interpolation '{spec['interpolation']}'; "
+                    f"expected one of {_EXTERNAL_INTERPOLATION}."
+                )
+            spec["external"] = True
+
+        hydraulics = group.get("hydraulics", {})
+        if hydraulics.get("external") and "constraints" in hydraulics and hydraulics["type"] != "flux":
+            raise ValueError(
+                f"Pressure constraints on external group '{tag}' require hydraulics type 'flux'."
+            )
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -471,6 +513,7 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     4. Well boundary conditions map to the well's inlet or outlet node.
     """
     BC_groups = config["boundary_conditions"]
+    _validate_external_groups(BC_groups)
     nodes = mesh["nodes_total"]
     controls = config["simulation"]
     controls["wellbore_check"] = 0  # Default 0

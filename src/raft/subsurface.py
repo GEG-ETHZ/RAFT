@@ -437,7 +437,7 @@ def _initialize_WB_checks(BC_config: list[dict[str, Any]]) -> list[dict[str, Any
         if "function" not in hydraulics:
             hydraulics["function"] = "constant"  # assume constant value if no function given
         # Copy existing constraints
-        hydraulics["values_flux"] = hydraulics["values"]
+        hydraulics["values_flux"] = hydraulics.get("values", [])  # external groups may have none yet
         hydraulics["function_flux"] = hydraulics["function"]
     return BC_config
 
@@ -642,10 +642,13 @@ def advance(  # noqa
     t, dt = _clamp_to_critical(state.t, dt, critical_times)
 
     while True:
+        # Loop through timesteps
         if verbose:
             print(f"Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
 
         while True:
+            # Loop until BC constraints satisfied
+
             # Update Boundary Conditions
             boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
 
@@ -673,7 +676,7 @@ def advance(  # noqa
         t, dt, accepted = _propose_dt(
             controls["solver_type"], t, dt, controls, converged, timestep_error, verbose
         )
-        if not accepted:
+        if not accepted:  # retry current timestep
             continue
 
         if write_steps:
