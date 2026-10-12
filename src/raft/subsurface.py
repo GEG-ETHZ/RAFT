@@ -198,10 +198,11 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
     Volumetric strain is neglected, since initial conditions are by definition
-    unstrained relative to themselves. Wells are off: the initial state is the unperturbed rock.
+    unstrained relative to themselves. Wells are excluded from the assembly.
     """
     controls_SS = controls.copy()
-    controls_SS["physics"] = controls["physics"].as_steady().with_domain_off("wells")
+    controls_SS["physics"] = controls["physics"].as_steady()
+    controls_SS["wells_on"] = 0
     controls_SS["fully_coupled"] = False
     controls_SS["volumetric_strain_on"] = 0
     return controls_SS
@@ -230,7 +231,79 @@ def _assign_ic_gradient(
     return primary_variables
 
 
-def _assign_ic_bc_compatible(  # noqa
+def _no_wells_problem(
+    mesh: dict[str, Any], primary_variables: dict[str, Any], BC_config: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Copies of the solver inputs without wells (numbered last) and without external BC groups."""
+    nn_no_wells = mesh["nn_total"] - mesh["well_mesh"]["nn"] if "well_mesh" in mesh else mesh["nn_total"]
+
+    mesh_no_wells = dict(mesh)
+    mesh_no_wells.pop("well_mesh", None)
+    mesh_no_wells["nn_total"] = nn_no_wells
+    mesh_no_wells["nodes_total"] = mesh["nodes_total"][:nn_no_wells]
+
+    pv_no_wells = {
+        "p_dofs": np.arange(nn_no_wells),
+        "T_dofs": np.arange(nn_no_wells),
+        "p": primary_variables["p"][:nn_no_wells].copy(),
+        "T": primary_variables["T"][:nn_no_wells].copy(),
+        "q": primary_variables["q"][:nn_no_wells].copy(),
+    }
+
+    BC_no_wells = []
+    for group in BC_config:
+        if _is_external(group):
+            continue
+        nodes = np.asarray(group["nodes"])
+        in_no_wells = nodes < nn_no_wells
+        if in_no_wells.all():
+            BC_no_wells.append(group)
+        elif in_no_wells.any():
+            # Field specs are copied too, since parsebcs writes the node list into them
+            trimmed = {**group, "nodes": nodes[in_no_wells]}
+            for field in ("hydraulics", "thermal"):
+                if field in group:
+                    trimmed[field] = dict(group[field])
+            BC_no_wells.append(trimmed)
+    return mesh_no_wells, pv_no_wells, BC_no_wells
+
+
+def _assign_ic_bc_compatible(
+    config_ini: dict[str, Any],
+    controls: dict[str, Any],
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+    t: float,
+    n: int,
+    verbose: bool,
+) -> dict[str, Any]:
+    """Steady-state initial condition without wells or external groups, the unperturbed state."""
+    mesh_no_wells, pv_no_wells, BC_no_wells = _no_wells_problem(mesh, primary_variables, BC_config)
+    boundary_conditions = parsebcs(BC_no_wells, mesh_no_wells, pv_no_wells, t, controls)
+    pv_no_wells = _solve_steady_state(
+        config_ini,
+        controls,
+        mesh_no_wells,
+        material,
+        pv_no_wells,
+        boundary_conditions,
+        BC_no_wells,
+        n,
+        verbose,
+    )
+
+    nn_no_wells = mesh_no_wells["nn_total"]
+    primary_variables["p"][:nn_no_wells] = pv_no_wells["p"]
+    primary_variables["T"][:nn_no_wells] = pv_no_wells["T"]
+    primary_variables["q"][:nn_no_wells] = pv_no_wells["q"]
+    primary_variables["p"][nn_no_wells:] = config_ini["p_ini"]
+    primary_variables["T"][nn_no_wells:] = config_ini["T_ini"]
+    return primary_variables
+
+
+def _solve_steady_state(  # noqa
     config_ini: dict[str, Any],
     controls: dict[str, Any],
     mesh: dict[str, Any],
@@ -241,7 +314,7 @@ def _assign_ic_bc_compatible(  # noqa
     n: int,
     verbose: bool,
 ) -> dict[str, Any]:
-    """Solve for a steady-state initial condition compatible with the boundary conditions."""
+    """Solve for a steady state compatible with the boundary conditions."""
     if verbose:
         print("   Solving for steady-state initial condition compatible with boundary conditions:")
 
@@ -327,8 +400,8 @@ def _assign_initial_conditions(
     mesh: dict[str, Any],
     material: dict[str, Any],
     primary_variables: dict[str, Any],
-    boundary_conditions: dict[str, Any],
     BC_config: list[dict[str, Any]],
+    t: float,
     n: int,
     verbose: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -350,8 +423,8 @@ def _assign_initial_conditions(
             mesh,
             material,
             primary_variables,
-            boundary_conditions,
             BC_config,
+            t,
             n,
             verbose,
         )
@@ -771,9 +844,6 @@ def main(  # noqa
         export_domain_properties(mesh, controls, material, BC_config)
 
         # --- Initial Conditions
-        # Initial conditions describe the unperturbed condition, so exclude external groups and wells
-        BC_ic = [group for group in BC_config if not _is_external(group)]
-        boundary_conditions = parsebcs(BC_ic, mesh, primary_variables, t, controls)
         q = np.zeros((mesh["nn_total"], 1))
         primary_variables["q"] = q
 
@@ -783,8 +853,8 @@ def main(  # noqa
             mesh,
             material,
             primary_variables,
-            boundary_conditions,
-            BC_ic,
+            BC_config,
+            t,
             n,
             verbose,
         )

@@ -92,11 +92,6 @@ class Physics:
             return Physics(*(replace(d, flow="off") for d in domains))
         return Physics(*(replace(d, heat="off") for d in domains))
 
-    def with_domain_off(self, domain: str) -> "Physics":
-        """Both fields of `domain` ("matrix", "fractures" or "wells") switched off."""
-        off = replace(getattr(self, domain), flow="off", heat="off")
-        return replace(self, **{domain: off})
-
     def solves(self, field: str) -> bool:
         """Whether `field` ("flow" or "heat") is on in any domain."""
         return any(getattr(d, field) != "off" for d in (self.matrix, self.fractures, self.wells))
