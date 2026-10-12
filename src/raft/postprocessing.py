@@ -391,9 +391,9 @@ def _export_flow_logs(
             fid.write("\n")
 
     # Extract and group flows
-    p = primary_variables["p"][:, 1].flatten()
+    p = primary_variables["p"][:, 0].flatten()
     q = primary_variables["q"].flatten()
-    T = primary_variables["T"][:, 1].flatten()
+    T = primary_variables["T"][:, 0].flatten()
 
     outflow_values: list[float] = []
     for group in tagged_groups:

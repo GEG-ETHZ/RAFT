@@ -30,6 +30,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [`material`](#material)
   - [`initial_conditions`](#initial_conditions)
   - [`boundary_conditions`](#boundary_conditions)
+  - [`physics`](#physics)
   - [`simulation`](#simulation)
 - [Mesh generation](#mesh-generation)
   - [`domain`](#domain)
