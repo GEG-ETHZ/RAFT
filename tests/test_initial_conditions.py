@@ -21,7 +21,8 @@ from typing import Any
 
 import numpy as np
 
-from raft.subsurface import _no_wells_problem
+from raft.matprops import get_EOS
+from raft.subsurface import _assign_well_ic_from_matrix, _no_wells_problem
 
 
 def _mesh_with_wells() -> dict[str, Any]:
@@ -79,3 +80,90 @@ def test_no_wells_problem_filters_BC_groups() -> None:
     # The trimmed copy does not share field specs with the original group
     assert BC_no_wells[1]["hydraulics"] is not spanning["hydraulics"]
     np.testing.assert_array_equal(spanning["nodes"], np.arange(5))
+
+
+FLUID = {
+    "density": 1000.0,
+    "reference_temperature": 300.0,
+    "reference_pressure": 1.0e5,
+    "therm_expansion": 2.0e-4,
+    "bulk_mod": 2.0e9,
+    "specific_heat": 4200.0,
+}
+
+
+def _vertical_well_case() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Two matrix nodes; a vertical well with head node 3 at z = 30 above the domain and nodes 0-1
+    inside (coincident with the matrix nodes), plus a second well (nodes 4-5) entirely outside."""
+    matrix_nodes = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 10.0]])
+    well_nodes = np.array(
+        [[0.0, 0.0, 0.0], [0.0, 0.0, 10.0], [0.0, 0.0, 20.0], [0.0, 0.0, 30.0], [5, 5, 60], [5, 5, 50]]
+    )
+    mesh = {
+        "nsd": 3,
+        "nn": 2,
+        "nn_total": 8,
+        "nodes_total": np.vstack([matrix_nodes, well_nodes]),
+        "well_mesh": {
+            "nn": 6,
+            "nodes": well_nodes,
+            "conn": [[0, 1], [1, 2], [2, 3], [4, 5]],
+            "matrix_node_conn": [[0, 1], [-1, -1], [-1, -1], [-1, -1]],
+            "head_nodes": [3, 4],
+        },
+    }
+    p = np.full((8, 4), 7.0)
+    T = np.full((8, 4), 280.0)
+    p[0], p[1] = 2.0e6, 1.9e6
+    T[0], T[1] = 360.0, 350.0
+    return mesh, {"p": p, "T": T}
+
+
+P_HEAD = 1.0e5
+
+
+def _assign(mesh: dict[str, Any], primary_variables: dict[str, Any]) -> None:
+    _assign_well_ic_from_matrix(mesh, {"fluid": FLUID}, {"gravity": -9.81}, primary_variables, P_HEAD)
+
+
+def _rho(p: float, T: float) -> float:
+    rho = get_EOS(np.array([[T]]), np.array([[T]]), np.array([[p]]), FLUID, want_density=True)[0]
+    return float(rho.value[0, 0])
+
+
+def test_well_ic_temperature_from_matrix_and_carried_outside() -> None:
+    """In-domain well nodes copy matrix T; nodes outside take T from the nearest in-domain node."""
+    mesh, primary_variables = _vertical_well_case()
+    _assign(mesh, primary_variables)
+    T = primary_variables["T"]
+
+    np.testing.assert_array_equal(T[2], T[0])
+    np.testing.assert_array_equal(T[3], T[1])
+    np.testing.assert_array_equal(T[4], 350.0)
+    np.testing.assert_array_equal(T[5], 350.0)
+    np.testing.assert_array_equal(T[6:], 280.0)  # never inside the domain: unchanged
+
+
+def test_well_ic_pressure_hydrostatic_from_head() -> None:
+    """p is p_head at the well head and follows rho g dz down the whole well, inside the domain too."""
+    mesh, primary_variables = _vertical_well_case()
+    _assign(mesh, primary_variables)
+    p, T = primary_variables["p"], primary_variables["T"]
+
+    # Global indices of well nodes from the head (z = 30) down to z = 0
+    path = [5, 4, 3, 2]
+    np.testing.assert_array_equal(p[5], P_HEAD)
+    for k, j in zip(path[:-1], path[1:]):
+        expected = p[k, 0] + _rho(p[k, 0], T[k, 0]) * -9.81 * -10.0
+        np.testing.assert_allclose(p[j], expected, rtol=1e-12)
+    assert p[2, 0] > p[3, 0] > p[4, 0] > p[5, 0]
+
+
+def test_well_ic_pressure_anchors_each_well_network() -> None:
+    """A separate well network gets its own head anchor, even outside the domain."""
+    mesh, primary_variables = _vertical_well_case()
+    _assign(mesh, primary_variables)
+    p = primary_variables["p"]
+
+    np.testing.assert_array_equal(p[6], P_HEAD)
+    np.testing.assert_allclose(p[7], P_HEAD + _rho(P_HEAD, 280.0) * -9.81 * -10.0, rtol=1e-12)

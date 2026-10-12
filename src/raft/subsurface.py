@@ -21,6 +21,8 @@ import argparse
 import copy
 import datetime
 import sys
+from collections import deque
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .logging_utils import RunLogger
+from .matprops import get_EOS
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
@@ -298,9 +301,78 @@ def _assign_ic_bc_compatible(
     primary_variables["p"][:nn_no_wells] = pv_no_wells["p"]
     primary_variables["T"][:nn_no_wells] = pv_no_wells["T"]
     primary_variables["q"][:nn_no_wells] = pv_no_wells["q"]
-    primary_variables["p"][nn_no_wells:] = config_ini["p_ini"]
-    primary_variables["T"][nn_no_wells:] = config_ini["T_ini"]
+    primary_variables["T"][nn_no_wells:] = config_ini["T_ini"]  # fallback for wells never inside the domain
+    if "well_mesh" in mesh:
+        primary_variables = _assign_well_ic_from_matrix(
+            mesh, material, controls, primary_variables, config_ini["p_ini"]
+        )
     return primary_variables
+
+
+def _assign_well_ic_from_matrix(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    controls: dict[str, Any],
+    primary_variables: dict[str, Any],
+    p_head: float,
+) -> dict[str, Any]:
+    """Set well T from the coincident matrix nodes and well p hydrostatic from p_head at the well head.
+
+    T outside the domain is carried from the nearest in-domain node. p follows
+    p_j = p_k + rho(p_k, T_k) g (z_j - z_k) along the well, once per connected well network.
+    """
+    wmesh = mesh["well_mesh"]
+    nn_w = wmesh["nn"]
+    offset = mesh["nn_total"] - nn_w  # wells are numbered last
+    p = primary_variables["p"]
+    T = primary_variables["T"]
+
+    neighbours: list[list[int]] = [[] for _ in range(nn_w)]
+    for a, b in wmesh["conn"]:
+        neighbours[a].append(b)
+        neighbours[b].append(a)
+
+    # T: in-domain well nodes copy their coincident matrix node, then carry it outward
+    T_assigned = np.zeros(nn_w, dtype=bool)
+    for well_nodes, matrix_nodes in zip(wmesh["conn"], wmesh["matrix_node_conn"], strict=True):
+        for w, m in zip(well_nodes, matrix_nodes, strict=True):
+            if m >= 0:
+                T[offset + w, :] = T[m, :]
+                T_assigned[w] = True
+    for k, j in _breadth_first_edges(neighbours, T_assigned, np.flatnonzero(T_assigned)):
+        T[offset + j, :] = T[offset + k, 0]
+
+    # p: hydrostatic from the head of the first well in each connected network
+    z = wmesh["nodes"][:, mesh["nsd"] - 1]  # gravity acts along the last axis
+    gravity = controls["gravity"]
+    fluid = material["fluid"]
+    p_assigned = np.zeros(nn_w, dtype=bool)
+    for head in wmesh["head_nodes"]:
+        if p_assigned[head]:
+            continue
+        p[offset + head, :] = p_head
+        p_assigned[head] = True
+        for k, j in _breadth_first_edges(neighbours, p_assigned, [head]):
+            p_k = p[offset + k, 0:1].reshape(1, 1)
+            T_k = T[offset + k, 0:1].reshape(1, 1)
+            rho = get_EOS(T_k, T_k, p_k, fluid, want_density=True)[0].value[0, 0]
+            p[offset + j, :] = p[offset + k, 0] + rho * gravity * (z[j] - z[k])
+    return primary_variables
+
+
+def _breadth_first_edges(
+    neighbours: list[list[int]], assigned: npt.NDArray[np.bool_], sources: Iterable[int]
+) -> Iterator[tuple[int, int]]:
+    """Yield (k, j) for each unassigned node j reached from node k, breadth first; marks j assigned."""
+    queue = deque(int(k) for k in sources)
+    while queue:
+        k = queue.popleft()
+        for j in neighbours[k]:
+            if assigned[j]:
+                continue
+            assigned[j] = True
+            yield k, j
+            queue.append(j)
 
 
 def _solve_steady_state(  # noqa

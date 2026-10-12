@@ -639,6 +639,13 @@ def preprocessing(
     config["mesh"]["config_dir"] = config["config_dir"]
 
     mesh = load_mesh(config["mesh"], verbose)
+    if "well_mesh" in mesh:
+        # Well heads (first alignment point), local well numbering
+        offset = mesh["nn_total"] - mesh["well_mesh"]["nn"]
+        mesh["well_mesh"]["head_nodes"] = [
+            _find_well_BC_node(mesh, config["mesh"], [i, "inlet"]) - offset
+            for i in range(len(config["mesh"]["wells"]))
+        ]
 
     config = _preprocess_BCs(mesh, config, verbose)
 
