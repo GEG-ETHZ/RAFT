@@ -89,7 +89,8 @@ def _propose_dt(  # noqa
     dt[2] = dt[1]
     dt[1] = dt[0]
     if dt[0] < dt_max:
-        dt[0] = min((increase_factor) * dt[0], dt_max)
+        # Floor at dt_min: proceeding past an error above tolerance gives a factor < 1
+        dt[0] = min(max(increase_factor * dt[0], dt_min), dt_max)
     t += dt[0]
     return t, dt, True
 

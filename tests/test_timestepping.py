@@ -85,3 +85,11 @@ def test_update_time_raises_below_dt_min_after_clamp() -> None:
     dt = [0.5, 2.0, 2.0]
     with pytest.raises(TimestepError):
         _update_time("fully_coupled", 10.0, dt, _controls(), np.array([10.0]), False, -1, False)
+
+
+def test_update_time_proposal_never_below_dt_min() -> None:
+    """Proceeding at dt_min with an error above tolerance does not shrink the next step below dt_min."""
+    dt = [1.0, 1.0, 1.0]
+    _, dt, accepted = _update_time("linearized", 10.0, dt, _controls(), np.array([100.0]), False, 0.06, False)
+    assert accepted
+    assert dt[0] == 1.0
