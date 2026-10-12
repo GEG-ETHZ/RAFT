@@ -28,7 +28,7 @@ import yaml
 
 from raft.physics import DomainPhysics, Physics
 from raft.preprocessing import DEFAULTS, _apply_defaults, _parse_physics
-from raft.subsurface import main
+from raft.subsurface import _build_steady_state_controls, main
 
 CASE_DIR = Path(__file__).parent / "test_configs"
 
@@ -133,3 +133,30 @@ def test_matrix_off_matches_dirichlet_matrix(tmp_path: Path, solver_type: str) -
     for key in ("p", "T"):
         assert np.all(off[key][:nn] == dirichlet[key][:nn])
         assert np.allclose(off[key][nn:, 0], dirichlet[key][nn:, 0], rtol=1e-6)
+
+
+def test_with_domain_off_switches_only_that_domain() -> None:
+    """`with_domain_off` turns both fields of one domain off and leaves the others unchanged."""
+    physics = _parse(
+        "matrix: {flow: steady, heat: transient}\nwells: {flow: steady, heat: transient, advection: on}"
+    )
+    wells_off = physics.with_domain_off("wells")
+
+    assert wells_off.wells.flow == "off"
+    assert wells_off.wells.heat == "off"
+    assert wells_off.wells.advection == physics.wells.advection
+    assert wells_off.matrix == physics.matrix
+    assert wells_off.fractures == physics.fractures
+
+
+def test_steady_state_controls_turn_wells_off() -> None:
+    """The initial-condition solve is steady with wells off, without changing the run's own physics."""
+    physics = _parse("matrix: {flow: transient, heat: transient}\nwells: {flow: steady, heat: transient}")
+    controls = {"physics": physics, "fully_coupled": True, "volumetric_strain_on": 1}
+    controls_SS = _build_steady_state_controls(controls)
+
+    assert controls_SS["physics"].matrix.flow == "steady"
+    assert controls_SS["physics"].matrix.heat == "steady"
+    assert controls_SS["physics"].wells.flow == "off"
+    assert controls_SS["physics"].wells.heat == "off"
+    assert controls["physics"] is physics

@@ -198,10 +198,10 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     """Build a simulation-control dict for the steady-state initial condition solve.
 
     Volumetric strain is neglected, since initial conditions are by definition
-    unstrained relative to themselves.
+    unstrained relative to themselves. Wells are off: the initial state is the unperturbed rock.
     """
     controls_SS = controls.copy()
-    controls_SS["physics"] = controls["physics"].as_steady()
+    controls_SS["physics"] = controls["physics"].as_steady().with_domain_off("wells")
     controls_SS["fully_coupled"] = False
     controls_SS["volumetric_strain_on"] = 0
     return controls_SS
@@ -257,11 +257,11 @@ def _assign_ic_bc_compatible(  # noqa
             _fit_affine_from_dirichlet(mesh["nodes_total"], p_dirichlet)
         )
     # The seed is only a solver guess; `off` fields are never solved, so they hold *_ini
-    physics = controls["physics"]
+    controls_SS = _build_steady_state_controls(controls)
+    physics = controls_SS["physics"]
     primary_variables["p"][physics.off_nodes(mesh, "flow"), :] = config_ini["p_ini"]
     primary_variables["T"][physics.off_nodes(mesh, "heat"), :] = config_ini["T_ini"]
 
-    controls_SS = _build_steady_state_controls(controls)
     # Initialized reference values -> set as current values and neglect
     # strains when establishing initial conditions
     material["T_0"] = primary_variables["T"][:, 0]
@@ -288,10 +288,6 @@ def _assign_ic_bc_compatible(  # noqa
                 verbose,
             )
             primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
-            # For debugging
-            postprocessing(
-                n + i, mesh, controls, material, BC_config, primary_variables, 0, [1, 1, 1], verbose
-            )  # noqa
         # Perform fully coupled solution
         if verbose:
             print("   Solving for fully-coupled steady-state condition...")
@@ -418,6 +414,11 @@ def _perform_time_integration(
         )
 
     return primary_variables, dt, converged, timestep_error
+
+
+def _is_external(group: dict[str, Any]) -> bool:
+    """Whether any field of a BC group is set externally through the coupling API."""
+    return any(group.get(field, {}).get("external", False) for field in ("hydraulics", "thermal"))
 
 
 def _wellbore_groups(BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -770,8 +771,9 @@ def main(  # noqa
         export_domain_properties(mesh, controls, material, BC_config)
 
         # --- Initial Conditions
-        # Update Boundary Conditions for initial step
-        boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+        # Initial conditions describe the unperturbed condition, so exclude external groups and wells
+        BC_ic = [group for group in BC_config if not _is_external(group)]
+        boundary_conditions = parsebcs(BC_ic, mesh, primary_variables, t, controls)
         q = np.zeros((mesh["nn_total"], 1))
         primary_variables["q"] = q
 
@@ -782,7 +784,7 @@ def main(  # noqa
             material,
             primary_variables,
             boundary_conditions,
-            BC_config,
+            BC_ic,
             n,
             verbose,
         )
