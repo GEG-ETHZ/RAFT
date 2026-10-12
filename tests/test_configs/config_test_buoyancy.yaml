@@ -68,7 +68,7 @@ physics:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 2.0
+  t_end: 3.0  # each step is one sequential pass of the steady coupled solve
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0

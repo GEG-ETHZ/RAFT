@@ -2082,7 +2082,7 @@ def _supg_tau_values(
 
         flux_mag = _flux_magnitude(flux_vec, nsd)
 
-        no_flow = flux_mag == 0.0
+        no_flow = flux_mag <= 1.0e-15
         if no_flow:
             # prevent divide by zero
             flux_mag = 1.0e-15

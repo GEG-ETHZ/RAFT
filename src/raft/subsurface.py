@@ -610,6 +610,98 @@ def restore_state(state: SimState, BC_config: list[dict[str, Any]]) -> dict[str,
     return copy.deepcopy(state.primary_variables)
 
 
+@dataclass(frozen=True, slots=True)
+class RaftContext:
+    """Simulation objects that persist across time steps."""
+
+    mesh: dict[str, Any]
+    material: dict[str, Any]
+    controls: dict[str, Any]
+    BC_config: list[dict[str, Any]]
+    critical_times: npt.NDArray[np.float64]
+
+
+def advance(  # noqa
+    ctx: RaftContext,
+    state: SimState,
+    t_target: float,
+    verbose: bool,
+    write_steps: bool = False,
+) -> SimState:
+    """Advance from state to exactly t_target; the returned state precedes the history rollover."""
+    controls = ctx.controls
+    mesh = ctx.mesh
+    material = ctx.material
+    BC_config = ctx.BC_config
+    WB_on = controls["wellbore_check"]
+    critical_times = np.union1d(ctx.critical_times, [t_target])
+
+    primary_variables = restore_state(state, BC_config)
+    n_step = state.n_step + 1
+    dt = list(state.dt_hist[0:3])
+    t, dt = _clamp_to_critical(state.t, dt, critical_times)
+
+    while True:
+        if verbose:
+            print(f"Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
+
+        while True:
+            # Update Boundary Conditions
+            boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+
+            # Perform time integration
+            primary_variables, dt, converged, timestep_error = _perform_time_integration(
+                controls,
+                mesh,
+                material,
+                primary_variables,
+                boundary_conditions,
+                BC_config,
+                dt,
+                n_step,
+                verbose,
+            )
+
+            # Check BC constraints satisfied
+            BC_satisfied, BC_config = _check_BC_constraints(BC_config, primary_variables, t, WB_on, verbose)
+            if BC_satisfied:
+                break
+
+        # Check error and propose the next timestep
+        t_solved = t
+        dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
+        t, dt, accepted = _propose_dt(
+            controls["solver_type"], t, dt, controls, converged, timestep_error, verbose
+        )
+        if not accepted:
+            continue
+
+        if write_steps:
+            if verbose:
+                print("     Postprocessing...")
+            postprocessing(
+                n_step, mesh, controls, material, BC_config, primary_variables, t_solved, dt_step, verbose
+            )
+
+        if t_solved >= t_target:
+            dt_hist = [dt[0], *dt_step]  # dt[0] is the unclamped proposal
+            return snapshot_state(
+                t_solved, n_step, state.n_out, dt_hist, primary_variables, BC_config, state.ext_values
+            )
+
+        # rollover update primary variables, column 0 gets overwritten in time integration
+        primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
+        primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+        # update any WB boundary condition flags
+        if WB_on:
+            BC_config = _update_WB_flags(BC_config)
+        n_step += 1
+
+        t, dt = _clamp_to_critical(t_solved, dt, critical_times)
+        if verbose:
+            print(f"    Next timestep: {dt[0]:.2e}")
+
+
 # -------------------------------- Main simulation run function -------------
 def main(  # noqa
     config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True
@@ -647,7 +739,7 @@ def main(  # noqa
         t_end = controls["t_end"]
         # initialize timesteps and store 3 timesteps (necessary for higher order)
         # dt = [dt_n, dt_(n-1), dt_(n-2)]
-        dt = controls["timestep"] * np.ones(3)
+        dt = [controls["timestep"]] * 3
         # Gather any important time points as specified in the boundary conditions
         critical_times = get_critical_times(config["boundary_conditions"], t_end)
 
@@ -696,80 +788,20 @@ def main(  # noqa
         if verbose:
             print("Export initial condition")
         postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
-        n += 1
 
         # ---- Time integration
-        while True:
-            if verbose:
-                print(f"Timestep {n}, t = {t:.2e}, {(100 * t / t_end):.2f} % complete")
+        ctx = RaftContext(mesh, material, controls, BC_config, critical_times)
+        state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, None)
+        try:
+            state = advance(ctx, state, t_end, verbose, write_steps=True)
+        except TimestepError as err:
+            print(f"     {err}")
+            sys.exit(1)
 
-            while True:
-                # Update Boundary Conditions
-                boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+        if verbose:
+            print("Simulation complete. Output files are stored in: \n" + controls["output_directory_full"])
 
-                # Perform time integration
-                primary_variables, dt, converged, timestep_error = _perform_time_integration(
-                    controls,
-                    mesh,
-                    material,
-                    primary_variables,
-                    boundary_conditions,
-                    BC_config,
-                    dt,
-                    n,
-                    verbose,
-                )
-
-                # Check BC constraints satisfied
-                BC_satisfied, BC_config = _check_BC_constraints(
-                    BC_config, primary_variables, t, WB_on, verbose
-                )
-                if BC_satisfied:
-                    break
-
-            # Check error and update time step
-            t0 = t
-            dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
-            try:
-                t, dt, converged = _update_time(
-                    controls["solver_type"],
-                    t,
-                    dt,
-                    controls,
-                    critical_times,
-                    converged,
-                    timestep_error,
-                    verbose,
-                )
-            except TimestepError as err:
-                print(f"     {err}")
-                sys.exit(1)
-
-            # Initialize next timestep
-            if converged:
-                if verbose:
-                    print("     Postprocessing...")
-                postprocessing(
-                    n, mesh, controls, material, BC_config, primary_variables, t0, dt_step, verbose
-                )
-                n += 1
-                # rollover update primary variables, column 0 gets overwritten in time integration
-                primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
-                primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
-                # update any WB boundary condition flags
-                if WB_on:
-                    BC_config = _update_WB_flags(BC_config)
-
-            # Check end condition
-            if t > t_end:
-                if verbose:
-                    print(
-                        "Simulation complete. Output files are stored in: \n"
-                        + controls["output_directory_full"]
-                    )
-                break
-
-        return primary_variables, mesh
+        return state.primary_variables, mesh
 
 
 if __name__ == "__main__":
