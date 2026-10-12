@@ -143,12 +143,9 @@ def _update_time(  # noqa
     return t, dt, True
 
 
-def get_critical_times(BC_config: list[dict[str, Any]], t_end: float) -> npt.NDArray[np.float64]:
-    """Collect all times from BC groups using the 'table' function."""
+def get_critical_times(BC_config: list[dict[str, Any]]) -> npt.NDArray[np.float64]:
+    """Collect the change times of BC groups using the 'table' or 'ramp' function."""
     times: set[float] = set()
-    # add end times
-    times.add(t_end)
-    # search for any boundary condition change times
     for group in BC_config:
         for field in ("hydraulics", "thermal"):
             spec = group.get(field)
@@ -723,8 +720,8 @@ def _snapshot_wb(BC_config: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     return flags
 
 
-def _restore_wb(BC_config: list[dict[str, Any]], flags: dict[int, dict[str, Any]]) -> None:
-    """Write snapshotted wellbore keys back into BC_config."""
+def _load_wb(BC_config: list[dict[str, Any]], flags: dict[int, dict[str, Any]]) -> None:
+    """Write a snapshot's wellbore keys into BC_config."""
     for i, group_flags in flags.items():
         BC_config[i]["hydraulics"].update(copy.deepcopy(group_flags))
 
@@ -750,15 +747,24 @@ def snapshot_state(
     )
 
 
-def restore_state(state: SimState, BC_config: list[dict[str, Any]]) -> dict[str, Any]:
-    """Restore wellbore flags into BC_config and return a working copy of the primary variables."""
-    _restore_wb(BC_config, state.wb_flags)
+def load_state(state: SimState, BC_config: list[dict[str, Any]]) -> dict[str, Any]:
+    """Write a state's wellbore flags into BC_config and return a working copy of its primary variables."""
+    _load_wb(BC_config, state.wb_flags)
     return copy.deepcopy(state.primary_variables)
 
 
+def _rollover(primary_variables: dict[str, Any], BC_config: list[dict[str, Any]], WB_on: int) -> None:
+    """Shift the time history after an accepted step and update the wellbore flags."""
+    # column 0 gets overwritten in time integration
+    primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
+    primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+    if WB_on:
+        _update_WB_flags(BC_config)
+
+
 @dataclass(frozen=True, slots=True)
-class RaftContext:
-    """Simulation objects that persist across time steps."""
+class SimSetup:
+    """Objects that define the run and stay fixed between steps; what a step changes is in SimState."""
 
     mesh: dict[str, Any]
     material: dict[str, Any]
@@ -768,21 +774,21 @@ class RaftContext:
 
 
 def advance(  # noqa
-    ctx: RaftContext,
+    setup: SimSetup,
     state: SimState,
     t_target: float,
     verbose: bool,
     write_steps: bool = False,
 ) -> SimState:
     """Advance from state to exactly t_target; the returned state precedes the history rollover."""
-    controls = ctx.controls
-    mesh = ctx.mesh
-    material = ctx.material
-    BC_config = ctx.BC_config
+    controls = setup.controls
+    mesh = setup.mesh
+    material = setup.material
+    BC_config = setup.BC_config
     WB_on = controls["wellbore_check"]
-    critical_times = np.union1d(ctx.critical_times, [t_target])
+    critical_times = np.union1d(setup.critical_times, [t_target])
 
-    primary_variables = restore_state(state, BC_config)
+    primary_variables = load_state(state, BC_config)
     n_step = state.n_step + 1
     dt = list(state.dt_hist[0:3])
     t, dt = _clamp_to_critical(state.t, dt, critical_times)
@@ -838,17 +844,80 @@ def advance(  # noqa
                 t_solved, n_step, state.n_out, dt_hist, primary_variables, BC_config, state.ext_values
             )
 
-        # rollover update primary variables, column 0 gets overwritten in time integration
-        primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
-        primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
-        # update any WB boundary condition flags
-        if WB_on:
-            BC_config = _update_WB_flags(BC_config)
+        _rollover(primary_variables, BC_config, WB_on)
         n_step += 1
 
         t, dt = _clamp_to_critical(t_solved, dt, critical_times)
         if verbose:
             print(f"    Next timestep: {dt[0]:.2e}")
+
+
+def initialize_simulation(
+    config: dict[str, Any], mesh: dict[str, Any], t_start: float, verbose: bool
+) -> tuple[SimSetup, SimState]:
+    """Set up the time stepping objects, assign initial conditions and write output frame 0."""
+    material = config["material"]
+    BC_config = config["boundary_conditions"]
+    controls = config["simulation"]
+
+    # ----- Initialize simulation parameters
+
+    ## Numerical controls
+    n = 0  # Time step counter
+    t = t_start
+    # initialize timesteps and store 3 timesteps (necessary for higher order)
+    # dt = [dt_n, dt_(n-1), dt_(n-2)]
+    dt = [controls["timestep"]] * 3
+    # Gather any important time points as specified in the boundary conditions
+    critical_times = get_critical_times(BC_config)
+
+    ## Initialize vectors
+    primary_variables = {}  # storage structure for all primary variables and results
+    p_dofs = np.arange(0, mesh["nn_total"])
+    T_dofs = np.arange(0, mesh["nn_total"])
+    primary_variables["p_dofs"] = p_dofs
+    primary_variables["T_dofs"] = T_dofs
+    # Vectors of primary DoFs - ndof x 4
+    # [t_n, t_(n-1), t_(n-2), ...]
+    primary_variables["p"] = 1e5 * np.ones((len(p_dofs), 4))
+    primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
+
+    ## Wellbore boundary conditions
+    WB_on = controls["wellbore_check"]
+    if WB_on:
+        BC_config = _initialize_WB_checks(BC_config)
+
+    #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
+    #                        there should be an edge integral perform to remove its contribution
+    #                        along the upper surfaces.
+    if verbose:
+        print("     Exporting domain material properties...")
+    export_domain_properties(mesh, controls, material, BC_config)
+
+    # --- Initial Conditions
+    q = np.zeros((mesh["nn_total"], 1))
+    primary_variables["q"] = q
+
+    [primary_variables, material] = _assign_initial_conditions(
+        config["initial_conditions"],
+        controls,
+        mesh,
+        material,
+        primary_variables,
+        BC_config,
+        t,
+        n,
+        verbose,
+    )
+
+    # --- Export initial condition
+    if verbose:
+        print("Export initial condition")
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
+
+    setup = SimSetup(mesh, material, controls, BC_config, critical_times)
+    state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, None)
+    return setup, state
 
 
 # -------------------------------- Main simulation run function -------------
@@ -870,8 +939,6 @@ def main(  # noqa
 
         # ----- Load config and mesh
         config, mesh = preprocessing(config_name, config_dir, verbose)
-        material = config["material"]
-        BC_config = config["boundary_conditions"]
         controls = config["simulation"]
         # Copy config name and directory to controls
         controls["config_name"] = config["config_name"]
@@ -880,67 +947,9 @@ def main(  # noqa
         if controls["output_log"]:
             run_logger.attach_file(prepare_output_directory(controls))
 
-        # ----- Initialize simulation parameters
-
-        ## Numerical controls
-        n = 0  # Time step counter
-        t = controls["t_start"]
-        t_end = controls["t_end"]
-        # initialize timesteps and store 3 timesteps (necessary for higher order)
-        # dt = [dt_n, dt_(n-1), dt_(n-2)]
-        dt = [controls["timestep"]] * 3
-        # Gather any important time points as specified in the boundary conditions
-        critical_times = get_critical_times(config["boundary_conditions"], t_end)
-
-        ## Initialize vectors
-        primary_variables = {}  # storage structure for all primary variables and results
-        p_dofs = np.arange(0, mesh["nn_total"])
-        T_dofs = np.arange(0, mesh["nn_total"])
-        primary_variables["p_dofs"] = p_dofs
-        primary_variables["T_dofs"] = T_dofs
-        # Vectors of primary DoFs - ndof x 4
-        # [t_n, t_(n-1), t_(n-2), ...]
-        primary_variables["p"] = 1e5 * np.ones((len(p_dofs), 4))
-        primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
-
-        ## Wellbore boundary conditions
-        WB_on = controls["wellbore_check"]
-        if WB_on:
-            BC_config = _initialize_WB_checks(BC_config)
-
-        #   note for future use: If a no-flow boundary is desired in the direction of buoyancy,
-        #                        there should be an edge integral perform to remove its contribution
-        #                        along the upper surfaces.
-        if verbose:
-            print("     Exporting domain material properties...")
-        export_domain_properties(mesh, controls, material, BC_config)
-
-        # --- Initial Conditions
-        q = np.zeros((mesh["nn_total"], 1))
-        primary_variables["q"] = q
-
-        [primary_variables, material] = _assign_initial_conditions(
-            config["initial_conditions"],
-            controls,
-            mesh,
-            material,
-            primary_variables,
-            BC_config,
-            t,
-            n,
-            verbose,
-        )
-
-        # --- Export initial condition
-        if verbose:
-            print("Export initial condition")
-        postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
-
-        # ---- Time integration
-        ctx = RaftContext(mesh, material, controls, BC_config, critical_times)
-        state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, None)
+        setup, state = initialize_simulation(config, mesh, controls["t_start"], verbose)
         try:
-            state = advance(ctx, state, t_end, verbose, write_steps=True)
+            state = advance(setup, state, controls["t_end"], verbose, write_steps=True)
         except TimestepError as err:
             print(f"     {err}")
             sys.exit(1)

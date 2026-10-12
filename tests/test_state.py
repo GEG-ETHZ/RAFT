@@ -15,13 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for simulation state snapshot and restore."""
+"""Unit tests for simulation state snapshot and load."""
 
 from typing import Any
 
 import numpy as np
 
-from raft.subsurface import _initialize_WB_checks, restore_state, snapshot_state
+from raft.subsurface import _initialize_WB_checks, load_state, snapshot_state
 
 
 def _bc_config() -> list[dict[str, Any]]:
@@ -50,7 +50,7 @@ def _primary_variables() -> dict[str, Any]:
     }
 
 
-def test_restore_undoes_changes_to_state() -> None:
+def test_load_undoes_changes_since_snapshot() -> None:
     """Changes made after a snapshot are undone by restoring it."""
     BC_config = _bc_config()
     primary_variables = _primary_variables()
@@ -64,24 +64,24 @@ def test_restore_undoes_changes_to_state() -> None:
     hydraulics["type"], hydraulics["function"], hydraulics["values"] = "pressure", "constant", [1.0e7]
     hydraulics["values_flux"][0] = 0.5
 
-    restored = restore_state(state, BC_config)
+    loaded = load_state(state, BC_config)
 
-    np.testing.assert_array_equal(restored["p"], np.ones((3, 4)))
-    np.testing.assert_array_equal(restored["q"], np.zeros((3, 1)))
+    np.testing.assert_array_equal(loaded["p"], np.ones((3, 4)))
+    np.testing.assert_array_equal(loaded["q"], np.zeros((3, 1)))
     assert hydraulics["curr_BC"] == "flux"
     assert hydraulics["type"] == "flux"
     assert hydraulics["values"] == [0.01]
     assert hydraulics["values_flux"] == [0.01]
 
 
-def test_restore_twice_gives_independent_copies() -> None:
-    """A restored working copy can be changed without altering the stored state."""
+def test_load_twice_gives_independent_copies() -> None:
+    """A loaded working copy can be changed without altering the stored state."""
     BC_config = _bc_config()
     state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, None)
 
-    first = restore_state(state, BC_config)
+    first = load_state(state, BC_config)
     first["T"][:, 0] = 999.0
-    second = restore_state(state, BC_config)
+    second = load_state(state, BC_config)
 
     np.testing.assert_array_equal(second["T"], 300 * np.ones((3, 4)))
 
@@ -91,7 +91,7 @@ def test_snapshot_skips_static_BC_data() -> None:
     BC_config = _bc_config()
     weights = BC_config[0]["flux_weight_matrix"]
     state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, None)
-    restore_state(state, BC_config)
+    load_state(state, BC_config)
 
     assert list(state.wb_flags) == [0]
     assert "flux_weight_matrix" not in state.wb_flags[0]

@@ -60,9 +60,9 @@ class RunLogger:
         sys.stdout = _Tee(self._old_stdout, self._buffer)
         return self
 
-    def attach_file(self, output_directory: str, filename: str = "run.log") -> None:
+    def attach_file(self, output_directory: str, filename: str = "run.log", mode: str = "w") -> None:
         """Start mirroring stdout to `filename` in `output_directory`, including anything buffered so far."""
-        self._file = open(Path(output_directory) / filename, "w")  # noqa: SIM115 (kept open for the run)
+        self._file = open(Path(output_directory) / filename, mode)  # noqa: SIM115 (kept open for the run)
         self._file.write(self._buffer.getvalue())
         self._file.flush()
         assert self._old_stdout is not None
