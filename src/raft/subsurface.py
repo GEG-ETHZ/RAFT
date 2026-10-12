@@ -21,6 +21,7 @@ import argparse
 import copy
 import datetime
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -537,6 +538,76 @@ def _check_BC_constraints(
                 break
 
     return constraints_satisfied, BC_config
+
+
+# ------------------------------------ Simulation state
+# Wellbore keys changed by constraint switching; all other BC_config entries are static
+_WB_STATE_KEYS = (
+    "curr_BC",
+    "prev_BC",
+    "pres_constraint",
+    "type",
+    "function",
+    "values",
+    "function_flux",
+    "values_flux",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SimState:
+    """Everything a time step changes; mesh, material and static BC data are not included."""
+
+    t: float
+    n_step: int  # internal step count, gates the solvers' early-step error check
+    n_out: int  # output frame index
+    dt_hist: list[float]  # [dt_next, dt_n, dt_(n-1), dt_(n-2)]
+    primary_variables: dict[str, Any]
+    wb_flags: dict[int, dict[str, Any]]  # BC_config index -> wellbore keys
+    ext_values: dict[str, dict[str, float]] | None  # accepted external BC inputs
+
+
+def _snapshot_wb(BC_config: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """Copy the switchable keys of each wellbore group, keyed by BC_config index."""
+    flags = {}
+    for i, group in enumerate(BC_config):
+        hydraulics = group.get("hydraulics", {})
+        if "constraints" in hydraulics:
+            flags[i] = copy.deepcopy({key: hydraulics[key] for key in _WB_STATE_KEYS})
+    return flags
+
+
+def _restore_wb(BC_config: list[dict[str, Any]], flags: dict[int, dict[str, Any]]) -> None:
+    """Write snapshotted wellbore keys back into BC_config."""
+    for i, group_flags in flags.items():
+        BC_config[i]["hydraulics"].update(copy.deepcopy(group_flags))
+
+
+def snapshot_state(
+    t: float,
+    n_step: int,
+    n_out: int,
+    dt_hist: list[float],
+    primary_variables: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+    ext_values: dict[str, dict[str, float]] | None,
+) -> SimState:
+    """Capture an independent copy of the simulation state."""
+    return SimState(
+        t=t,
+        n_step=n_step,
+        n_out=n_out,
+        dt_hist=list(dt_hist),
+        primary_variables=copy.deepcopy(primary_variables),
+        wb_flags=_snapshot_wb(BC_config),
+        ext_values=copy.deepcopy(ext_values),
+    )
+
+
+def restore_state(state: SimState, BC_config: list[dict[str, Any]]) -> dict[str, Any]:
+    """Restore wellbore flags into BC_config and return a working copy of the primary variables."""
+    _restore_wb(BC_config, state.wb_flags)
+    return copy.deepcopy(state.primary_variables)
 
 
 # -------------------------------- Main simulation run function -------------
