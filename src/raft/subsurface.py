@@ -38,23 +38,23 @@ class TimestepError(RuntimeError):
     """Raised when the solver fails to converge at the minimum timestep."""
 
 
-def _update_time(  # noqa
+def _propose_dt(  # noqa
     solver_type: str,
     t: float,
     dt: list[float],
     controls: dict[str, Any],
-    critical_times: npt.NDArray[np.float64],
     converged: bool,
     timestep_error: float,
     verbose: bool,
 ) -> tuple[float, list[float], bool]:
-    """Update the current time and timestep."""
+    """Cut a failed timestep or grow the next one, ignoring critical times."""
     dt_max = controls["timestep_max"]
     dt_min = controls["timestep_min"]
     rel_tol_T = controls["rel_error_T"]
 
     if not converged:  # Decrease the timestep
-        if dt[0] == dt_min:
+        # <= since a step clamped to a critical time may lie below dt_min
+        if dt[0] <= dt_min:
             # minimum timestep reached, proceed with simulation
             if solver_type == "linearized" and timestep_error != -1:
                 if verbose:
@@ -91,16 +91,48 @@ def _update_time(  # noqa
     if dt[0] < dt_max:
         dt[0] = min((increase_factor) * dt[0], dt_max)
     t += dt[0]
+    return t, dt, True
 
-    # find next critical time and prevent overshoot
-    upcoming = [ct for ct in critical_times if ct > t - dt[0]]
-    if upcoming:
-        t_next = min(upcoming)
-        if t > t_next and t != t_next:
-            t -= dt[0]
-            dt[0] = max(t_next - t, dt_min)
-            t += dt[0]
 
+def _clamp_to_critical(
+    t_prev: float, dt: list[float], critical_times: npt.NDArray[np.float64]
+) -> tuple[float, list[float]]:
+    """Return the end time of the step starting at t_prev, shortened to land on the next critical time.
+
+    If the step would leave less than one step to that time, the remainder is split in
+    two equal steps instead, so no sliver step follows. Either may fall below dt_min.
+    """
+    upcoming = critical_times[critical_times > t_prev]
+    if upcoming.size == 0:
+        return t_prev + dt[0], dt
+
+    t_next = float(upcoming.min())
+    remaining = t_next - t_prev
+    if dt[0] >= remaining:
+        dt[0] = remaining
+        return t_next, dt
+    if remaining < 2 * dt[0]:
+        dt[0] = remaining / 2
+    return t_prev + dt[0], dt
+
+
+def _update_time(  # noqa
+    solver_type: str,
+    t: float,
+    dt: list[float],
+    controls: dict[str, Any],
+    critical_times: npt.NDArray[np.float64],
+    converged: bool,
+    timestep_error: float,
+    verbose: bool,
+) -> tuple[float, list[float], bool]:
+    """Update the current time and timestep."""
+    t_prev = t
+    t, dt, accepted = _propose_dt(solver_type, t, dt, controls, converged, timestep_error, verbose)
+    if not accepted:
+        return t, dt, False
+
+    t, dt = _clamp_to_critical(t_prev, dt, critical_times)
     if verbose:
         print(f"    Next timestep: {dt[0]:.2e}")
     return t, dt, True
