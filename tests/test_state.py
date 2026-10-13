@@ -27,7 +27,7 @@ from raft.subsurface import _initialize_WB_checks, load_state, snapshot_state
 def _bc_config() -> list[dict[str, Any]]:
     wellbore = {
         "nodes": [0, 1],
-        "tag": "well1",
+        "label": "well1",
         "flux_weight_matrix": np.eye(2),
         "hydraulics": {
             "values": [0.01],

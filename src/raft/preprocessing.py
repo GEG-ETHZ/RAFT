@@ -464,7 +464,7 @@ _EXTERNAL_INTERPOLATION = ("step", "linear")
 
 def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
     """Check BC fields with function "external" and mark them with spec["external"] = True."""
-    tags = [group["tag"] for group in BC_groups if "tag" in group]
+    labels = [group["label"] for group in BC_groups if "label" in group]
     for group in BC_groups:
         external_fields = [
             field for field in ("hydraulics", "thermal") if group.get(field, {}).get("function") == "external"
@@ -472,23 +472,23 @@ def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
         if not external_fields:
             continue
 
-        tag = group.get("tag")
-        if tag is None:
-            raise ValueError(f"External boundary condition fields {external_fields} require a 'tag'.")
-        if tags.count(tag) > 1:
-            raise ValueError(f"External boundary condition tag '{tag}' is not unique.")
+        label = group.get("label")
+        if label is None:
+            raise ValueError(f"External boundary condition fields {external_fields} require a 'label'.")
+        if labels.count(label) > 1:
+            raise ValueError(f"External boundary condition label '{label}' is not unique.")
 
         for field in external_fields:
             spec = group[field]
             if spec["type"] not in _EXTERNAL_TYPES[field]:
                 raise ValueError(
-                    f"External {field} on '{tag}' has type '{spec['type']}'; "
+                    f"External {field} on '{label}' has type '{spec['type']}'; "
                     f"expected one of {_EXTERNAL_TYPES[field]}."
                 )
             spec.setdefault("interpolation", "step")
             if spec["interpolation"] not in _EXTERNAL_INTERPOLATION:
                 raise ValueError(
-                    f"External {field} on '{tag}' has interpolation '{spec['interpolation']}'; "
+                    f"External {field} on '{label}' has interpolation '{spec['interpolation']}'; "
                     f"expected one of {_EXTERNAL_INTERPOLATION}."
                 )
             spec["external"] = True
@@ -496,7 +496,7 @@ def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
         hydraulics = group.get("hydraulics", {})
         if hydraulics.get("external") and "constraints" in hydraulics and hydraulics["type"] != "flux":
             raise ValueError(
-                f"Pressure constraints on external group '{tag}' require hydraulics type 'flux'."
+                f"Pressure constraints on external group '{label}' require hydraulics type 'flux'."
             )
 
 

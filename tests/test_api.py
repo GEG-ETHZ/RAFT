@@ -166,7 +166,7 @@ def _external_config(tmp_path: Path, t_end: float = T_END, **inlet_hydraulics: A
     config = yaml.safe_load((tmp_path / "transient.yaml").read_text())
     config["simulation"]["t_end"] = t_end
     inlet, outlet = config["boundary_conditions"][1], config["boundary_conditions"][2]
-    inlet["tag"] = "inlet"
+    inlet["label"] = "inlet"
     inlet["hydraulics"].update({"function": "external", **inlet_hydraulics})
     inlet["thermal"]["function"] = "external"
     outlet["hydraulics"]["function"] = "external"
@@ -226,7 +226,7 @@ def test_external_flow_rate_is_total_over_face_group(tmp_path: Path) -> None:
     shutil.copy(CONFIG_DIR / config["mesh"]["file"], tmp_path)
     config["simulation"]["output_directory"] = str(tmp_path / "out")
     face = config["boundary_conditions"][2]
-    face["tag"] = "face"
+    face["label"] = "face"
     face["hydraulics"]["function"] = "external"
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
 

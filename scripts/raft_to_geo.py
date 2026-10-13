@@ -606,10 +606,10 @@ def bc_features(config: dict[str, Any]) -> tuple[list[Array], list[Array]]:
     """Collect point (`coords`) and polyline (`lines`) BC geometry. `faces` BCs need no geometry."""
     points, lines = [], []
     for group in config.get("boundary_conditions") or []:
-        tag = group.get("tag", "untagged")
-        points += [_pad3(_check_point(xi, f"BC {tag}: coords")) for xi in group.get("coords", [])]
+        label = group.get("label", "unlabeled")
+        points += [_pad3(_check_point(xi, f"BC {label}: coords")) for xi in group.get("coords", [])]
         for line in group.get("lines", []):
-            pts = [_pad3(_check_point(p, f"BC {tag}: lines")) for p in _check_line(line, tag)]
+            pts = [_pad3(_check_point(p, f"BC {label}: lines")) for p in _check_line(line, label)]
             lines.append(np.array(pts))
     return points, lines
 
@@ -625,11 +625,11 @@ def _check_point(value: Any, where: str) -> Any:
     return value
 
 
-def _check_line(line: Any, tag: str) -> list[Any]:
+def _check_line(line: Any, label: str) -> list[Any]:
     """A line must be a list of points; one bracket too few silently makes nonsense geometry."""
     if not isinstance(line, (list, tuple)) or len(line) < 2 or not isinstance(line[0], (list, tuple)):
         raise ValueError(
-            f"BC {tag}: each entry of `lines` must be a list of points, got {line!r}. "
+            f"BC {label}: each entry of `lines` must be a list of points, got {line!r}. "
             "Note the extra brackets: lines: [[[0, 152, 340], [10, 152, 340]]]"
         )
     return list(line)

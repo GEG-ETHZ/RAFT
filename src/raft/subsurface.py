@@ -596,11 +596,11 @@ def _update_WB_flags(BC_config: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _announce_WB_change(group: dict[str, Any], constraint: str, verbose: bool) -> None:
     """Print WB constraint violation."""
     if verbose:
-        tag = group.get("tag")
-        if tag is None:
-            tag = "(untagged)"
+        label = group.get("label")
+        if label is None:
+            label = "(unlabeled)"
 
-        announcement = f"  {constraint} constraint exceeded in wellbore '{tag}'. Switching constraint."
+        announcement = f"  {constraint} constraint exceeded in wellbore '{label}'. Switching constraint."
         print(f"\033[96m {announcement} \033[00m")
 
 
@@ -707,7 +707,7 @@ class SimState:
     dt_hist: list[float]  # [dt_next, dt_n, dt_(n-1), dt_(n-2)]
     primary_variables: dict[str, Any]
     wb_flags: dict[int, dict[str, Any]]  # BC_config index -> wellbore keys
-    ext_values: dict[str, dict[str, float]]  # accepted external BC inputs, by tag; empty before the first
+    ext_values: dict[str, dict[str, float]]  # accepted external BC inputs, by label; empty before the first
 
 
 def _snapshot_wb(BC_config: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:

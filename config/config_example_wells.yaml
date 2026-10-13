@@ -76,7 +76,7 @@ boundary_conditions:
             type: "temperature"
             values: [310]
       - well: [4, "inlet"]
-        tag: "outlet"
+        label: "outlet"
         hydraulics:
             type: "pressure"
             values: [1.0e+6]

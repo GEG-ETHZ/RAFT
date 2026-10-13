@@ -50,7 +50,7 @@ _INPUT_KEYS = ("p", "T", "q")
 class _ExternalField:
     """One BC field set through the API, and how its coupling input is converted."""
 
-    tag: str
+    label: str
     group_index: int  # index into BC_config
     field: str  # "hydraulics" or "thermal"
     input_key: str  # "p", "T" or "q"
@@ -68,7 +68,7 @@ def _external_fields(BC_config: list[dict[str, Any]]) -> list[_ExternalField]:
         for field in ("hydraulics", "thermal"):
             spec = group.get(field, {})
             if spec.get("external", False):
-                fields.append(_ExternalField(group["tag"], i, field, _INPUT_KEY[spec["type"]], measure))
+                fields.append(_ExternalField(group["label"], i, field, _INPUT_KEY[spec["type"]], measure))
     return fields
 
 
@@ -101,7 +101,7 @@ class RaftModel:
             # The initial condition is the current state, with no trial pending
             self._setup, self._current = initialize_simulation(config, mesh, t_start, verbose)
             self._external = _external_fields(self._setup.BC_config)
-            self._tags = sorted({ext.tag for ext in self._external})
+            self._labels = sorted({ext.label for ext in self._external})
             self._trial = self._current
             self._trial_pending = False
 
@@ -126,7 +126,7 @@ class RaftModel:
             BC_config = self._setup.BC_config
             _load_wb(BC_config, current.wb_flags)
             self._apply_external_bcs(current.t, t_end, bcs, current.ext_values)
-            inputs = {tag: {key: float(bcs[tag][key]) for key in _INPUT_KEYS} for tag in self._tags}
+            inputs = {label: {key: float(bcs[label][key]) for key in _INPUT_KEYS} for label in self._labels}
             start = replace(current, wb_flags=_snapshot_wb(BC_config), ext_values=inputs)
 
             # Advance a trial from the current state; a failed solve leaves no trial pending
@@ -181,17 +181,17 @@ class RaftModel:
             run_logger.attach_file(self._log_dir, mode="a")
 
     def _check_bcs(self, bcs: dict[str, dict[str, float]]) -> None:
-        """Every external tag, and only those, with finite p, T and q."""
-        missing = sorted(set(self._tags) - set(bcs))
-        unknown = sorted(set(bcs) - set(self._tags))
+        """Every external label, and only those, with finite p, T and q."""
+        missing = sorted(set(self._labels) - set(bcs))
+        unknown = sorted(set(bcs) - set(self._labels))
         if missing or unknown:
-            raise ValueError(f"Boundary condition tags missing: {missing}; not external: {unknown}.")
-        for tag in self._tags:
-            absent = [key for key in _INPUT_KEYS if key not in bcs[tag]]
+            raise ValueError(f"Boundary condition labels missing: {missing}; not external: {unknown}.")
+        for label in self._labels:
+            absent = [key for key in _INPUT_KEYS if key not in bcs[label]]
             if absent:
-                raise ValueError(f"Boundary conditions for '{tag}' lack {absent}.")
-            if not np.all(np.isfinite([bcs[tag][key] for key in _INPUT_KEYS])):
-                raise ValueError(f"Boundary conditions for '{tag}' are not finite: {bcs[tag]}.")
+                raise ValueError(f"Boundary conditions for '{label}' lack {absent}.")
+            if not np.all(np.isfinite([bcs[label][key] for key in _INPUT_KEYS])):
+                raise ValueError(f"Boundary conditions for '{label}' are not finite: {bcs[label]}.")
 
     def _apply_external_bcs(
         self,
@@ -222,7 +222,7 @@ class RaftModel:
 
     def _input_value(self, ext: _ExternalField, bcs: dict[str, dict[str, float]]) -> float:
         """Coupling input for one field; a flow rate in kg/s becomes a flux over the group."""
-        value = float(bcs[ext.tag][ext.input_key])
+        value = float(bcs[ext.label][ext.input_key])
         if ext.input_key == "q":
             return value / ext.measure
         return value
@@ -230,14 +230,14 @@ class RaftModel:
     def _boundary_values(self, primary_variables: dict[str, Any]) -> dict[str, dict[str, Any]]:
         """Mean p and T, summed q (kg/s, positive inflow) and hydraulic mode of each external group."""
         BC_config = self._setup.BC_config
-        group_indices = {ext.tag: ext.group_index for ext in self._external}
+        group_indices = {ext.label: ext.group_index for ext in self._external}
         results = {}
-        for tag in self._tags:
-            group = BC_config[group_indices[tag]]
+        for label in self._labels:
+            group = BC_config[group_indices[label]]
             nodes = np.asarray(group["nodes"])
             q = float(np.sum(primary_variables["q"][nodes, 0]))
             hydraulics = group.get("hydraulics", {})
-            results[tag] = {
+            results[label] = {
                 "p": float(np.mean(primary_variables["p"][nodes, 0])),
                 "T": float(np.mean(primary_variables["T"][nodes, 0])),
                 "q": q,
@@ -248,6 +248,6 @@ class RaftModel:
             thermal = group.get("thermal", {})
             if thermal.get("external", False) and q < 0:
                 warnings.warn(
-                    f"'{tag}' fixes temperature while fluid flows out (q = {q:.3e} kg/s).", stacklevel=3
+                    f"'{label}' fixes temperature while fluid flows out (q = {q:.3e} kg/s).", stacklevel=3
                 )
         return results

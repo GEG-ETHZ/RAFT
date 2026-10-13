@@ -371,13 +371,13 @@ def _export_flow_logs(
     io_path: str,
     t: float,
 ) -> None:
-    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
+    """Export pressure, flow rate, and flow-weighted temperature for each labeled BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
-    # ---- Collect tagged groups
-    tagged_groups = [group for group in BC_config if "tag" in group]
+    # ---- Collect labeled groups
+    labeled_groups = [group for group in BC_config if "label" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -385,7 +385,8 @@ def _export_flow_logs(
             fid.write("time\t")
             fid.write(
                 "\t".join(
-                    f"{grp['tag']}_pressure\t{grp['tag']}_flow\t{grp['tag']}_T" for grp in tagged_groups
+                    f"{grp['label']}_pressure\t{grp['label']}_flow\t{grp['label']}_T"
+                    for grp in labeled_groups
                 )
             )
             fid.write("\n")
@@ -396,7 +397,7 @@ def _export_flow_logs(
     T = primary_variables["T"][:, 0].flatten()
 
     outflow_values: list[float] = []
-    for group in tagged_groups:
+    for group in labeled_groups:
         indx = np.asarray(group["nodes"])
 
         p_group = p[indx]

@@ -73,7 +73,7 @@ boundary_conditions:
 
 
       - lines: [[[0, 550, 250], [50, 550, 250]]]
-        tag: "wellbore_in"
+        label: "wellbore_in"
         hydraulics:
             type: "flux"
             values: [[0, 30000], [0, 1]]
@@ -86,7 +86,7 @@ boundary_conditions:
             function: "table"
 
       - lines: [[[0, 152, 340], [50, 152, 340]]]
-        tag: "wellbore_out"
+        label: "wellbore_out"
         hydraulics:
             type: "flux"
             values: [[0, 30000], [0, -1]]

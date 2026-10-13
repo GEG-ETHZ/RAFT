@@ -30,7 +30,7 @@ def _base_bc_config() -> list[dict[str, Any]]:
     return [
         {
             "nodes": [0, 1],
-            "tag": "well1",
+            "label": "well1",
             "hydraulics": {
                 "values": [0.01],
                 "function": "constant",

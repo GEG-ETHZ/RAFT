@@ -69,7 +69,7 @@ def test_no_wells_problem_filters_BC_groups() -> None:
     no_wells = {"nodes": [0, 1], "thermal": {"type": "temperature", "values": [300.0]}}
     spanning = {"nodes": np.arange(5), "hydraulics": {"type": "pressure", "values": [1.0e6]}}
     well_only = {"nodes": [4], "hydraulics": {"type": "flux", "values": [1.0]}}
-    external = {"nodes": [2], "tag": "x", "hydraulics": {"type": "pressure", "external": True}}
+    external = {"nodes": [2], "label": "x", "hydraulics": {"type": "pressure", "external": True}}
     _, _, BC_no_wells = _no_wells_problem(
         _mesh_with_wells(), _primary_variables(), [no_wells, spanning, well_only, external]
     )

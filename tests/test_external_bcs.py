@@ -34,7 +34,7 @@ CONFIG_DIR = Path(__file__).parent / "test_configs"
 
 def _flux_group(**hydraulics: Any) -> dict[str, Any]:
     spec = {"type": "flux", "function": "external", **hydraulics}
-    return {"well": [0, "inlet"], "tag": "inlet", "hydraulics": spec}
+    return {"well": [0, "inlet"], "label": "inlet", "hydraulics": spec}
 
 
 def test_validate_marks_external_fields_with_step_default() -> None:
@@ -57,19 +57,19 @@ def test_validate_ignores_non_external_groups() -> None:
 
 def test_validate_requires_tag() -> None:
     group = _flux_group()
-    del group["tag"]
-    with pytest.raises(ValueError, match="require a 'tag'"):
+    del group["label"]
+    with pytest.raises(ValueError, match="require a 'label'"):
         _validate_external_groups([group])
 
 
 def test_validate_requires_unique_tag() -> None:
-    other = {"faces": ["x_max"], "tag": "inlet", "hydraulics": {"type": "pressure", "values": [1.0]}}
+    other = {"faces": ["x_max"], "label": "inlet", "hydraulics": {"type": "pressure", "values": [1.0]}}
     with pytest.raises(ValueError, match="not unique"):
         _validate_external_groups([_flux_group(), other])
 
 
 def test_validate_rejects_external_heat_flux() -> None:
-    group = {"faces": ["x_min"], "tag": "wall", "thermal": {"type": "flux", "function": "external"}}
+    group = {"faces": ["x_min"], "label": "wall", "thermal": {"type": "flux", "function": "external"}}
     with pytest.raises(ValueError, match="has type 'flux'"):
         _validate_external_groups([group])
 
@@ -111,7 +111,7 @@ def test_external_with_config_values_matches_constant_twin(tmp_path: Path) -> No
     external_dir = tmp_path / "external"
     config["simulation"]["output_directory"] = str(external_dir)
     inlet, outlet = config["boundary_conditions"][1], config["boundary_conditions"][2]
-    inlet["tag"] = "inlet"
+    inlet["label"] = "inlet"
     inlet["hydraulics"]["function"] = "external"
     inlet["thermal"]["function"] = "external"
     outlet["hydraulics"]["function"] = "external"
