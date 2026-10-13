@@ -250,11 +250,19 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     else:
         config_dir = Path(config_dir)
 
+    # The .yaml suffix may be left off
     config_path = config_dir / config_name
+    if not config_path.is_file():
+        with_suffix = config_dir / f"{config_name}.yaml"
+        if not with_suffix.is_file():
+            raise FileNotFoundError(
+                f"Config '{config_name}' not found in {config_dir} (also tried '{with_suffix.name}')."
+            )
+        config_path = with_suffix
 
     with open(config_path) as f:
         config: dict[str, Any] = yaml.safe_load(f)
-    config["config_name"] = config_name
+    config["config_name"] = config_path.name
     config["config_dir"] = str(config_path.parent)
 
     if verbose:

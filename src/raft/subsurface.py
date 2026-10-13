@@ -25,7 +25,7 @@ from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -40,6 +40,16 @@ from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
 class TimestepError(RuntimeError):
     """Raised when the solver fails to converge at the minimum timestep."""
+
+
+# Console output: nothing, one line per timestep attempt, or full detail
+Verbosity = Literal["quiet", "lite", "full"]
+
+
+def check_verbosity(verbosity: str) -> None:
+    """Reject anything but "quiet", "lite" or "full"."""
+    if verbosity not in get_args(Verbosity):
+        raise ValueError(f"verbosity = {verbosity!r}; expected 'quiet', 'lite' or 'full'.")
 
 
 def _propose_dt(  # noqa
@@ -779,6 +789,7 @@ def advance(  # noqa
     t_target: float,
     verbose: bool,
     write_steps: bool = False,
+    progress: bool = False,
 ) -> SimState:
     """Advance from state to exactly t_target; the returned state precedes the history rollover."""
     controls = setup.controls
@@ -792,11 +803,15 @@ def advance(  # noqa
     n_step = state.n_step + 1
     dt = list(state.dt_hist[0:3])
     t, dt = _clamp_to_critical(state.t, dt, critical_times)
+    t0 = state.t
 
     while True:
-        # Loop through timesteps
+        # Loop through timesteps; every attempt is reported, so cut and retried steps show up
         if verbose:
             print(f"Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
+        elif progress:
+            percent = 100 * (t - t0) / (t_target - t0)
+            print(f"     Timestep {n_step}, t = {t:.2e} with dt = {dt[0]:.2e}, {percent:.0f} % complete")
 
         while True:
             # Loop until BC constraints satisfied
@@ -922,9 +937,14 @@ def initialize_simulation(
 
 # -------------------------------- Main simulation run function -------------
 def main(  # noqa
-    config_name: str | None = None, config_dir: Path | None = None, verbose: bool = True
+    config_name: str | None = None, config_dir: Path | None = None, verbosity: Verbosity = "full"
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Main simulation run."""
+    # Full detail goes through the usual verbose flag; lite only adds the per-step line
+    check_verbosity(verbosity)
+    detailed = verbosity == "full"
+    progress = verbosity == "lite"
+
     if config_name is None:
         parser = argparse.ArgumentParser(description="RAFT - Reservoir Analysis for TANGO")
         parser.add_argument("config", help="Name of the config file (e.g. config_example.yaml) in CONFIG_DIR")
@@ -932,13 +952,13 @@ def main(  # noqa
         config_name = args.config
 
     with RunLogger() as run_logger:
-        if verbose:
+        if detailed:
             print("RAFT - RESERVOIR ANALYSIS FOR TANGO \n")
             print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             print("Beginning simulation " + config_name + "\n")
 
         # ----- Load config and mesh
-        config, mesh = preprocessing(config_name, config_dir, verbose)
+        config, mesh = preprocessing(config_name, config_dir, detailed)
         controls = config["simulation"]
         # Copy config name and directory to controls
         controls["config_name"] = config["config_name"]
@@ -947,14 +967,14 @@ def main(  # noqa
         if controls["output_log"]:
             run_logger.attach_file(prepare_output_directory(controls))
 
-        setup, state = initialize_simulation(config, mesh, controls["t_start"], verbose)
+        setup, state = initialize_simulation(config, mesh, controls["t_start"], detailed)
         try:
-            state = advance(setup, state, controls["t_end"], verbose, write_steps=True)
+            state = advance(setup, state, controls["t_end"], detailed, write_steps=True, progress=progress)
         except TimestepError as err:
             print(f"     {err}")
             sys.exit(1)
 
-        if verbose:
+        if detailed:
             print("Simulation complete. Output files are stored in: \n" + controls["output_directory_full"])
 
         return state.primary_variables, mesh

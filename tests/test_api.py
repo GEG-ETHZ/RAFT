@@ -62,9 +62,9 @@ def _trial(model: RaftModel) -> dict[str, Any]:
 
 def test_single_solve_matches_batch_run(tmp_path: Path) -> None:
     config_name = _transient_config(tmp_path)
-    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbose=False)
+    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     assert model.solve(0.0, T_END, {}) == {}
     _assert_same_state(_trial(model), batch)
 
@@ -73,9 +73,9 @@ def test_unaligned_coupling_steps_approximate_batch_run(tmp_path: Path) -> None:
     """250 s coupling steps run as 100 + 75 + 75 s internally, so they match the 100 s batch run
     only to within the time discretization error."""
     config_name = _transient_config(tmp_path)
-    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbose=False)
+    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     model.solve(0.0, 250.0, {})
     model.get_fresh()
     model.solve(250.0, T_END, {})
@@ -87,9 +87,9 @@ def test_unaligned_coupling_steps_approximate_batch_run(tmp_path: Path) -> None:
 def test_fixed_coupling_steps_match_batch_run_exactly(tmp_path: Path) -> None:
     """Coupling steps equal to the fixed internal step reproduce the batch run bitwise."""
     config_name = _transient_config(tmp_path)
-    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbose=False)
+    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     for k in range(5):
         model.solve(k * DT, (k + 1) * DT, {})
         if k < 4:
@@ -99,7 +99,7 @@ def test_fixed_coupling_steps_match_batch_run_exactly(tmp_path: Path) -> None:
 
 def test_repeated_solve_is_identical(tmp_path: Path) -> None:
     config_name = _transient_config(tmp_path)
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     model.solve(0.0, 2 * DT, {})
     first = _trial(model)
     model.solve(0.0, 2 * DT, {})
@@ -108,7 +108,7 @@ def test_repeated_solve_is_identical(tmp_path: Path) -> None:
 
 def test_get_fresh_writes_one_output_row_per_coupling_step(tmp_path: Path) -> None:
     config_name = _transient_config(tmp_path)
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     for k in range(3):
         model.solve(k * 1.5 * DT, (k + 1) * 1.5 * DT, {})
         model.get_fresh()
@@ -120,7 +120,7 @@ def test_get_fresh_writes_one_output_row_per_coupling_step(tmp_path: Path) -> No
 
 def test_misuse_raises(tmp_path: Path) -> None:
     config_name = _transient_config(tmp_path)
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     with pytest.raises(RuntimeError, match="No trial state"):
         model.get_fresh()
 
@@ -137,7 +137,7 @@ def test_misuse_raises(tmp_path: Path) -> None:
 def test_timestep_error_keeps_current_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed solve leaves no trial, and the next solve starts from the unchanged current state."""
     config_name = _transient_config(tmp_path)
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     model.solve(0.0, DT, {})
     model.get_fresh()
     model.solve(DT, 2 * DT, {})
@@ -176,9 +176,9 @@ def _external_config(tmp_path: Path, t_end: float = T_END, **inlet_hydraulics: A
 
 def test_external_stepwise_matches_constant_batch_run(tmp_path: Path) -> None:
     """External inputs equal to the constant config values reproduce the batch run bitwise."""
-    batch, _ = main(config_name=_transient_config(tmp_path), config_dir=tmp_path, verbose=False)
+    batch, _ = main(config_name=_transient_config(tmp_path), config_dir=tmp_path, verbosity="quiet")
 
-    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbosity="quiet")
     for k in range(5):
         results = model.solve(k * DT, (k + 1) * DT, {"inlet": INLET, "outlet": OUTLET})
         if k < 4:
@@ -208,10 +208,10 @@ def test_external_linear_matches_table_batch_run(tmp_path: Path) -> None:
         "values": [[0.0, 200.0, 400.0], [310.0, 310.0, 330.0]],
     }
     (tmp_path / "table.yaml").write_text(yaml.safe_dump(table))
-    batch, _ = main(config_name="table.yaml", config_dir=tmp_path, verbose=False)
+    batch, _ = main(config_name="table.yaml", config_dir=tmp_path, verbosity="quiet")
 
     # First step is stepwise at 310 K, the second ramps 310 -> 330 K over two internal steps
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     model.solve(0.0, 200.0, {"inlet": {**INLET, "T": 310.0}, "outlet": OUTLET})
     model.get_fresh()
     model.solve(200.0, 400.0, {"inlet": {**INLET, "T": 330.0}, "outlet": OUTLET})
@@ -230,7 +230,7 @@ def test_external_flow_rate_is_total_over_face_group(tmp_path: Path) -> None:
     face["hydraulics"]["function"] = "external"
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
 
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     results = model.solve(0.0, 1.0, {"face": {"p": 0.0, "T": 0.0, "q": -2.0e-3}})
     assert results["face"]["q"] == pytest.approx(-2.0e-3, rel=1e-10)
     assert results["face"]["mode"] == "flux"
@@ -241,7 +241,7 @@ def test_external_pressure_constraint_switches_mode(tmp_path: Path) -> None:
     using the latest input, not the config value."""
     p_max = OUTLET["p"] + 0.8  # below the 1.6 Pa needed to drive the requested flow
     config_name = _external_config(tmp_path, constraints={"maximum_pressure": p_max})
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
 
     limited = model.solve(0.0, DT, {"inlet": INLET, "outlet": OUTLET})["inlet"]
     assert limited["mode"] == "pressure"
@@ -256,7 +256,7 @@ def test_external_pressure_constraint_switches_mode(tmp_path: Path) -> None:
 
 
 def test_external_input_errors(tmp_path: Path) -> None:
-    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbosity="quiet")
     with pytest.raises(ValueError, match="missing: \\['outlet'\\]"):
         model.solve(0.0, DT, {"inlet": INLET})
     with pytest.raises(ValueError, match="not external: \\['other'\\]"):
@@ -273,6 +273,6 @@ def test_external_fixed_temperature_on_outflow_warns(tmp_path: Path) -> None:
     config["boundary_conditions"][2]["thermal"] = {"type": "temperature", "function": "external"}
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
 
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     with pytest.warns(UserWarning, match="'outlet' fixes temperature while fluid flows out"):
         model.solve(0.0, DT, {"inlet": INLET, "outlet": {**OUTLET, "T": 400.0}})

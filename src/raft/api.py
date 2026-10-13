@@ -32,10 +32,12 @@ from .logging_utils import RunLogger
 from .postprocessing import postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
 from .subsurface import (
+    Verbosity,
     _load_wb,
     _rollover,
     _snapshot_wb,
     advance,
+    check_verbosity,
     initialize_simulation,
     load_state,
     snapshot_state,
@@ -76,17 +78,24 @@ class RaftModel:
     """A RAFT simulation advanced by an external solver through trial coupling steps."""
 
     def __init__(
-        self, config_name: str, t_start: float, config_dir: Path | None = None, verbose: bool = True
+        self,
+        config_name: str,
+        t_start: float,
+        config_dir: Path | None = None,
+        verbosity: Verbosity = "full",
     ) -> None:
         """Preprocess, assign initial conditions at t_start and write output frame 0."""
-        self.verbose = verbose
+        # Full detail goes through the usual verbose flag; lite only adds the per-step line
+        check_verbosity(verbosity)
+        self.verbose = verbosity == "full"
+        self._progress = verbosity == "lite"
         with RunLogger() as run_logger:
-            if verbose:
+            if self.verbose:
                 print("RAFT - RESERVOIR ANALYSIS FOR TANGO (coupling API) \n")
                 print("Initializing simulation " + config_name + "\n")
 
             # Load config and mesh
-            config, mesh = preprocessing(config_name, config_dir, verbose)
+            config, mesh = preprocessing(config_name, config_dir, self.verbose)
             controls = config["simulation"]
             controls["config_name"] = config["config_name"]
             controls["config_dir"] = config["config_dir"]
@@ -99,7 +108,7 @@ class RaftModel:
                 run_logger.attach_file(self._log_dir)
 
             # The initial condition is the current state, with no trial pending
-            self._setup, self._current = initialize_simulation(config, mesh, t_start, verbose)
+            self._setup, self._current = initialize_simulation(config, mesh, t_start, self.verbose)
             self._external = _external_fields(self._setup.BC_config)
             self._labels = sorted({ext.label for ext in self._external})
             self._trial = self._current
@@ -131,7 +140,7 @@ class RaftModel:
 
             # Advance a trial from the current state; a failed solve leaves no trial pending
             self._trial_pending = False
-            self._trial = advance(self._setup, start, t_end, self.verbose)
+            self._trial = advance(self._setup, start, t_end, self.verbose, progress=self._progress)
             self._trial_pending = True
 
             # Report each external group at t_end

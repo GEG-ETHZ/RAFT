@@ -117,8 +117,8 @@ def test_external_with_config_values_matches_constant_twin(tmp_path: Path) -> No
     outlet["hydraulics"]["function"] = "external"
     (tmp_path / "external.yaml").write_text(yaml.safe_dump(config))
 
-    pv_constant, _ = main(config_name="constant.yaml", config_dir=tmp_path, verbose=False)
-    pv_external, _ = main(config_name="external.yaml", config_dir=tmp_path, verbose=False)
+    pv_constant, _ = main(config_name="constant.yaml", config_dir=tmp_path, verbosity="quiet")
+    pv_external, _ = main(config_name="external.yaml", config_dir=tmp_path, verbosity="quiet")
 
     np.testing.assert_array_equal(pv_external["p"], pv_constant["p"])
     np.testing.assert_array_equal(pv_external["T"], pv_constant["T"])

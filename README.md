@@ -21,6 +21,8 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [Installation](#installation)
   - [Building the documentation](#building-the-documentation)
 - [Running the simulation](#running-the-simulation)
+  - [Run options](#run-options)
+  - [Outputs](#outputs)
 - [Coupling API](#coupling-api)
 - [Theory](#theory)
 - [Configuration Parameters](#configuration-parameters)
@@ -61,20 +63,44 @@ This builds the Sphinx HTML docs (including this README and [theory.md](theory.m
 
 
 ## Running the simulation
-Run a simulation:
-    `uv run -m raft **some-config-file.yaml**`
+Run a simulation by passing a config file name:
+```
+uv run -m raft **config file name** **options**
+```
+For example, to run the example config with one progress line per timestep:
+```
+uv run -m raft config_example --verbosity lite
+```
 
-replace the config file with a specific config file name, such as:
-    `uv run -m raft config_example.yaml`
+The config name may be given with or without its `.yaml` extension, and is looked up in the `config/` directory unless `--config-dir` points elsewhere. The mesh file named under `mesh: file:` is read from the same directory. Running without a config name prints the help.
 
-Run the test suite:
-    `uv run pytest`
+### Run options
+| Option | Effect |
+| --- | --- |
+| `config` | Config file name, with or without `.yaml`, e.g. `config_example` |
+| `--config-dir DIR` | Directory holding the config and its mesh (default: `config/` in the repository) |
+| `--verbosity {quiet,lite,full}` | Console output (default: `full`), see below |
+| `--quiet` | Same as `--verbosity quiet` |
+| `--test` | Run the test suite instead of a simulation (same as `uv run pytest`) |
+| `-h`, `--help` | List the options |
 
-Creating meshes: [Gmsh](https://Gmsh.info/), either by hand or with the generator described under [Mesh generation](#mesh-generation). Gmsh requires a separate download and installation.
+Console output levels:
+* `full`: everything, from the config parameters and defaults applied, through initial conditions, to every timestep's solver iterations and timestep changes.
+* `lite`: one line per timestep attempt, with its step number, time, timestep size and progress. A step that is cut and retried prints a line for each attempt, so time lost to cuts stands out from steps that are simply slow.
+* `quiet`: nothing.
 
-Viewing results files: [Paraview](https://www.paraview.org/)
+The run exits with status 0 when it completes, and status 1 if a timestep fails to converge at `timestep_min`.
 
-Config files are read from the "config" directory. Meshes are made via [Gmsh](https://Gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to label which boundaries are output.
+### Outputs
+Results are written to `outputs/<config name>/`, or to `<output_directory>/<config name>/` if [`output_directory`](#simulation) is set:
+* `domain.vtk` (and `domain_wells.vtk` with wells): material properties and boundary condition nodes, written once at the start.
+* `Matrix.vtk.<n>`, plus `Fracture.vtk.<n>` and `Well.vtk.<n>` when fractures or wells exist: solution fields at output step `n`, if `output_vtk` is on. View them in [Paraview](https://www.paraview.org/).
+* `outflow.log`: time, pressure, flow rate and temperature of each [labeled boundary condition group](#boundary_conditions), at every output step.
+* `run.log`: the console output, if `output_log` is on. It is written at the chosen verbosity.
+
+Output steps are every `output_frequency` accepted timesteps, starting from the initial condition (step 0).
+
+Meshes are made with [Gmsh](https://Gmsh.info/), by hand or with the generator described under [Mesh generation](#mesh-generation), and must be exported as `.msh` files in Version 2 ASCII format. Gmsh requires a separate download and installation.
 
 ## Theory
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a compressible, pressure- and temperature-dependent fluid equation of state. The governing equations, fluid EOS, finite element discretization, fracture coupling, mesh cutting algorithm, stabilization, and time-integration schemes are documented in [theory.md](theory.md).
@@ -292,7 +318,7 @@ Each boundary condition group must specify nodes using one or a combination of t
   * `type: "temperature"`: Dirichlet condition (fixed temperature).
   * `type: "flux"`: Neumann condition (fixed heat flux).
 
-A group with only `hydraulics` affects pressure alone; a group with only `thermal` affects temperature alone; a group with both applies both conditions over the same geometry. Each block carries its own `function`/`values` (and, for `hydraulics`, an optional `constraints` block — see [Wellbore Constraints](#wellbore-constraints) below).
+A group with only `hydraulics` affects pressure alone; a group with only `thermal` affects temperature alone; a group with both applies both conditions over the same geometry. Each block carries its own `function`/`values` (and, for `hydraulics`, an optional `constraints` block — see **Constraints** below).
 
 **Value (Required) and Function (Optional) Specification:**
  The function applied to the nodes is determined by the field `function`. Each group should contain a field named `"values"` which depends on the type of function being applied.
@@ -406,7 +432,7 @@ for t_start, t_end in coupling_steps:
     model.get_fresh()  # accept the step and write its output
 ```
 
-* **`RaftModel(config_name, t_start, config_dir=None, verbose=True)`**: preprocesses the config, assigns initial conditions at `t_start` and writes output frame 0. The config's `t_start` is replaced and its `t_end` is unused.
+* **`RaftModel(config_name, t_start, config_dir=None, verbosity="full")`**: preprocesses the config, assigns initial conditions at `t_start` and writes output frame 0. The config's `t_start` is replaced and its `t_end` is unused. `verbosity` takes `"quiet"`, `"lite"` or `"full"`, as for `--verbosity`.
 * **`solve(t_start, t_end, bcs)`**: advances from the last accepted state to exactly `t_end` and returns the boundary values there. `t_start` must equal the last accepted time.
   * `bcs` must contain every label of a group with an [`"external"`](#boundary_conditions) field, and only those. Each entry gives `p` (Pa), `T` (K) and `q` (kg/s, positive into the domain); RAFT uses the ones matching the group's types and ignores the rest.
   * Returns, for each label, `p` and `T` (arithmetic mean over the group's nodes, not flow-weighted), `q` (summed over the nodes, kg/s, positive into the domain) and `mode`, the active hydraulic condition: `"flux"`, `"pressure"` (for a pressure group, or a flux group held at a pressure [constraint](#boundary_conditions)) or `"none"` for a thermal-only group.

@@ -89,7 +89,7 @@ def _run(
     config["simulation"].update(simulation)
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
     with contextlib.redirect_stdout(io.StringIO()):
-        return main(config_name=config_name, config_dir=tmp_path, verbose=False)
+        return main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
 
 @pytest.mark.parametrize("assignment", ["constant", "BC_compatible"])

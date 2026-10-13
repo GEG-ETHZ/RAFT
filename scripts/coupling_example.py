@@ -46,7 +46,7 @@ def main() -> None:
 
     cp = 4250.0  # fluid specific heat, as in the config (J/kgK)
     p_out = 1.0e6
-    model = RaftModel("config_example_AGS_coupled.yaml", 0.0, verbose=False)
+    model = RaftModel("config_example_AGS_coupled.yaml", 0.0, verbosity="lite")
 
     T_in = 400.0  # initial guess for the reinjection temperature
     times = np.arange(0.0, args.days * DAY + 0.5 * args.step_days * DAY, args.step_days * DAY)
