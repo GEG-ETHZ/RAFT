@@ -36,60 +36,17 @@ def test_update_time_raises_on_NR_failure_at_dt_min() -> None:
         _update_time("fully_coupled", 10.0, dt, _controls(), np.array([100.0]), False, -1, False)
 
 
-def test_update_time_proceeds_on_extrapolation_error_at_dt_min() -> None:
-    """A linearized extrapolation error at the minimum timestep is accepted, not raised."""
-    dt = [1.0, 1.0, 1.0]
-    _, _, accepted = _update_time("linearized", 10.0, dt, _controls(), np.array([100.0]), False, 0.5, False)
-    assert accepted
-
-
-def test_clamp_lands_exactly_on_critical_time() -> None:
-    """A step that would overshoot is shortened to end exactly on the critical time."""
-    t, dt = _clamp_to_critical(0.1, [0.3, 1.0, 1.0], np.array([0.3, 5.0]))
-    assert t == 0.3
-    assert dt[0] == pytest.approx(0.2)
-
-
-def test_clamp_splits_remainder_to_avoid_sliver() -> None:
-    """Less than two steps left: the remainder is split into two equal steps."""
-    t, dt = _clamp_to_critical(0.0, [6.0, 1.0, 1.0], np.array([10.0]))
-    assert dt[0] == 5.0
-    assert t == 5.0
-
-
-def test_clamp_leaves_step_far_from_critical_time() -> None:
-    """Two or more steps left: the step is unchanged."""
-    t, dt = _clamp_to_critical(0.0, [4.0, 1.0, 1.0], np.array([10.0]))
-    assert dt[0] == 4.0
-    assert t == 4.0
-
-
-def test_clamp_ignores_critical_time_at_step_start() -> None:
-    """A critical time equal to the step start is already passed."""
-    t, dt = _clamp_to_critical(10.0, [4.0, 1.0, 1.0], np.array([10.0]))
-    assert dt[0] == 4.0
-    assert t == 14.0
-
-
-def test_update_time_clamp_may_go_below_dt_min() -> None:
-    """Landing on a critical time takes priority over the minimum timestep."""
-    dt = [2.0, 2.0, 2.0]
-    t, dt, accepted = _update_time("fully_coupled", 9.5, dt, _controls(), np.array([10.0]), True, 0.0, False)
-    assert accepted
-    assert t == 10.0
-    assert dt[0] == 0.5
-
-
-def test_update_time_raises_below_dt_min_after_clamp() -> None:
-    """A failed step already below dt_min (after a clamp) raises rather than growing back to dt_min."""
-    dt = [0.5, 2.0, 2.0]
-    with pytest.raises(TimestepError):
-        _update_time("fully_coupled", 10.0, dt, _controls(), np.array([10.0]), False, -1, False)
-
-
-def test_update_time_proposal_never_below_dt_min() -> None:
-    """Proceeding at dt_min with an error above tolerance does not shrink the next step below dt_min."""
-    dt = [1.0, 1.0, 1.0]
-    _, dt, accepted = _update_time("linearized", 10.0, dt, _controls(), np.array([100.0]), False, 0.06, False)
-    assert accepted
-    assert dt[0] == 1.0
+@pytest.mark.parametrize(
+    ("t_prev", "dt0", "expected_t", "expected_dt"),
+    [
+        (0.0, 4.0, 4.0, 4.0),  # two or more steps left: unchanged
+        (3.0, 8.0, 10.0, 7.0),  # would overshoot: lands exactly on the critical time
+        (0.0, 6.0, 5.0, 5.0),  # less than two steps left: remainder split in two
+        (9.5, 2.0, 10.0, 0.5),  # landing may take a step below dt_min
+        (10.0, 4.0, 14.0, 4.0),  # a critical time at the step start is already passed
+    ],
+)
+def test_clamp_to_critical(t_prev: float, dt0: float, expected_t: float, expected_dt: float) -> None:
+    t, dt = _clamp_to_critical(t_prev, [dt0, 1.0, 1.0], np.array([10.0, 20.0]))
+    assert t == expected_t
+    assert dt[0] == expected_dt

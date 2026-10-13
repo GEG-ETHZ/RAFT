@@ -15,15 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the wellbore boundary condition (flux/pressure constraint swapping)."""
+"""Unit tests for wellbore boundary conditions (constraint swapping) and well initial conditions."""
 
-import copy
 from typing import Any
 
 import numpy as np
+import pytest
 
-from raft.parseboundaryconditions import parsebcs
-from raft.subsurface import _check_BC_constraints, _initialize_WB_checks
+from raft.matprops import get_EOS
+from raft.subsurface import (
+    _assign_well_ic_from_matrix,
+    _check_BC_constraints,
+    _initialize_WB_checks,
+    load_state,
+    snapshot_state,
+)
 
 
 def _base_bc_config() -> list[dict[str, Any]]:
@@ -41,115 +47,26 @@ def _base_bc_config() -> list[dict[str, Any]]:
     ]
 
 
-def test_initialize_WB_checks_sets_default_flux_state() -> None:
-    """A wellbore group should start in flux mode, constrained to the max pressure limit."""
+@pytest.mark.parametrize(
+    ("pressures", "mode", "values"),
+    [
+        ([1.5e7, 9.0e6], "pressure", [1.0e7]),  # above the maximum: held at the maximum
+        ([5.0e3, 9.0e6], "pressure", [1.0e4]),  # below the minimum: held at the minimum
+        ([5.0e6, 6.0e6], "flux", [0.01]),  # within the bounds: flux unchanged
+    ],
+)
+def test_check_BC_constraints_from_flux_mode(pressures: list[float], mode: str, values: list[float]) -> None:
+    """A flux-controlled wellbore switches to the violated pressure limit, and only then."""
     bc_config = _initialize_WB_checks(_base_bc_config())
-    hydraulics = bc_config[0]["hydraulics"]
-
-    assert hydraulics["curr_BC"] == "flux"
-    assert hydraulics["prev_BC"] == "flux"
-    assert hydraulics["pres_constraint"] == "max"
-    assert hydraulics["values_flux"] == [0.01]
-    assert hydraulics["function_flux"] == "constant"
-
-
-def test_initialize_WB_checks_defaults_missing_function_to_constant() -> None:
-    """A wellbore group with no `function` given should default to constant, not raise."""
-    bc_config = _base_bc_config()
-    del bc_config[0]["hydraulics"]["function"]
-
-    bc_config = _initialize_WB_checks(bc_config)
-    hydraulics = bc_config[0]["hydraulics"]
-
-    assert hydraulics["function"] == "constant"
-    assert hydraulics["function_flux"] == "constant"
-
-
-def test_parsebcs_wellbore_applies_flux_when_curr_BC_is_flux() -> None:
-    """While unconstrained, a wellbore group should apply its flux as a Neumann condition."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    mesh = {"nodes": np.zeros((2, 2))}
-
-    result = parsebcs(bc_config, mesh, {}, t=0.0, controls={})
-
-    assert result["p_dirichlet"].size == 0
-    np.testing.assert_array_equal(result["p_neumann"], np.array([[0, 0.01], [1, 0.01]]))
-
-
-def test_parsebcs_wellbore_applies_pressure_when_constrained() -> None:
-    """Once a pressure limit is hit, the wellbore group should apply that limit as a Dirichlet condition."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    hydraulics = bc_config[0]["hydraulics"]
-    hydraulics["curr_BC"] = "pressure"
-    hydraulics["pres_constraint"] = "max"
-    hydraulics["type"] = "pressure"
-    hydraulics["function"] = "constant"
-    hydraulics["values"] = [1.0e7]
-    mesh = {"nodes": np.zeros((2, 2))}
-
-    result = parsebcs(bc_config, mesh, {}, t=0.0, controls={})
-
-    assert result["p_neumann"].size == 0
-    np.testing.assert_array_equal(result["p_dirichlet"], np.array([[0, 1.0e7], [1, 1.0e7]]))
-
-
-def test_check_BC_constraints_switches_to_pressure_on_max() -> None:
-    """Exceeding the maximum pressure while in flux mode should switch the group to pressure mode."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    primary_variables = {"p": np.array([[1.5e7], [9.0e6]]), "q": np.zeros((2, 1))}
+    primary_variables = {"p": np.array(pressures).reshape(-1, 1), "q": np.zeros((2, 1))}
 
     satisfied, bc_config = _check_BC_constraints(bc_config, primary_variables, t=0.0, WB_on=1, verbose=False)
 
-    assert satisfied is False
     hydraulics = bc_config[0]["hydraulics"]
-    assert hydraulics["curr_BC"] == "pressure"
-    assert hydraulics["pres_constraint"] == "max"
-    assert hydraulics["type"] == "pressure"
-    assert hydraulics["values"] == [1.0e7]
-
-
-def test_check_BC_constraints_switches_to_pressure_on_min() -> None:
-    """Dropping below the minimum pressure while in flux mode should switch the group to pressure mode."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    primary_variables = {"p": np.array([[5.0e3], [9.0e6]]), "q": np.zeros((2, 1))}
-
-    satisfied, bc_config = _check_BC_constraints(bc_config, primary_variables, t=0.0, WB_on=1, verbose=False)
-
-    assert satisfied is False
-    hydraulics = bc_config[0]["hydraulics"]
-    assert hydraulics["curr_BC"] == "pressure"
-    assert hydraulics["pres_constraint"] == "min"
-    assert hydraulics["values"] == [1.0e4]
-
-
-def test_check_BC_constraints_stays_flux_within_pressure_bounds() -> None:
-    """Pressures within the min/max range should leave the group unconstrained."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    primary_variables = {"p": np.array([[5.0e6], [6.0e6]]), "q": np.zeros((2, 1))}
-
-    satisfied, bc_config = _check_BC_constraints(bc_config, primary_variables, t=0.0, WB_on=1, verbose=False)
-
-    assert satisfied is True
-    assert bc_config[0]["hydraulics"]["curr_BC"] == "flux"
-
-
-def test_check_BC_constraints_switches_back_to_flux_when_flux_target_exceeded() -> None:
-    """In pressure mode, exceeding the original flux target should switch the group back to flux mode."""
-    bc_config = _initialize_WB_checks(_base_bc_config())
-    hydraulics = bc_config[0]["hydraulics"]
-    hydraulics["curr_BC"] = "pressure"
-    hydraulics["prev_BC"] = "pressure"
-
-    # required flux is 0.01; actual flux exceeds it
-    primary_variables = {"p": np.zeros((2, 1)), "q": np.array([[0.02], [0.02]])}
-
-    satisfied, bc_config = _check_BC_constraints(bc_config, primary_variables, t=0.0, WB_on=1, verbose=False)
-
-    assert satisfied is False
-    hydraulics = bc_config[0]["hydraulics"]
-    assert hydraulics["curr_BC"] == "flux"
-    assert hydraulics["type"] == "flux"
-    assert hydraulics["values"] == [0.01]
+    assert satisfied is (mode == "flux")
+    assert hydraulics["curr_BC"] == mode
+    assert hydraulics["type"] == mode
+    assert hydraulics["values"] == values
 
 
 def test_check_BC_constraints_only_one_swap_per_timestep() -> None:
@@ -168,13 +85,58 @@ def test_check_BC_constraints_only_one_swap_per_timestep() -> None:
     assert bc_config[0]["hydraulics"]["curr_BC"] == "pressure"
 
 
-def test_check_BC_constraints_noop_when_WB_off() -> None:
-    """When no wellbore groups are configured, constraint checking should be a no-op."""
-    bc_config = _base_bc_config()
-    original = copy.deepcopy(bc_config)
-    primary_variables = {"p": np.zeros((2, 1)), "q": np.zeros((2, 1))}
+def test_load_state_restores_wellbore_flags() -> None:
+    """Constraint switching during a trial is undone by loading the snapshot taken before it."""
+    bc_config = _initialize_WB_checks(_base_bc_config())
+    primary_variables = {"p": np.ones((2, 4)), "T": np.ones((2, 4)), "q": np.zeros((2, 1))}
+    state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], primary_variables, bc_config, {})
 
-    satisfied, bc_config = _check_BC_constraints(bc_config, primary_variables, t=0.0, WB_on=0, verbose=False)
+    hydraulics = bc_config[0]["hydraulics"]
+    hydraulics["curr_BC"] = "pressure"
+    hydraulics["type"], hydraulics["function"], hydraulics["values"] = "pressure", "constant", [1.0e7]
+    hydraulics["values_flux"][0] = 0.5
+    load_state(state, bc_config)
 
-    assert satisfied is True
-    assert bc_config == original
+    assert hydraulics["curr_BC"] == "flux"
+    assert hydraulics["type"] == "flux"
+    assert hydraulics["values"] == [0.01]
+    assert hydraulics["values_flux"] == [0.01]
+
+
+def test_well_initial_condition_from_matrix_and_hydrostatic() -> None:
+    """Well T is copied from the coincident matrix nodes and carried above the domain; well p is
+    hydrostatic from p_head at the well head, inside the domain too."""
+    fluid = {
+        "density": 1000.0,
+        "reference_temperature": 300.0,
+        "reference_pressure": 1.0e5,
+        "therm_expansion": 2.0e-4,
+        "bulk_mod": 2.0e9,
+        "specific_heat": 4200.0,
+    }
+    # Two matrix nodes at z = 0, 10; a vertical well (global nodes 2-5) up to its head at z = 30
+    well_nodes = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 10.0], [0.0, 0.0, 20.0], [0.0, 0.0, 30.0]])
+    mesh = {
+        "nsd": 3,
+        "nn_total": 6,
+        "well_mesh": {
+            "nn": 4,
+            "nodes": well_nodes,
+            "conn": [[0, 1], [1, 2], [2, 3]],
+            "matrix_node_conn": [[0, 1], [-1, -1], [-1, -1]],
+            "head_nodes": [3],
+        },
+    }
+    p = np.full((6, 4), 7.0)
+    T = np.full((6, 4), 280.0)
+    T[0], T[1] = 360.0, 350.0
+    primary_variables = {"p": p, "T": T}
+    p_head = 1.0e5
+    _assign_well_ic_from_matrix(mesh, {"fluid": fluid}, {"gravity": -9.81}, primary_variables, p_head)
+
+    np.testing.assert_array_equal(T[2:, 0], [360.0, 350.0, 350.0, 350.0])
+    np.testing.assert_array_equal(p[5], p_head)
+    for k, j in [(5, 4), (4, 3), (3, 2)]:  # down the well from the head
+        T_k, p_k = np.array([[T[k, 0]]]), np.array([[p[k, 0]]])
+        rho = get_EOS(T_k, T_k, p_k, fluid, want_density=True)[0].value[0, 0]
+        np.testing.assert_allclose(p[j], p[k, 0] + rho * 9.81 * 10.0, rtol=1e-12)

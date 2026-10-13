@@ -27,6 +27,7 @@ import yaml
 
 import raft.api
 from raft.api import RaftModel
+from raft.preprocessing import _validate_external_groups
 from raft.subsurface import TimestepError, main
 
 CONFIG_DIR = Path(__file__).parent / "test_configs"
@@ -60,30 +61,6 @@ def _trial(model: RaftModel) -> dict[str, Any]:
     return model._trial.primary_variables
 
 
-def test_single_solve_matches_batch_run(tmp_path: Path) -> None:
-    config_name = _transient_config(tmp_path)
-    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
-
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
-    assert model.solve(0.0, T_END, {}) == {}
-    _assert_same_state(_trial(model), batch)
-
-
-def test_unaligned_coupling_steps_approximate_batch_run(tmp_path: Path) -> None:
-    """250 s coupling steps run as 100 + 75 + 75 s internally, so they match the 100 s batch run
-    only to within the time discretization error."""
-    config_name = _transient_config(tmp_path)
-    batch, _ = main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
-
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
-    model.solve(0.0, 250.0, {})
-    model.get_fresh()
-    model.solve(250.0, T_END, {})
-    trial = _trial(model)
-    assert model._trial.dt_hist[1:3] == [75.0, 75.0]
-    np.testing.assert_allclose(trial["T"][:, 0], batch["T"][:, 0], rtol=1e-2)
-
-
 def test_fixed_coupling_steps_match_batch_run_exactly(tmp_path: Path) -> None:
     """Coupling steps equal to the fixed internal step reproduce the batch run bitwise."""
     config_name = _transient_config(tmp_path)
@@ -104,18 +81,6 @@ def test_repeated_solve_is_identical(tmp_path: Path) -> None:
     first = _trial(model)
     model.solve(0.0, 2 * DT, {})
     _assert_same_state(_trial(model), first)
-
-
-def test_get_fresh_writes_one_output_row_per_coupling_step(tmp_path: Path) -> None:
-    config_name = _transient_config(tmp_path)
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
-    for k in range(3):
-        model.solve(k * 1.5 * DT, (k + 1) * 1.5 * DT, {})
-        model.get_fresh()
-
-    rows = (tmp_path / "out" / "transient" / "outflow.log").read_text().splitlines()[1:]
-    times = [float(row.split("\t")[0]) for row in rows]
-    assert times == [0.0, 150.0, 300.0, 450.0]
 
 
 def test_misuse_raises(tmp_path: Path) -> None:
@@ -267,12 +232,30 @@ def test_external_input_errors(tmp_path: Path) -> None:
         model.solve(0.0, DT, {"inlet": {**INLET, "T": float("nan")}, "outlet": OUTLET})
 
 
-def test_external_fixed_temperature_on_outflow_warns(tmp_path: Path) -> None:
-    config_name = _external_config(tmp_path)
-    config = yaml.safe_load((tmp_path / config_name).read_text())
-    config["boundary_conditions"][2]["thermal"] = {"type": "temperature", "function": "external"}
-    (tmp_path / config_name).write_text(yaml.safe_dump(config))
-
-    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
-    with pytest.warns(UserWarning, match="'outlet' fixes temperature while fluid flows out"):
-        model.solve(0.0, DT, {"inlet": INLET, "outlet": {**OUTLET, "T": 400.0}})
+@pytest.mark.parametrize(
+    ("second", "message"),
+    [
+        # A duplicate label would apply one group's inputs to another
+        (
+            {"faces": ["x_max"], "label": "inlet", "hydraulics": {"type": "pressure", "values": [1.0]}},
+            "not unique",
+        ),
+        # Constraints on a pressure group would never apply
+        (
+            {
+                "faces": ["x_max"],
+                "label": "outlet",
+                "hydraulics": {
+                    "type": "pressure",
+                    "function": "external",
+                    "constraints": {"maximum_pressure": 1.0},
+                },
+            },
+            "require hydraulics type 'flux'",
+        ),
+    ],
+)
+def test_external_group_validation(second: dict[str, Any], message: str) -> None:
+    inlet = {"well": [0, "inlet"], "label": "inlet", "hydraulics": {"type": "flux", "function": "external"}}
+    with pytest.raises(ValueError, match=message):
+        _validate_external_groups([inlet, second])

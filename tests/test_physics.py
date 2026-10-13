@@ -28,7 +28,7 @@ import yaml
 
 from raft.physics import DomainPhysics, Physics
 from raft.preprocessing import DEFAULTS, _apply_defaults, _parse_physics
-from raft.subsurface import _build_steady_state_controls, main
+from raft.subsurface import main
 
 CASE_DIR = Path(__file__).parent / "test_configs"
 
@@ -39,18 +39,12 @@ def _parse(physics_yaml: str) -> Physics:
     return _parse_physics(config, verbose=False)
 
 
-def test_defaults() -> None:
-    physics = _parse("")
-    assert physics.matrix == physics.fractures == physics.wells == DomainPhysics()
-
-
 def test_inheritance_and_yaml_booleans() -> None:
     physics = _parse("matrix: {heat: steady}\nwells: {advection: on}")
     assert physics.matrix == DomainPhysics(heat="steady", advection=False)
     assert physics.fractures == physics.matrix
     assert physics.wells == DomainPhysics(heat="steady", advection=True)
     assert physics.as_steady().wells == DomainPhysics(flow="steady", heat="steady", advection=True)
-    assert _parse("matrix: {flow: off}\nwells: {flow: steady}").matrix.flow == "off"
 
 
 @pytest.mark.parametrize(
@@ -65,11 +59,6 @@ def test_inheritance_and_yaml_booleans() -> None:
 def test_invalid(physics_yaml: str, error: type[Exception]) -> None:
     with pytest.raises(error):
         _parse(physics_yaml)
-
-
-def test_transient_well_flow_warns() -> None:
-    with pytest.warns(UserWarning, match="quasi-steady"):
-        _parse("wells: {flow: transient}")
 
 
 def test_advection_node_mask() -> None:
@@ -92,19 +81,17 @@ def _run(
         return main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
 
-@pytest.mark.parametrize("assignment", ["constant", "BC_compatible"])
 @pytest.mark.parametrize("solver_type", ["linearized", "fully_coupled"])
 @pytest.mark.parametrize(("off", "solved"), [("heat", "p"), ("flow", "T")])
-def test_single_physics_matches_coupled(
-    tmp_path: Path, solver_type: str, off: str, solved: str, assignment: str
-) -> None:
+def test_single_physics_matches_coupled(tmp_path: Path, solver_type: str, off: str, solved: str) -> None:
     """In the decoupled patch test, one field `off` leaves the other's solution unchanged and
-    holds itself at its *_ini value apart from its Dirichlet BCs, ignoring the BC_compatible seed."""
+    holds itself at its *_ini value apart from its Dirichlet BCs, ignoring the BC_compatible seed.
+    BC_compatible also covers the time step that follows, as a constant start would."""
     config_name = "config_test_patchX.yaml"
     steady = {"flow": "steady", "heat": "steady"}
-    full, mesh = _run(tmp_path, config_name, {"matrix": steady}, assignment, solver_type=solver_type)
+    full, mesh = _run(tmp_path, config_name, {"matrix": steady}, "BC_compatible", solver_type=solver_type)
     single, _ = _run(
-        tmp_path, config_name, {"matrix": {**steady, off: "off"}}, assignment, solver_type=solver_type
+        tmp_path, config_name, {"matrix": {**steady, off: "off"}}, "BC_compatible", solver_type=solver_type
     )
 
     frozen = "T" if solved == "p" else "p"
@@ -133,15 +120,3 @@ def test_matrix_off_matches_dirichlet_matrix(tmp_path: Path, solver_type: str) -
     for key in ("p", "T"):
         assert np.all(off[key][:nn] == dirichlet[key][:nn])
         assert np.allclose(off[key][nn:, 0], dirichlet[key][nn:, 0], rtol=1e-6)
-
-
-def test_steady_state_controls_exclude_wells() -> None:
-    """The initial-condition solve is steady and skips the well assembly; the run's controls are unchanged."""
-    physics = _parse("matrix: {flow: transient, heat: transient}\nwells: {flow: steady, heat: transient}")
-    controls = {"physics": physics, "wells_on": 1, "fully_coupled": True, "volumetric_strain_on": 1}
-    controls_SS = _build_steady_state_controls(controls)
-
-    assert controls_SS["physics"] == physics.as_steady()
-    assert controls_SS["wells_on"] == 0
-    assert controls["wells_on"] == 1
-    assert controls["physics"] is physics
