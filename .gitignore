@@ -40,6 +40,7 @@ config/*
 !config/2D_example.geo
 !config/2D_example.msh
 !config/config_example_AGS.yaml
+!config/config_example_AGS_coupled.yaml
 !config/config_example_wells.yaml
 !config/box_well.geo
 !config/box_well.msh

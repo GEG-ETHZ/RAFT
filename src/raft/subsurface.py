@@ -707,7 +707,7 @@ class SimState:
     dt_hist: list[float]  # [dt_next, dt_n, dt_(n-1), dt_(n-2)]
     primary_variables: dict[str, Any]
     wb_flags: dict[int, dict[str, Any]]  # BC_config index -> wellbore keys
-    ext_values: dict[str, dict[str, float]] | None  # accepted external BC inputs
+    ext_values: dict[str, dict[str, float]]  # accepted external BC inputs, by tag; empty before the first
 
 
 def _snapshot_wb(BC_config: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -733,7 +733,7 @@ def snapshot_state(
     dt_hist: list[float],
     primary_variables: dict[str, Any],
     BC_config: list[dict[str, Any]],
-    ext_values: dict[str, dict[str, float]] | None,
+    ext_values: dict[str, dict[str, float]],
 ) -> SimState:
     """Capture an independent copy of the simulation state."""
     return SimState(
@@ -916,7 +916,7 @@ def initialize_simulation(
     postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
 
     setup = SimSetup(mesh, material, controls, BC_config, critical_times)
-    state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, None)
+    state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, {})
     return setup, state
 
 

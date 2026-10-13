@@ -21,6 +21,8 @@ Each `solve` advances a trial state from the last accepted state; `get_fresh` ac
 trial once the external coupling iteration has converged.
 """
 
+import warnings
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +32,44 @@ from .logging_utils import RunLogger
 from .postprocessing import postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
 from .subsurface import (
-    _is_external,
+    _load_wb,
     _rollover,
+    _snapshot_wb,
     advance,
     initialize_simulation,
     load_state,
     snapshot_state,
 )
+
+# Coupling input used by each external BC type
+_INPUT_KEY = {"pressure": "p", "flux": "q", "temperature": "T"}
+_INPUT_KEYS = ("p", "T", "q")
+
+
+@dataclass(frozen=True, slots=True)
+class _ExternalField:
+    """One BC field set through the API, and how its coupling input is converted."""
+
+    tag: str
+    group_index: int  # index into BC_config
+    field: str  # "hydraulics" or "thermal"
+    input_key: str  # "p", "T" or "q"
+    measure: float  # group length/area (node count without flux weights), converts q in kg/s to flux
+
+
+def _external_fields(BC_config: list[dict[str, Any]]) -> list[_ExternalField]:
+    """Describe every external field; types are read before any wellbore constraint switching."""
+    fields = []
+    for i, group in enumerate(BC_config):
+        if "flux_weight_matrix" in group:
+            measure = float(np.sum(group["flux_weight_matrix"] @ np.ones(len(group["nodes"]))))
+        else:
+            measure = float(len(group["nodes"]))
+        for field in ("hydraulics", "thermal"):
+            spec = group.get(field, {})
+            if spec.get("external", False):
+                fields.append(_ExternalField(group["tag"], i, field, _INPUT_KEY[spec["type"]], measure))
+    return fields
 
 
 class RaftModel:
@@ -54,8 +87,6 @@ class RaftModel:
 
             # Load config and mesh
             config, mesh = preprocessing(config_name, config_dir, verbose)
-            if any(_is_external(group) for group in config["boundary_conditions"]):
-                raise NotImplementedError("External boundary conditions are not supported yet.")
             controls = config["simulation"]
             controls["config_name"] = config["config_name"]
             controls["config_dir"] = config["config_dir"]
@@ -69,6 +100,8 @@ class RaftModel:
 
             # The initial condition is the current state, with no trial pending
             self._setup, self._current = initialize_simulation(config, mesh, t_start, verbose)
+            self._external = _external_fields(self._setup.BC_config)
+            self._tags = sorted({ext.tag for ext in self._external})
             self._trial = self._current
             self._trial_pending = False
 
@@ -88,15 +121,21 @@ class RaftModel:
             if t_end <= current.t:
                 raise ValueError(f"t_end = {t_end:.9e} must be after t_start = {current.t:.9e}.")
 
-            # Apply external boundary conditions
-            if bcs:
-                raise NotImplementedError("External boundary conditions are not supported yet.")
+            # Write this step's external BC tables onto the current wellbore flags
+            self._check_bcs(bcs)
+            BC_config = self._setup.BC_config
+            _load_wb(BC_config, current.wb_flags)
+            self._apply_external_bcs(current.t, t_end, bcs, current.ext_values)
+            inputs = {tag: {key: float(bcs[tag][key]) for key in _INPUT_KEYS} for tag in self._tags}
+            start = replace(current, wb_flags=_snapshot_wb(BC_config), ext_values=inputs)
 
             # Advance a trial from the current state; a failed solve leaves no trial pending
             self._trial_pending = False
-            self._trial = advance(self._setup, current, t_end, self.verbose)
+            self._trial = advance(self._setup, start, t_end, self.verbose)
             self._trial_pending = True
-            return {}
+
+            # Report each external group at t_end
+            return self._boundary_values(self._trial.primary_variables)
 
     def get_fresh(self) -> None:
         """Accept the trial state as the current state and write its output."""
@@ -140,3 +179,75 @@ class RaftModel:
         """Append this call's output to run.log, when logging is on."""
         if self._output_log:
             run_logger.attach_file(self._log_dir, mode="a")
+
+    def _check_bcs(self, bcs: dict[str, dict[str, float]]) -> None:
+        """Every external tag, and only those, with finite p, T and q."""
+        missing = sorted(set(self._tags) - set(bcs))
+        unknown = sorted(set(bcs) - set(self._tags))
+        if missing or unknown:
+            raise ValueError(f"Boundary condition tags missing: {missing}; not external: {unknown}.")
+        for tag in self._tags:
+            absent = [key for key in _INPUT_KEYS if key not in bcs[tag]]
+            if absent:
+                raise ValueError(f"Boundary conditions for '{tag}' lack {absent}.")
+            if not np.all(np.isfinite([bcs[tag][key] for key in _INPUT_KEYS])):
+                raise ValueError(f"Boundary conditions for '{tag}' are not finite: {bcs[tag]}.")
+
+    def _apply_external_bcs(
+        self,
+        t_start: float,
+        t_end: float,
+        bcs: dict[str, dict[str, float]],
+        previous: dict[str, dict[str, float]],
+    ) -> None:
+        """Write each external field as a two-point table over [t_start, t_end]."""
+        BC_config = self._setup.BC_config
+        for ext in self._external:
+            spec = BC_config[ext.group_index][ext.field]
+            value_end = self._input_value(ext, bcs)
+            # Linear interpolation starts from the last accepted input; the first step is stepwise
+            if spec["interpolation"] == "linear" and previous:
+                value_start = self._input_value(ext, previous)
+            else:
+                value_start = value_end
+            table = [[t_start, t_end], [value_start, value_end]]
+
+            if "constraints" in spec:
+                # Wellbore group: keep the flux target while pressure-limited
+                spec["function_flux"], spec["values_flux"] = "table", table
+                if spec["curr_BC"] == "flux":
+                    spec["function"], spec["values"] = "table", table
+            else:
+                spec["function"], spec["values"] = "table", table
+
+    def _input_value(self, ext: _ExternalField, bcs: dict[str, dict[str, float]]) -> float:
+        """Coupling input for one field; a flow rate in kg/s becomes a flux over the group."""
+        value = float(bcs[ext.tag][ext.input_key])
+        if ext.input_key == "q":
+            return value / ext.measure
+        return value
+
+    def _boundary_values(self, primary_variables: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        """Mean p and T, summed q (kg/s, positive inflow) and hydraulic mode of each external group."""
+        BC_config = self._setup.BC_config
+        group_indices = {ext.tag: ext.group_index for ext in self._external}
+        results = {}
+        for tag in self._tags:
+            group = BC_config[group_indices[tag]]
+            nodes = np.asarray(group["nodes"])
+            q = float(np.sum(primary_variables["q"][nodes, 0]))
+            hydraulics = group.get("hydraulics", {})
+            results[tag] = {
+                "p": float(np.mean(primary_variables["p"][nodes, 0])),
+                "T": float(np.mean(primary_variables["T"][nodes, 0])),
+                "q": q,
+                "mode": hydraulics.get("type", "none"),
+            }
+
+            # A fixed temperature only makes sense where fluid flows in
+            thermal = group.get("thermal", {})
+            if thermal.get("external", False) and q < 0:
+                warnings.warn(
+                    f"'{tag}' fixes temperature while fluid flows out (q = {q:.3e} kg/s).", stacklevel=3
+                )
+        return results

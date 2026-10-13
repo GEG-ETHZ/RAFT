@@ -54,7 +54,7 @@ def test_load_undoes_changes_since_snapshot() -> None:
     """Changes made after a snapshot are undone by restoring it."""
     BC_config = _bc_config()
     primary_variables = _primary_variables()
-    state = snapshot_state(5.0, 3, 1, [4.0, 2.0, 1.0, 1.0], primary_variables, BC_config, None)
+    state = snapshot_state(5.0, 3, 1, [4.0, 2.0, 1.0, 1.0], primary_variables, BC_config, {})
 
     # Mutate everything a time step can touch
     primary_variables["p"][:, 0] = 7.0
@@ -77,7 +77,7 @@ def test_load_undoes_changes_since_snapshot() -> None:
 def test_load_twice_gives_independent_copies() -> None:
     """A loaded working copy can be changed without altering the stored state."""
     BC_config = _bc_config()
-    state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, None)
+    state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, {})
 
     first = load_state(state, BC_config)
     first["T"][:, 0] = 999.0
@@ -90,7 +90,7 @@ def test_snapshot_skips_static_BC_data() -> None:
     """Only wellbore groups are captured, and static data such as flux_weight_matrix is not copied."""
     BC_config = _bc_config()
     weights = BC_config[0]["flux_weight_matrix"]
-    state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, None)
+    state = snapshot_state(0.0, 0, 0, [1.0, 1.0, 1.0, 1.0], _primary_variables(), BC_config, {})
     load_state(state, BC_config)
 
     assert list(state.wb_flags) == [0]

@@ -153,3 +153,126 @@ def test_timestep_error_keeps_current_state(tmp_path: Path, monkeypatch: pytest.
 
     model.solve(DT, 2 * DT, {})
     _assert_same_state(_trial(model), expected)
+
+
+# ----- External boundary conditions
+INLET = {"p": 0.0, "T": 300.0, "q": 0.199}
+OUTLET = {"p": 1.0e6, "T": 0.0, "q": 0.0}
+
+
+def _external_config(tmp_path: Path, t_end: float = T_END, **inlet_hydraulics: Any) -> str:
+    """The transient config with the inlet (flux, temperature) and outlet (pressure) set externally."""
+    _transient_config(tmp_path)
+    config = yaml.safe_load((tmp_path / "transient.yaml").read_text())
+    config["simulation"]["t_end"] = t_end
+    inlet, outlet = config["boundary_conditions"][1], config["boundary_conditions"][2]
+    inlet["tag"] = "inlet"
+    inlet["hydraulics"].update({"function": "external", **inlet_hydraulics})
+    inlet["thermal"]["function"] = "external"
+    outlet["hydraulics"]["function"] = "external"
+    (tmp_path / "external.yaml").write_text(yaml.safe_dump(config))
+    return "external.yaml"
+
+
+def test_external_stepwise_matches_constant_batch_run(tmp_path: Path) -> None:
+    """External inputs equal to the constant config values reproduce the batch run bitwise."""
+    batch, _ = main(config_name=_transient_config(tmp_path), config_dir=tmp_path, verbose=False)
+
+    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbose=False)
+    for k in range(5):
+        results = model.solve(k * DT, (k + 1) * DT, {"inlet": INLET, "outlet": OUTLET})
+        if k < 4:
+            model.get_fresh()
+    _assert_same_state(_trial(model), batch)
+
+    assert results["inlet"]["q"] == pytest.approx(0.199, rel=1e-12)
+    assert results["inlet"]["T"] == 300.0
+    assert results["inlet"]["mode"] == "flux"
+    assert results["outlet"]["p"] == 1.0e6
+    assert results["outlet"]["q"] == pytest.approx(-0.199, rel=1e-3)
+    assert results["outlet"]["mode"] == "pressure"
+
+
+def test_external_linear_matches_table_batch_run(tmp_path: Path) -> None:
+    """Linear inputs ramp from the last accepted value, like the equivalent table BC."""
+    config_name = _external_config(tmp_path, t_end=400.0)
+    config = yaml.safe_load((tmp_path / config_name).read_text())
+    config["boundary_conditions"][1]["thermal"]["interpolation"] = "linear"
+    (tmp_path / config_name).write_text(yaml.safe_dump(config))
+
+    table = yaml.safe_load((tmp_path / "transient.yaml").read_text())
+    table["simulation"]["t_end"] = 400.0
+    table["boundary_conditions"][1]["thermal"] = {
+        "type": "temperature",
+        "function": "table",
+        "values": [[0.0, 200.0, 400.0], [310.0, 310.0, 330.0]],
+    }
+    (tmp_path / "table.yaml").write_text(yaml.safe_dump(table))
+    batch, _ = main(config_name="table.yaml", config_dir=tmp_path, verbose=False)
+
+    # First step is stepwise at 310 K, the second ramps 310 -> 330 K over two internal steps
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    model.solve(0.0, 200.0, {"inlet": {**INLET, "T": 310.0}, "outlet": OUTLET})
+    model.get_fresh()
+    model.solve(200.0, 400.0, {"inlet": {**INLET, "T": 330.0}, "outlet": OUTLET})
+    for key in ("p", "T"):
+        np.testing.assert_allclose(_trial(model)[key], batch[key], rtol=1e-12)
+
+
+def test_external_flow_rate_is_total_over_face_group(tmp_path: Path) -> None:
+    """q in kg/s on a face group is spread as a flux, and the group's summed q returns it."""
+    config_name = "config_test_enthalpy_bndry_flux.yaml"
+    config = yaml.safe_load((CONFIG_DIR / config_name).read_text())
+    shutil.copy(CONFIG_DIR / config["mesh"]["file"], tmp_path)
+    config["simulation"]["output_directory"] = str(tmp_path / "out")
+    face = config["boundary_conditions"][2]
+    face["tag"] = "face"
+    face["hydraulics"]["function"] = "external"
+    (tmp_path / config_name).write_text(yaml.safe_dump(config))
+
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    results = model.solve(0.0, 1.0, {"face": {"p": 0.0, "T": 0.0, "q": -2.0e-3}})
+    assert results["face"]["q"] == pytest.approx(-2.0e-3, rel=1e-10)
+    assert results["face"]["mode"] == "flux"
+
+
+def test_external_pressure_constraint_switches_mode(tmp_path: Path) -> None:
+    """Hitting the maximum pressure switches to pressure control; a lower flow target switches back
+    using the latest input, not the config value."""
+    p_max = OUTLET["p"] + 0.8  # below the 1.6 Pa needed to drive the requested flow
+    config_name = _external_config(tmp_path, constraints={"maximum_pressure": p_max})
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+
+    limited = model.solve(0.0, DT, {"inlet": INLET, "outlet": OUTLET})["inlet"]
+    assert limited["mode"] == "pressure"
+    assert limited["p"] == pytest.approx(p_max, rel=1e-12)
+    assert 0.0 < limited["q"] < INLET["q"]
+    model.get_fresh()
+
+    target = 0.25 * limited["q"]
+    released = model.solve(DT, 2 * DT, {"inlet": {**INLET, "q": target}, "outlet": OUTLET})["inlet"]
+    assert released["mode"] == "flux"
+    assert released["q"] == pytest.approx(target, rel=1e-12)
+
+
+def test_external_input_errors(tmp_path: Path) -> None:
+    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbose=False)
+    with pytest.raises(ValueError, match="missing: \\['outlet'\\]"):
+        model.solve(0.0, DT, {"inlet": INLET})
+    with pytest.raises(ValueError, match="not external: \\['other'\\]"):
+        model.solve(0.0, DT, {"inlet": INLET, "outlet": OUTLET, "other": OUTLET})
+    with pytest.raises(ValueError, match="lack \\['q'\\]"):
+        model.solve(0.0, DT, {"inlet": {"p": 0.0, "T": 300.0}, "outlet": OUTLET})
+    with pytest.raises(ValueError, match="not finite"):
+        model.solve(0.0, DT, {"inlet": {**INLET, "T": float("nan")}, "outlet": OUTLET})
+
+
+def test_external_fixed_temperature_on_outflow_warns(tmp_path: Path) -> None:
+    config_name = _external_config(tmp_path)
+    config = yaml.safe_load((tmp_path / config_name).read_text())
+    config["boundary_conditions"][2]["thermal"] = {"type": "temperature", "function": "external"}
+    (tmp_path / config_name).write_text(yaml.safe_dump(config))
+
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbose=False)
+    with pytest.warns(UserWarning, match="'outlet' fixes temperature while fluid flows out"):
+        model.solve(0.0, DT, {"inlet": INLET, "outlet": {**OUTLET, "T": 400.0}})
