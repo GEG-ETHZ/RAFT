@@ -21,6 +21,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
   - [Installation](#installation)
   - [Building the documentation](#building-the-documentation)
 - [Running the simulation](#running-the-simulation)
+- [Coupling API](#coupling-api)
 - [Theory](#theory)
 - [Configuration Parameters](#configuration-parameters)
   - [`mesh`](#mesh)
@@ -73,7 +74,7 @@ Creating meshes: [Gmsh](https://Gmsh.info/), either by hand or with the generato
 
 Viewing results files: [Paraview](https://www.paraview.org/)
 
-Config files are read from the "config" directory. Meshes are made via [Gmsh](https://Gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to tag which boundary are output.
+Config files are read from the "config" directory. Meshes are made via [Gmsh](https://Gmsh.info/) and should be exported to .msh files in Version 2 ASCII format. Results files are saved by default to the "outputs" directory in a folder under the config name. The results files are output as .vtk files viewable in [Paraview](https://www.paraview.org/), and an outflow.log file which includes times, pressure, flow rates, and temperatures. See the [boundary conditions](#boundary_conditions) section for how to label which boundaries are output.
 
 ## Theory
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a compressible, pressure- and temperature-dependent fluid equation of state. The governing equations, fluid EOS, finite element discretization, fracture coupling, mesh cutting algorithm, stabilization, and time-integration schemes are documented in [theory.md](theory.md).
@@ -247,6 +248,8 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
     * **`grad_direction_T`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the temperature gradient. Automatically normalized.
     * **`grad_direction_p`** *(list[float], default: `[0,0,-1]`)*: Vector in the direction of the pressure gradient. Automatically normalized.
   * `"BC_compatible"`: Solve the non-linear transport problem for the steady-state conditions within the domain under the boundary conditions applied at time $t=t_0$. The solved pressure and temperature fields are applied as initial conditions and reference conditions. Invokes the appropriate solver based on input material properties, regardless of user timestep solver specification.
+    * The steady state describes the unperturbed formation: wells, boundary conditions on well nodes, and `"external"` boundary conditions are left out of this solve.
+    * Wells then take the temperature of the rock they pass through; outside the domain, they take the temperature of the nearest well node inside it. Well pressure is hydrostatic along each well, starting from `p_ini` at the well head (the first alignment point). Connected wells share the head of the lowest-numbered well.
 
 ### `boundary_conditions`
 `boundary_conditions` is a list of groups at the root of the config. Each group applies to one geometry feature (specified using one of four geometric methods: node indices, coordinate proximity, named faces, or lines), and can carry a `hydraulics` block specifying pressure or fluid flux, a `thermal` block specifying temperature or heat flux, or both.
@@ -254,7 +257,7 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
 **Sample boundary condition group**
 ```yaml
 - coords: [[x1, y1, z1], [x2, y2, z2]]  (geometry specification - required)
-  tag: "inlet"                          (label - optional)
+  label: "inlet"                        (label - optional)
   hydraulics:                           (field)
       type: "flux"                      (type - required)
       values: [[0, 0.001], 100]         (values - required)
@@ -274,10 +277,10 @@ Each boundary condition group must specify nodes using one or a combination of t
 * **`nodes`** *(list of integers, or string)*: Direct node IDs where the boundary condition is applied. The string `"all"` is also accepted to fix all nodes in the mesh, or `"matrix"` to fix all nodes in the reservoir while leaving fracture and wellbore nodes unconstrained.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the mesh node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
 * **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Fluxes are integrated over the face.
-  * Fluid fluxes: Specify `values` in $(\text{m}^3/ \text{s}) / \text{m}^2$.
+  * Fluid fluxes: Specify `values` as mass flux in $(\text{kg}/\text{s})/\text{m}^2$.
   * Temperature fluxes: Specify `values` in $\text{W} / \text{m}^2$.
 * **`lines`** *(list of float `[start, end]` point pairs)*: Each pair defines a line segment (points matching the spatial dimensions, as in `coords`). The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. The line is snipped to the domain boundaries. If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths. You can view the nodes with `line` boundary conditions in `domain.vtk` under the `line_BC_nodes` field. Fluxes are integrated over the prescribed line.
-  * Fluid fluxes: Specify `values` in $(\text{m}^3/ \text{s}) / \text{m}$.
+  * Fluid fluxes: Specify `values` as mass flux in $(\text{kg}/\text{s})/\text{m}$.
   * Temperature fluxes: Specify `values` in $\text{W} / \text{m}$.
 * **`well`** *(list `[index (int), location (string)]`)*: Specify conditions on a well, only valid if `wells` is specified in the mesh. The well boundary condition specification takes the index of the well (corresponding to its 0-indexed position as specified in `mesh`) and the location as a string. Location only accepts `inlet` or `outlet` and respectively map to the first and last coordinate specified by the well alignment.
 
@@ -314,9 +317,15 @@ A group with only `hydraulics` affects pressure alone; a group with only `therma
   * Accepts a series of times and values, linearly interpolating between them. 0 is assumed before the first listed time. The function is assumed constant beyond the final time listed in the table.
   * `values` : `[[t_0, t_1, ... , t_n], [y_0, y_1, ... , y_n]]` in which $t_i$ are a list of increasing times and $y_i$ are the corresponding value at that time.
   * RAFT indexes all times $t_i$ to ensure that timesteps occur at those specific times and the timestepping code does not step over them.
+* `function`: `"external"`
+  * The value is set by an external simulator at each coupling step through the [Coupling API](#coupling-api).
+  * Requires a `label`, unique among all labeled groups. Allowed types: `hydraulics` `"pressure"` or `"flux"`, and `thermal` `"temperature"`. `constraints` are allowed on a `"flux"` group.
+  * A flow rate is given to the API as a total for the group in kg/s and spread over the group's nodes, line or face.
+  * `interpolation` *(string, default: `"step"`)*: `"step"` holds the new value over the whole coupling step; `"linear"` ramps from the last accepted value to the new one. The first coupling step is always stepwise.
+  * `values` is optional; if given, it is used as a constant when the config is run directly with `uv run -m raft`.
 
 **Label Specification (Optional):**
-Flow boundary condition groups can optionally be marked with an `tag: "groupname"` entry. If they are marked with a tag, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:
+Flow boundary condition groups can optionally be marked with a `label: "groupname"` entry. If they are marked with a label, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:
 * groupname_pressure: arithmetic mean of pressure over the group nodes. Note that this mean is not weighted by nodal area, and thus caution should be used when examining this value over pressure faces with non-uniform meshes.
 * groupname_flow: sum of flow rates over the group nodes.
 * groupname_temperature: flow-weighted average temperature over the group nodes.
@@ -328,7 +337,7 @@ Constraints are limits placed on a `hydraulics` block with `type: "flux"`. A blo
 
 The group follows its specified fluid flux until any node's pressure reaches `maximum_pressure` or `minimum_pressure`, at which point the group switches to a fixed-pressure condition according to which bound was violated. It switches back to the original flux condition once the flux implied by holding that pressure would exceed the originally specified flux target. Each group is evaluated collectively - any one pressure node exceeding the constraints triggers the swap. For fluid flux constraints, line and face geometry types are integrated over the line/face and the prescribed integrated total flux is compared against the current integrated total flux.
 
-Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. Wellbore groups are included when tagging groups for `outflow.log`.
+Only one switch is permitted per timestep to avoid oscillation between the two states, so tighten the timestep if a run needs faster response at the switch point. Wellbore groups are included when labeling groups for `outflow.log`.
 
 ### `physics`
 Physics switches for each domain: `matrix`, `fractures`, and `wells`. Fractures and wells inherit any field not set for them from `matrix`, so a block is only needed where a domain differs.
@@ -381,6 +390,33 @@ Numerical solver controls
   * **`iter_max`** *(integer, default: `100`)*: Maximum number of iterations per timestep.
   * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.
   * **`NR_step`** *(float, default: `1.0`)*: Newton-Raphson step/line-search size; scales each iteration's solution update before any Aitken relaxation is applied.
+
+## Coupling API
+`raft.RaftModel` couples RAFT to an external simulator running in the same Python process that sets the boundary conditions. The RaftModel relies on the external simulator to determine when a coupling timestep is converged and requires an explicit call to accept the trial state and proceed to the next timestep. Every `solve` restarts from the last accepted state, so it can be repeated as often as needed.
+
+```python
+from raft import RaftModel
+
+model = RaftModel("config_example_AGS_coupled.yaml", t_start=0.0)
+for t_start, t_end in coupling_steps:
+    while not converged:
+        bcs = {"inlet": {"p": p_in, "T": T_in, "q": q_in}, "outlet": {"p": p_out, "T": T_out, "q": q_out}}
+        results = model.solve(t_start, t_end, bcs)
+        ...  # update the plant from results["outlet"]["T"], etc.
+    model.get_fresh()  # accept the step and write its output
+```
+
+* **`RaftModel(config_name, t_start, config_dir=None, verbose=True)`**: preprocesses the config, assigns initial conditions at `t_start` and writes output frame 0. The config's `t_start` is replaced and its `t_end` is unused.
+* **`solve(t_start, t_end, bcs)`**: advances from the last accepted state to exactly `t_end` and returns the boundary values there. `t_start` must equal the last accepted time.
+  * `bcs` must contain every label of a group with an [`"external"`](#boundary_conditions) field, and only those. Each entry gives `p` (Pa), `T` (K) and `q` (kg/s, positive into the domain); RAFT uses the ones matching the group's types and ignores the rest.
+  * Returns, for each label, `p` and `T` (arithmetic mean over the group's nodes, not flow-weighted), `q` (summed over the nodes, kg/s, positive into the domain) and `mode`, the active hydraulic condition: `"flux"`, `"pressure"` (for a pressure group, or a flux group held at a pressure [constraint](#boundary_conditions)) or `"none"` for a thermal-only group.
+  * If the solver fails at `timestep_min`, `solve` raises `raft.subsurface.TimestepError` and the accepted state is unchanged, so the step can be retried, for example with a shorter coupling step.
+* **`get_fresh()`**: accepts the last `solve` and writes one output frame at its end time, so `output_frequency` counts coupling steps. Calling it without a new `solve` raises an error.
+
+Notes:
+* RAFT chooses its own timesteps inside each coupling step and lands exactly on `t_end`. A coupling step longer than the internal timestep takes several internal steps, and each `solve` repeats all of them, so the iteration cost grows with the number of internal steps per coupling step.
+* `run.log` is written only while RAFT's own calls run; anything the external simulator prints is not captured.
+* `scripts/coupling_example.py` runs the AGS example against a simple plant heat exchanger: `uv run python scripts/coupling_example.py`.
 
 ## Mesh generation
 
@@ -466,6 +502,7 @@ Region boundaries are refined according to their proximity to fractures, wells a
     ├── config/
     ├── outputs/
     ├── scripts/
+    │   ├── coupling_example.py
     │   ├── debug_fracture_angles.py
     │   ├── raft_to_geo.py
     │   ├── plot_fluid_props.py
@@ -474,6 +511,7 @@ Region boundaries are refined according to their proximity to fractures, wells a
     │   └── raft/
     │       ├── __init__.py
     │       ├── __main__.py
+    │       ├── api.py
     │       ├── logging_utils.py
     │       ├── matprops.py
     │       ├── matrixassembly.py
