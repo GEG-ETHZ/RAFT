@@ -46,3 +46,7 @@ config/*
 !config/box_well.msh
 !config/AGS_with_laterals.geo
 !config/AGS_with_laterals.msh
+!config/config_example_AGS_coupled_single.yaml
+!config/config_example_AGS_coupled_laterals.yaml
+!config/AGS_single.geo
+!config/AGS_single.msh

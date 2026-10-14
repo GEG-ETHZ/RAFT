@@ -37,18 +37,18 @@ def main() -> None:
     """Run the coupled simulation and print each accepted step."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--days", type=float, default=360.0, help="simulated time")
-    parser.add_argument("--step-days", type=float, default=30.0, help="coupling step")
+    parser.add_argument("--step-days", type=float, default=5.0, help="coupling step")
     parser.add_argument("--effectiveness", type=float, default=0.8, help="heat exchanger effectiveness")
     parser.add_argument("--sink", type=float, default=300.0, help="cold sink temperature (K)")
-    parser.add_argument("--flow", type=float, default=1.0, help="circulation rate (kg/s)")
+    parser.add_argument("--flow", type=float, default=10.0, help="circulation rate (kg/s)")
     parser.add_argument("--tol", type=float, default=1.0e-3, help="reinjection temperature tolerance (K)")
     args = parser.parse_args()
 
     cp = 4250.0  # fluid specific heat, as in the config (J/kgK)
     p_out = 1.0e6
-    model = RaftModel("config_example_AGS_coupled.yaml", 0.0, verbosity="lite")
+    model = RaftModel("config_example_AGS_coupled2.yaml", 0.0, verbosity="quiet")
 
-    T_in = 400.0  # initial guess for the reinjection temperature
+    T_in = 300.0  # initial guess for the reinjection temperature
     times = np.arange(0.0, args.days * DAY + 0.5 * args.step_days * DAY, args.step_days * DAY)
     print(
         f"{'day':>6} {'iterations':>10} {'T_out (K)':>10} {'T_in (K)':>10} {'p_in (kPa)':>10} {'p_out (kPa)':>10} {'power (kW)':>10}"  # noqa
