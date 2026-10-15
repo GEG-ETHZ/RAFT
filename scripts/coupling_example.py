@@ -36,8 +36,8 @@ DAY = 86400.0
 def main() -> None:
     """Run the coupled simulation and print each accepted step."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--days", type=float, default=360.0, help="simulated time")
-    parser.add_argument("--step-days", type=float, default=5.0, help="coupling step")
+    parser.add_argument("--days", type=float, default=720.0, help="simulated time")
+    parser.add_argument("--step-days", type=float, default=365.0, help="coupling step")
     parser.add_argument("--effectiveness", type=float, default=0.8, help="heat exchanger effectiveness")
     parser.add_argument("--sink", type=float, default=300.0, help="cold sink temperature (K)")
     parser.add_argument("--flow", type=float, default=10.0, help="circulation rate (kg/s)")

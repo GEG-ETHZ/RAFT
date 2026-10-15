@@ -93,7 +93,7 @@ simulation:
   t_end: 15.0e+7 # 10 years
   timestep: 10000.0
   timestep_min: 1000.0
-  timestep_max: 1.25e+6 # 4 months
+  timestep_max: 1.07e+7 # 4 months
 
   # Output
   output_frequency: 1
