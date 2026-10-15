@@ -2,9 +2,9 @@ mesh:
   file: AGS_single.msh
   dimensions: 3
   wells:
-    - alignment: [ [ [50, 50, 0], [50, 50, 1500] ],
-                   [ [50, 50, 1500], [1050, 50, 1500]],
-                   [ [1050, 50, 1500], [1050, 50, 0]] ]
+    - alignment: [ [ [60, 50, 0], [60, 50, 8000] ],
+                   [ [60, 50, 8000], [3060, 50, 8000]],
+                   [ [3060, 50, 8000], [3060, 50, 0]] ]
 
 
 material:
@@ -30,21 +30,21 @@ material:
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4250     # J/kgK
       therm_cond: 0.6        # W/mK
-      viscosity: 0.7e-3           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      viscosity: -1           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
       reference_pressure: 1.0e+6
       reference_temperature: 350
 
   wells:
-    diameter: [0.15]
+    diameter: [0.311]
     perforation_conductance: [0]
     heat_transfer_factor: [1]
-    roughness: [0.0002]
+    roughness: [5.5e-5]
 
 initial_conditions:
   assignment: "gradient"
   T_ini: 290
   p_ini: 1.0e+5
-  T_grad: 0.06
+  T_grad: 0.035
   p_grad: 1.0e+4
   grad_direction_T: [0,0,1]
   grad_direction_p: [0,0,1]
@@ -61,7 +61,7 @@ boundary_conditions:
 
 
       - well: [0, "inlet"]
-        label: "inlet"
+        label: "well_1_inlet"
         hydraulics:
             type: "flux"
             function: "external"
@@ -70,15 +70,11 @@ boundary_conditions:
             function: "external"
 
       - well: [0, "outlet"]
-        label: "outlet"
+        label: "well_1_outlet"
         hydraulics:
             type: "pressure"
             function: "external"
 
-      - faces: ["z_max"]
-        thermal:
-           type: "temperature"
-           values: [398]
 
 
 physics:

@@ -1,13 +1,12 @@
 // Gmsh project created on Wed Apr 29 11:24:58 2026
 SetFactory("Built-in");
 
-D = 1500; // Lateral Depth
-L = 1000; // Lateral Length
+D = 8000; // Lateral Depth
+L = 3000; // Lateral Length
 W = 100;  // Domain width
-Rc = 100; // Lateral Corner Radius
 
-b = 0.05; // Domain buffer
-R = 15; // Refined Radius
+b = 0.02; // Domain buffer
+R = 30; // Refined Radius
 
 X = L*((1+2*b));
 Y = W;
@@ -21,9 +20,9 @@ a  = 0.25*R;          // half-width of inner square
 c  = R/Sqrt(2);
 
 
-nrf = 8; // Number of refined elements
-nrl = 20; // Number of lateral elements
-nrv = 25; // Number of vertical elements
+nrf = 6; // Number of refined elements
+nrl = 30; // Number of lateral elements
+nrv = 40; // Number of vertical elements
 nrd = 2; // Number of diagonal elements
 g = 1.5; // diagonal growth rate
 

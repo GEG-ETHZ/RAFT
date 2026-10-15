@@ -46,7 +46,7 @@ def main() -> None:
 
     cp = 4250.0  # fluid specific heat, as in the config (J/kgK)
     p_out = 1.0e6
-    model = RaftModel("config_example_AGS_coupled2.yaml", 0.0, verbosity="quiet")
+    model = RaftModel("config_example_AGS_coupled_single.yaml", 0.0, verbosity="lite")
 
     T_in = 300.0  # initial guess for the reinjection temperature
     times = np.arange(0.0, args.days * DAY + 0.5 * args.step_days * DAY, args.step_days * DAY)
@@ -57,13 +57,13 @@ def main() -> None:
         # Fixed-point iteration between the plant and the reservoir
         for iteration in range(1, 51):
             bcs = {
-                "inlet": {"p": 0.0, "T": T_in, "q": args.flow},  # inlet p is unused: flow is prescribed
-                "outlet": {"p": p_out, "T": 0.0, "q": 0.0},  # outlet T and q are results
+                "well_1_inlet": {"p": 0.0, "T": T_in, "q": args.flow},  # inlet p is unused
+                "well_1_outlet": {"p": p_out, "T": 0.0, "q": 0.0},  # outlet T and q are results
             }
             results = model.solve(t_start, t_end, bcs)
             # print(results)
-            T_out = results["outlet"]["T"]
-            p_in = results["inlet"]["p"]
+            T_out = results["well_1_outlet"]["T"]
+            p_in = results["well_1_inlet"]["p"]
             T_in_new = T_out - args.effectiveness * (T_out - args.sink)
             if abs(T_in_new - T_in) < args.tol:
                 break

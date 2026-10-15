@@ -83,7 +83,7 @@ The mass and energy balances above are closed by a nonlinear fluid EOS providing
 
 **Boussinesq Approximation** evaluated about the reference state $(p_0,T_0)$:
 
-$$\rho_f(p,T) = \rho_0\left(1-\alpha(T-T_0) +\frac{p-p_0}{K_f}\right), \qquad u_f(p,T) = c_{pf}T - \frac{\alpha T p}{\rho_0} + \frac{p^2}{2K_f\rho_0}$$
+$$\rho_f(p,T) = \rho_0\left(1-\alpha_f(T-T_0) +\frac{p-p_0}{K_f}\right), \qquad u_f(p,T) = c_{pf}T - \frac{\alpha_f T p}{\rho_0} + \frac{p^2}{2K_f\rho_0}$$
 
 The Boussinesq approximation is suitable for problems with low compressibility of coefficients of expansion, which $\rho_f\approx\rho_0$, or problems with a small bound of pressure and temperature. The internal energy relation follows from integrating the differential
 
@@ -186,15 +186,15 @@ $$  \frac{\partial q_w}{\partial s} = 0 $$
 
 in which $q_w = \rho_f A v$ is the mass flow rate through the well (kg/s). This quasi-steady conservation of mass then allows us to simplify the conservation of momentum to
 
-$$ \underbrace{\frac{q_w^2}{\rho^2 A} \frac{\partial \rho_f}{\partial s} }_{\text{Density change}}  - \underbrace{\frac{f\pi D q_w^2 }{8 \rho A^2}}_{\text{Friction losses}} - \underbrace{\rho_f gA \frac{d z}{ds}}_{\text{Gravity}} = \underbrace{A \frac{\partial p}{\partial s}}_{\text{Pressure gradient}}  $$
+$$ \underbrace{\frac{q_w^2}{\rho^2 A} \frac{\partial \rho_f}{\partial s} }_{\text{Density change}}  - \underbrace{\frac{f\pi D q_w^2 }{8 \rho_f A^2}}_{\text{Friction losses}} - \underbrace{\rho_f gA \frac{d z}{ds}}_{\text{Gravity}} = \underbrace{A \frac{\partial p}{\partial s}}_{\text{Pressure gradient}}  $$
 
 which can be rearranged to express a constitutive relationship for the flow rate in the wells as a function of pressure, such that
 
-$$ \text{Well Constutitive Relationship:}  \quad  q_w = -\frac{4\rho \pi^2 R^5}{\left[f -  \text{sign}(q_w)\frac{4R}{\rho} \frac{\partial \rho}{\partial s} \right] |q_w|} \left( \frac{\partial p}{\partial s} + \rho g \frac{d z}{ds} \right) $$
+$$ \text{Well Constutitive Relationship:}  \quad  q_w = -\frac{4\rho_f \pi^2 R^5}{\left[f -  \text{sign}(q_w)\frac{4R}{\rho_f} \frac{\partial \rho_f}{\partial s} \right] |q_w|} \left( \frac{\partial p_f}{\partial s} + \rho_f g \frac{d z}{ds} \right) $$
 
 This constitutive equation is the structural equivalent to Darcy's law in porous media and allows us to solve the flow in the wells as a function of pressure and temperature, without requiring a separate field for the velocity which is usually required in the Navier-Stokes equations. We then reformulate the conservation of mass to include perforated well sections, such that
 
-$$\frac{\partial q_w}{\partial s} = -Q_{leak}, \qquad Q_{leak} = \frac{\rho_f}{\mu} P C\,(p_w-p_m)$$
+$$\frac{\partial q_w}{\partial s} = -Q_{leak}, \qquad Q_{leak} = \frac{\rho_f}{\mu} \pi D C\,(p_w-p_m)$$
 
 in which $Q_{leak}$ is the mass leak-off from well to matrix per unit well length, $C$ is the perforation conductance per unit wall area ($m^2/m$), and $p_w$/$p_m$ are the well and matrix pressures. The perforation conductance can be used to account for perforation resistance, skin effects, etc. $C=0$ is an unperforated well with no hydraulic connection to surrounding reservoir, and a large $C$ ties $p_w\to p_m$.
 
@@ -250,7 +250,7 @@ where $\ell^e$ is a flow-direction-weighted effective element length, $(\rho c)_
 Time derivatives use a general multistep discretization backwards Euler time discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified. RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation), both of which are implicit time integration schemes.
 
 **`"linearized"` (default) — pressure-first, extrapolated-temperature splitting, each field solved to full nonlinear convergence.**
-A temperature $\hat{\textbf{T}}^n$ is extrapolated from previously-solved states (order matching the time-discretization order; for the linear case $\hat{\textbf{T}}^n = (1+\frac{\Delta t^n}{\Delta t^{n-1}})\textbf{T}^{n-1} - \frac{\Delta t^n}{\Delta t^{n-1}}\textbf{T}^{n-2}$) and frozen as $T_{flow}$ for the whole step. The solver then solves 2 non-linear iterative Newton-Raphson loops, first solving the conservation of mass with fixed temperature then solving the conservation of energy with fixed pressure. With the Boussinesq approximation, this decouples the problem into two linear solves. With the real non-linear EOS, this is two non-linear subproblems.
+A temperature $\hat{\textbf{T}}^n$ is extrapolated from previously-solved states (order matching the time-discretization order; for the linear case $\hat{\textbf{T}}^n = (1+\frac{\Delta t^n}{\Delta t^{n-1}})\textbf{T}^{n-1} - \frac{\Delta t^n}{\Delta t^{n-1}}\textbf{T}^{n-2}$ and frozen as $T_{flow}$ for the whole step. The solver then solves 2 non-linear iterative Newton-Raphson loops, first solving the conservation of mass with fixed temperature then solving the conservation of energy with fixed pressure. With the Boussinesq approximation, this decouples the problem into two linear solves. With the real non-linear EOS, this is two non-linear subproblems.
 
 In the pressure subproblem, the flow properties $\mu$, $\boldsymbol{k}_f$ and $\rho_f$ are evaluated at $T_{flow}$. For consistency in the temperature subproblem, these flow properties continue to be evaluated at $T_{flow}$ while internal energy is evaluated at the current temperature $T^n$. Enthalpy thus becomes a mixed-timestep term in the conservation of energy.
 
