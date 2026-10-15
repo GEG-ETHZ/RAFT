@@ -105,7 +105,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  gravity: -10    # m/s^2
+  gravity: 9.81    # m/s^2
 
   # Numerical controls
   solver_type: "linearized"
