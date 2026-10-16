@@ -23,13 +23,12 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-import scipy.sparse
 import yaml
-from scipy.sparse.csgraph import dijkstra
 
 from .matprops import create_abstract_state
 from .matrixassembly import integrate_boundary_flux_matrices
-from .meshprocessing import _get_element_face_lists, load_mesh
+from .meshprocessing import _build_edge_element_map, _find_lineBC_connectivity, load_mesh
+from .physics import DOMAINS, FIELD_MODES, DomainPhysics, Physics
 
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
@@ -78,6 +77,10 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- boundary conditions -------------------------------------------------
     "boundary_conditions": [],
+    # ---- physics: fractures/wells inherit unset fields from matrix -----------
+    "physics": {
+        "matrix": {"flow": "transient", "heat": "transient", "advection": 0},
+    },
     # ---- simulation ----------------------------------------------------------
     "simulation": {
         "t_start": 0.0,
@@ -93,11 +96,8 @@ DEFAULTS: dict[str, Any] = {
         "output_density": 0,
         "output_porosity": 0,
         "rate_order": 1,
-        "advection_on": 0,
         "volumetric_strain_on": 1,
         "gravity": 0.0,
-        "steady_pressure": 0,
-        "steady_temperature": 0,
         "axisymmetric_on": 0,
         "rel_error_T": 1.0e-2,
         "iterative_controls": {
@@ -130,6 +130,46 @@ def _apply_defaults(
     return config
 
 
+def _parse_field_mode(value: Any, where: str) -> str:
+    """Validate a field mode; YAML reads a bare `off` as False."""
+    mode = "off" if value is False else value
+    if mode not in FIELD_MODES:
+        raise ValueError(f"physics.{where} = {value!r}; expected one of {FIELD_MODES}")
+    return str(mode)
+
+
+def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
+    """Resolve the `physics` block into per-domain switches."""
+    block = config["physics"]
+    unknown = set(block) - set(DOMAINS)
+    if unknown:
+        raise ValueError(f"Unknown physics domain(s) {sorted(unknown)}; expected {DOMAINS}")
+
+    resolved: dict[str, DomainPhysics] = {}
+    for domain in DOMAINS:
+        spec = {**block["matrix"], **(block.get(domain) or {})}
+        unknown = set(spec) - {"flow", "heat", "advection"}
+        if unknown:
+            raise ValueError(f"Unknown physics.{domain} field(s) {sorted(unknown)}")
+        if spec["advection"] not in (0, 1):  # also accepts True/False and YAML on/off
+            raise ValueError(f"physics.{domain}.advection = {spec['advection']!r}; expected on/off")
+        resolved[domain] = DomainPhysics(
+            flow=_parse_field_mode(spec["flow"], f"{domain}.flow"),
+            heat=_parse_field_mode(spec["heat"], f"{domain}.heat"),
+            advection=bool(spec["advection"]),
+        )
+        if verbose and domain != "matrix" and resolved[domain] != resolved["matrix"]:
+            print(f"\nPhysics in {domain} differs from matrix: {resolved[domain]}")
+
+    # Only warn when set explicitly; wells inheriting a transient matrix is the default
+    if (block.get("wells") or {}).get("flow") == "transient":
+        warnings.warn(
+            "physics.wells.flow = 'transient' has no effect; well flow is always quasi-steady.", stacklevel=2
+        )
+
+    return Physics(**resolved)
+
+
 def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Determine physics controls that are controlled through implicit inputs.
 
@@ -145,7 +185,10 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     elif mu <= 0:  # non-constant: real-fluid viscosity from CoolProp or only temperature-dependent
         controls["viscosity_nonconstant"] = 1
         if verbose:
-            print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
+            if mu == 0:
+                print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
+            elif mu == -1:
+                print("\nViscosity computed imperical correlation, mu = A*exp(B/T + CT + DT^2).")
     else:  # constant
         controls["viscosity_nonconstant"] = 0
 
@@ -160,6 +203,9 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     else:  # constant
         controls["density_nonconstant"] = 0
 
+    # Physics switches
+    controls["physics"] = _parse_physics(config, verbose)
+
     # Axisymmetry
     axisymmetric_on = controls["axisymmetric_on"]
     if axisymmetric_on and config["mesh"]["dimensions"] == 3:
@@ -169,6 +215,9 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Fractures
     controls["fracture_on"] = 1 if "fractures" in config["mesh"] else 0
+
+    # Wells
+    controls["wells_on"] = 1 if "wells" in config["mesh"] else 0
 
     # CoolProp AbstractState, reused across all property lookups instead of
     # re-initializing it on every matprops call.
@@ -201,11 +250,19 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     else:
         config_dir = Path(config_dir)
 
+    # The .yaml suffix may be left off
     config_path = config_dir / config_name
+    if not config_path.is_file():
+        with_suffix = config_dir / f"{config_name}.yaml"
+        if not with_suffix.is_file():
+            raise FileNotFoundError(
+                f"Config '{config_name}' not found in {config_dir} (also tried '{with_suffix.name}')."
+            )
+        config_path = with_suffix
 
     with open(config_path) as f:
         config: dict[str, Any] = yaml.safe_load(f)
-    config["config_name"] = config_name
+    config["config_name"] = config_path.name
     config["config_dir"] = str(config_path.parent)
 
     if verbose:
@@ -319,183 +376,24 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
         material["solid"]["therm_cond_eff"][r] = lambda_e  # list lambda_x,y,z
         material["solid"]["drained_bulk_mod"][r] = (1 - biot) * Ks
 
+    # Wells
+    if "wells" in material:
+        num_regions = len(material["wells"]["diameter"])
+        material["wells"]["radius"] = [None] * num_regions
+        material["wells"]["area"] = [None] * num_regions
+        for r in range(num_regions):
+            D = material["wells"]["diameter"][r]
+            # Relative roughness within the Moody chart, where the Churchill friction factor applies
+            rel_roughness = material["wells"]["roughness"][r] / D
+            if not 0.0 <= rel_roughness <= 0.05:
+                raise ValueError(
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must lie in [0, 0.05]."
+                )
+            R = D / 2
+            A = np.pi * R**2
+            material["wells"]["radius"][r] = R
+            material["wells"]["area"][r] = A
     return material
-
-
-def _get_element_edge_lists(nne: int, nsd: int) -> dict[str, list[int]]:
-    # Local node-index pairs for each element edge (distinct from face lists:
-    # for 3D solids a face has >2 nodes, an edge always has 2).
-    if nne == 8:  # B8
-        edges = {
-            "edge0": [0, 1],
-            "edge1": [1, 2],
-            "edge2": [2, 3],
-            "edge3": [3, 0],
-            "edge4": [4, 5],
-            "edge5": [5, 6],
-            "edge6": [6, 7],
-            "edge7": [7, 4],
-            "edge8": [0, 4],
-            "edge9": [1, 5],
-            "edge10": [2, 6],
-            "edge11": [3, 7],
-        }
-    elif nne == 4 and nsd == 3:  # T4
-        edges = {
-            "edge0": [0, 1],
-            "edge1": [0, 2],
-            "edge2": [0, 3],
-            "edge3": [1, 2],
-            "edge4": [1, 3],
-            "edge5": [2, 3],
-        }
-    elif nsd == 2:  # Q4 / T3 -- edges coincide with the face (boundary-segment) list
-        return _get_element_face_lists(nne, nsd)
-    else:
-        raise NotImplementedError(f"Edge extraction for {nne}-node elements in {nsd} dimensions.")
-    return edges
-
-
-def _build_edge_element_map(mesh: dict[str, Any]) -> dict[tuple[int, int], list[int]]:
-    """Map each unique mesh edge (sorted node pair) to the elements that contain it."""
-    conn = mesh["conn"]
-    nne = mesh["nne"]
-    ne = mesh["ne"]
-    nsd = mesh["nsd"]
-    elem_indx = mesh["elem_indx"]
-
-    edge_to_elems: dict[tuple[int, int], list[int]] = {}
-    edge_lists = _get_element_edge_lists(nne[0], nsd)
-    counter = 0
-
-    for elem in range(ne):
-        if elem > elem_indx[counter]:
-            counter += 1
-            edge_lists = _get_element_edge_lists(nne[counter], nsd)
-
-        elem_conn = conn[elem]
-        for local_edge in edge_lists.values():
-            n1, n2 = elem_conn[local_edge[0]], elem_conn[local_edge[1]]
-            key = (n1, n2) if n1 < n2 else (n2, n1)
-            edge_to_elems.setdefault(key, []).append(elem)
-
-    return edge_to_elems
-
-
-def _build_mesh_edge_graph(
-    mesh: dict[str, Any], edge_to_elems: dict[tuple[int, int], list[int]]
-) -> scipy.sparse.csr_matrix:
-    """Sparse (nn x nn) graph of unique mesh edges, weighted by edge length."""
-    nodes = mesh["nodes"]
-
-    row, col, weight = [], [], []
-    for n1, n2 in edge_to_elems:
-        d = float(np.linalg.norm(nodes[n1] - nodes[n2]))
-        row += [n1, n2]
-        col += [n2, n1]
-        weight += [d, d]
-
-    return scipy.sparse.csr_matrix((weight, (row, col)), shape=(mesh["nn"], mesh["nn"]))
-
-
-_LINE_DEVIATION_TOL = 1.0e-3  # 1 mm; assumes mesh coordinates are in meters
-
-
-def _clip_line_to_domain(
-    A: npt.NDArray[np.float64],
-    B: npt.NDArray[np.float64],
-    mins: npt.NDArray[np.float64],
-    maxs: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Clip segment A-B to the mesh's axis-aligned bounding box (slab method)."""
-    d = B - A
-    t0, t1 = 0.0, 1.0
-    for axis in range(len(A)):
-        if abs(d[axis]) < 1e-14:
-            if A[axis] < mins[axis] or A[axis] > maxs[axis]:
-                raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
-            continue
-        t_near = (mins[axis] - A[axis]) / d[axis]
-        t_far = (maxs[axis] - A[axis]) / d[axis]
-        t_low, t_high = min(t_near, t_far), max(t_near, t_far)
-        t0 = max(t0, t_low)
-        t1 = min(t1, t_high)
-        if t0 > t1:
-            raise RuntimeError("Requested line boundary condition does not intersect the mesh domain.")
-
-    return A + t0 * d, A + t1 * d
-
-
-def _find_lineBC_connectivity(
-    mesh: dict[str, Any], line: list[list[float]], edge_to_elems: dict[tuple[int, int], list[int]]
-) -> tuple[list[int], list[list[int]]]:
-    """Find the line boundary condition connectivity.
-    Line boundary conditions find the shortest path between the start and
-    end points following pre-existing nodes and edges in the mesh.
-
-    Throws a warning if the deviation is large.
-    """
-    nodes = mesh["nodes"]
-    nsd = mesh["nsd"]
-
-    # Calculate line direction vector
-    A = np.asarray(line[0], dtype=float)[:nsd]
-    B = np.asarray(line[1], dtype=float)[:nsd]
-    length_AB = float(np.linalg.norm(B - A))
-
-    if length_AB == 0.0:
-        raise RuntimeError("Line boundary condition start and end points are identical.")
-
-    u = (B - A) / length_AB  # tangent vector
-
-    # Clip to the domain so points prescribed outside the mesh snap to the
-    # nearest node at the line/boundary intersection, not to some arbitrary
-    # far-off corner node.
-    mins = nodes[:, :nsd].min(axis=0)
-    maxs = nodes[:, :nsd].max(axis=0)
-    A_clipped, B_clipped = _clip_line_to_domain(A, B, mins, maxs)
-
-    start_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - A_clipped, axis=1)))
-    end_node = int(np.argmin(np.linalg.norm(nodes[:, :nsd] - B_clipped, axis=1)))
-
-    if start_node == end_node:
-        raise RuntimeError("Line boundary condition start and end nodes snap to the same mesh node.")
-
-    # Shortest path A -> B weighted by edge length, following existing mesh edges
-    graph = _build_mesh_edge_graph(mesh, edge_to_elems)
-    dist, predecessors = dijkstra(
-        graph, directed=False, indices=np.array([start_node]), return_predecessors=True
-    )
-    dist, predecessors = dist[0], predecessors[0]
-
-    if np.isinf(dist[end_node]):
-        raise RuntimeError(
-            "No connected path of mesh edges found between the line boundary condition endpoints."
-        )
-
-    path = [end_node]
-    node = end_node
-    while node != start_node:
-        node = int(predecessors[node])
-        path.append(node)
-    path.reverse()
-
-    line_nodes = path
-    line_conn = [[path[i], path[i + 1]] for i in range(len(path) - 1)]
-
-    # Check deviation of the snapped path from the requested line
-    rel = nodes[line_nodes, :nsd] - A
-    perp = rel - np.outer(rel @ u, u)
-    deviation = np.linalg.norm(perp, axis=1)
-
-    if np.any(deviation > _LINE_DEVIATION_TOL):
-        warnings.warn(
-            f"Exact line not found in mesh, snapping to nearest nodes. "
-            f"True line distance = {length_AB}, mesh path distance = {dist[end_node]}",
-            stacklevel=2,
-        )
-
-    return line_nodes, line_conn
 
 
 def _resolve_group_geometry(
@@ -542,6 +440,74 @@ def _resolve_group_geometry(
         group["flux_weight_matrix"] = flux_mats["A"]
 
 
+def _find_well_BC_node(mesh: dict[str, Any], config_mesh: dict[str, Any], well_BC: list[Any]) -> int:
+    """Global node at a well's inlet (first alignment point) or outlet (last alignment point)."""
+    if "well_mesh" not in mesh:
+        raise ValueError("Well boundary condition specified but no wells defined in mesh.")
+    wmesh = mesh["well_mesh"]
+    index, location = well_BC
+
+    # Validate the well index and location
+    if not 0 <= index < len(wmesh["region_lists"]):
+        raise ValueError(f"Well boundary condition index {index} does not match a well in mesh.")
+    alignment = config_mesh["wells"][index]["alignment"]
+    if location == "inlet":
+        xi = np.asarray(alignment[0][0], dtype=float)
+    elif location == "outlet":
+        xi = np.asarray(alignment[-1][1], dtype=float)
+    else:
+        raise ValueError(f'Well boundary condition location "{location}" must be "inlet" or "outlet".')
+
+    # Nearest node among this well's own nodes
+    well_nodes = np.unique(np.asarray(wmesh["conn"])[wmesh["region_lists"][index]])
+    local_node = well_nodes[np.argmin(np.linalg.norm(wmesh["nodes"][well_nodes] - xi, axis=1))]
+
+    # Well nodes are last in the global numbering
+    return int(mesh["nn_total"] - wmesh["nn"] + local_node)
+
+
+_EXTERNAL_TYPES = {"hydraulics": ("pressure", "flux"), "thermal": ("temperature",)}
+_EXTERNAL_INTERPOLATION = ("step", "linear")
+
+
+def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
+    """Check BC fields with function "external" and mark them with spec["external"] = True."""
+    labels = [group["label"] for group in BC_groups if "label" in group]
+    for group in BC_groups:
+        external_fields = [
+            field for field in ("hydraulics", "thermal") if group.get(field, {}).get("function") == "external"
+        ]
+        if not external_fields:
+            continue
+
+        label = group.get("label")
+        if label is None:
+            raise ValueError(f"External boundary condition fields {external_fields} require a 'label'.")
+        if labels.count(label) > 1:
+            raise ValueError(f"External boundary condition label '{label}' is not unique.")
+
+        for field in external_fields:
+            spec = group[field]
+            if spec["type"] not in _EXTERNAL_TYPES[field]:
+                raise ValueError(
+                    f"External {field} on '{label}' has type '{spec['type']}'; "
+                    f"expected one of {_EXTERNAL_TYPES[field]}."
+                )
+            spec.setdefault("interpolation", "step")
+            if spec["interpolation"] not in _EXTERNAL_INTERPOLATION:
+                raise ValueError(
+                    f"External {field} on '{label}' has interpolation '{spec['interpolation']}'; "
+                    f"expected one of {_EXTERNAL_INTERPOLATION}."
+                )
+            spec["external"] = True
+
+        hydraulics = group.get("hydraulics", {})
+        if hydraulics.get("external") and "constraints" in hydraulics and hydraulics["type"] != "flux":
+            raise ValueError(
+                f"Pressure constraints on external group '{label}' require hydraulics type 'flux'."
+            )
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -551,8 +517,11 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     defined by coordinates into node groups.
 
     3. Line boundary conditions need to find nodes and connectivity.
+
+    4. Well boundary conditions map to the well's inlet or outlet node.
     """
     BC_groups = config["boundary_conditions"]
+    _validate_external_groups(BC_groups)
     nodes = mesh["nodes_total"]
     controls = config["simulation"]
     controls["wellbore_check"] = 0  # Default 0
@@ -595,6 +564,15 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
             elif verbose:
                 print(f"  Minimum pressure: {min_pressure:.2e} \n")
 
+        # List nodes for string cases
+        nodes_all = group.get("nodes")
+        if nodes_all is not None and isinstance(nodes_all, str):
+            if nodes_all == "all":
+                nn_all = np.arange(0, mesh["nn_total"])
+            if nodes_all == "matrix":
+                nn_all = np.arange(0, mesh["nn"])
+            group["nodes"] = nn_all
+
         # Convert coordinates to node numbers
         if "coords" in group:
             for xi in group["coords"]:
@@ -606,6 +584,11 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
                 d_min = np.min(d)
                 closest_node = np.max(np.where(d < 1e-14)).astype(int) if d_min < 1e-14 else np.argmin(d)
                 BCnodes.append(closest_node)
+            group["nodes"] = BCnodes
+
+        # Convert well inlet/outlet to node number
+        if "well" in group:
+            BCnodes.append(_find_well_BC_node(mesh, config["mesh"], group["well"]))
             group["nodes"] = BCnodes
 
         if "lines" in group:
@@ -664,6 +647,13 @@ def preprocessing(
     config["mesh"]["config_dir"] = config["config_dir"]
 
     mesh = load_mesh(config["mesh"], verbose)
+    if "well_mesh" in mesh:
+        # Well heads (first alignment point), local well numbering
+        offset = mesh["nn_total"] - mesh["well_mesh"]["nn"]
+        mesh["well_mesh"]["head_nodes"] = [
+            _find_well_BC_node(mesh, config["mesh"], [i, "inlet"]) - offset
+            for i in range(len(config["mesh"]["wells"]))
+        ]
 
     config = _preprocess_BCs(mesh, config, verbose)
 

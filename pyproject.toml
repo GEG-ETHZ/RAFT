@@ -1,6 +1,6 @@
 [project]
 name = "raft"
-version = "0.1.0"
+version = "0.2.0"
 description = "THM simulator for native coupling with TANGO"
 authors = [{name = "ETHZ/EAPS/GEG Group"}]
 license = "Apache-2.0"
@@ -27,6 +27,11 @@ dev = [
     "scipy-stubs>=1.17.1.5",
     "prek==0.3.13",
     "rust-just>=1.58.0", # task runner for the justfile (`uv run just <recipe>`)
+]
+docs = [
+    "sphinx~=8.2",
+    "myst-parser~=4.0", # renders Markdown (README.md, theory.md) as Sphinx source
+    "furo~=2025.9", # HTML theme
 ]
 
 [build-system]
@@ -75,6 +80,7 @@ known-first-party = ["raft"]
 [tool.ruff.lint.per-file-ignores]   # otherwise ruff shows "imported but unused" error
 "__init__.py" = ["F401"]
 "tests/**" = ["D"]                  # no docstring rules inside tests/ folder
+"docs/source/conf.py" = ["D100", "A001"]   # Sphinx config: no docstring, `copyright` is its convention
 
 [tool.ruff.lint.pydocstyle]   # defines the doc string format
 convention = "google"

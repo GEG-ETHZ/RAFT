@@ -32,6 +32,7 @@ plus "box"); element sizes come from `mesh.sizing`, which the CLI flags override
         outer: 10                                    # size far from any feature
         frac: [[0.05, 0.05, 1, 10], [0.2, 5, 5, 5]]  # profile off the fractures
         bc: 0.5                                      # one stage over `transition`
+        well: [[5, 10], [5, 50]]                     # profile off the wells
 
 A profile [[s1, ..., sn], [L1, ..., Ln]] sets the size to s1 at the feature, then
 ramps s1 -> s2 over L1, ..., and sn -> outer over Ln. Run with --help for the size
@@ -94,6 +95,7 @@ class Sizes:
     size_outer: float
     frac: Profile
     bc: Profile
+    well: Profile
     size_region_max: float
     boundary_growth: float = 0.25
 
@@ -531,14 +533,83 @@ def _on_boundary(domain: dict[str, Any], xyz: Array, nsd: int, rtol: float = 1e-
     return bool(np.any(np.abs(xyz[:nsd] - lo[:nsd]) < tol) or np.any(np.abs(xyz[:nsd] - hi[:nsd]) < tol))
 
 
+def well_alignments(config_mesh: dict[str, Any], domain: dict[str, Any], nsd: int) -> list[Array]:
+    """Well `alignment` segments, clipped to the domain.
+
+    Each well is a list of [start, end] pairs that may run outside the reservoir; only
+    the part inside is meshed, so `dL_max` (RAFT's spacing outside) does not apply here.
+    """
+    specs = config_mesh.get("wells") or []
+    if specs and nsd != 3:
+        warnings.warn("Wells are only supported in 3D; skipping.", stacklevel=2)
+        return []
+    segments = []
+    for i, spec in enumerate(specs):
+        alignment = spec.get("alignment", spec.get("alignments"))
+        if alignment is None:
+            raise ValueError(f"Well {i}: missing `alignment` (a list of [start, end] point pairs)")
+        trimmed = dropped = 0
+        for seg in alignment:
+            if len(seg) != 2 or not all(isinstance(q, (list, tuple)) for q in seg):
+                raise ValueError(
+                    f"Well {i}: each `alignment` entry must be a [start, end] pair of points, got {seg!r}"
+                )
+            a = _pad3(_check_point(seg[0], f"Well {i}: alignment"))
+            b = _pad3(_check_point(seg[1], f"Well {i}: alignment"))
+            inside = _clip_segment(domain, a, b, nsd)
+            if inside is None:
+                dropped += 1
+                continue
+            segments.append(np.array(inside))
+            trimmed += int(not (np.allclose(inside[0], a) and np.allclose(inside[1], b)))
+        if trimmed or dropped:
+            detail = ", ".join(
+                part
+                for part in (
+                    f"{trimmed} segment(s) clipped to the domain boundary" if trimmed else "",
+                    f"{dropped} segment(s) dropped as entirely outside the domain" if dropped else "",
+                )
+                if part
+            )
+            warnings.warn(f"Well {i}: {detail}.", stacklevel=2)
+    return segments
+
+
+def _clip_segment(domain: dict[str, Any], a: Array, b: Array, nsd: int) -> tuple[Array, Array] | None:
+    """Trim a segment to the (convex) domain; None if it lies entirely outside."""
+    ts = np.linspace(0.0, 1.0, 101)
+    inside = [i for i, t in enumerate(ts) if contains(domain, a + t * (b - a), nsd)]
+    if not inside:
+        return None
+    lo, hi = ts[inside[0]], ts[inside[-1]]
+    if inside[0] > 0:
+        lo = _bisect_boundary(domain, a, b, ts[inside[0] - 1], lo, nsd)
+    if inside[-1] < len(ts) - 1:
+        hi = _bisect_boundary(domain, a, b, ts[inside[-1] + 1], hi, nsd)
+    return (a + lo * (b - a), a + hi * (b - a))
+
+
+def _bisect_boundary(
+    domain: dict[str, Any], a: Array, b: Array, outside: float, inside: float, nsd: int
+) -> float:
+    """Parameter of the domain boundary between an outside and an inside point."""
+    for _ in range(40):
+        mid = 0.5 * (outside + inside)
+        if contains(domain, a + mid * (b - a), nsd):
+            inside = mid
+        else:
+            outside = mid
+    return inside
+
+
 def bc_features(config: dict[str, Any]) -> tuple[list[Array], list[Array]]:
     """Collect point (`coords`) and polyline (`lines`) BC geometry. `faces` BCs need no geometry."""
     points, lines = [], []
     for group in config.get("boundary_conditions") or []:
-        tag = group.get("tag", "untagged")
-        points += [_pad3(_check_point(xi, f"BC {tag}: coords")) for xi in group.get("coords", [])]
+        label = group.get("label", "unlabeled")
+        points += [_pad3(_check_point(xi, f"BC {label}: coords")) for xi in group.get("coords", [])]
         for line in group.get("lines", []):
-            pts = [_pad3(_check_point(p, f"BC {tag}: lines")) for p in _check_line(line, tag)]
+            pts = [_pad3(_check_point(p, f"BC {label}: lines")) for p in _check_line(line, label)]
             lines.append(np.array(pts))
     return points, lines
 
@@ -554,11 +625,11 @@ def _check_point(value: Any, where: str) -> Any:
     return value
 
 
-def _check_line(line: Any, tag: str) -> list[Any]:
+def _check_line(line: Any, label: str) -> list[Any]:
     """A line must be a list of points; one bracket too few silently makes nonsense geometry."""
     if not isinstance(line, (list, tuple)) or len(line) < 2 or not isinstance(line[0], (list, tuple)):
         raise ValueError(
-            f"BC {tag}: each entry of `lines` must be a list of points, got {line!r}. "
+            f"BC {label}: each entry of `lines` must be a list of points, got {line!r}. "
             "Note the extra brackets: lines: [[[0, 152, 340], [10, 152, 340]]]"
         )
     return list(line)
@@ -738,10 +809,11 @@ def generate_geo(
     warn_outside_domain("Fracture", fracs, domain, nsd)
     warn_outside_domain("Line BC", bc_lines, domain, nsd)
 
+    wells = well_alignments(cm, domain, nsd)
     frac_planes_3d = fracture_planes(cm, nsd)
     regions = _region_specs(cm)
     shells = point_shells(bc_pts, sizes.bc, nsd, diag)
-    tubes = line_shells(bc_lines, sizes.bc, nsd, diag)
+    tubes = line_shells(bc_lines, sizes.bc, nsd, diag) + line_shells(wells, sizes.well, nsd, diag)
     slabs = frac_slabs(frac_planes_3d, sizes.frac, diag)
     _emit_regions(geo, regions, shells, tubes, slabs, ent, dom, diag)
 
@@ -752,7 +824,7 @@ def generate_geo(
     geo.emit()
 
     geo.emit("curves[] = {};")
-    for kind, polylines in (("Fracture", fracs), ("Line BC", bc_lines)):
+    for kind, polylines in (("Fracture", fracs), ("Line BC", bc_lines), ("Well", wells)):
         for i, pl in enumerate(polylines):
             geo.emit(f"// ---- {kind} {i}")
             for c in geo.polyline(pl[:, :nsd] if nsd == 2 else pl):
@@ -765,7 +837,7 @@ def generate_geo(
     geo.emit("// ---- Make everything conforming")
     tools = [f"{ent}{{regs[]}};"] if (regions or shells or tubes or frac_planes_3d) else []
     tools += ["Surface{fsurf[]};"] if frac_planes_3d else []
-    tools += ["Curve{curves[]};"] if (fracs or bc_lines or seeds) else []
+    tools += ["Curve{curves[]};"] if (fracs or bc_lines or wells or seeds) else []
     tools += ["Point{pts[]};"] if bc_pts else []
     if tools:
         geo.emit(f"BooleanFragments {{ {ent}{{{dom}}}; Delete; }}{{ {' '.join(tools)} Delete; }}")
@@ -777,6 +849,7 @@ def generate_geo(
         pairs = zip(pl[:-1], pl[1:], strict=True)
         features += [(_seg_dist_expr(a, b, nsd), sizes.bc) for a, b in pairs]
     features += [(_pt_dist_expr(p, nsd), sizes.bc) for p in bc_pts]
+    features += [(_seg_dist_expr(w[0], w[1], nsd), sizes.well) for w in wells]
 
     field_only = {"frac": sizes.frac} if fracs else {}  # 3D planes get slabs, like points/lines
     if (bc_lines or bc_pts) and nsd == 2:
@@ -953,13 +1026,15 @@ def _sizes_from(args: argparse.Namespace, sizing: dict[str, Any], ap: argparse.A
     ctx = _SizeCtx(outer, pick("transition", "transition") or 5.0 * outer, ap.error)
     frac = _profile("frac", sizing.get("frac"), _floats(args.size_frac), _floats(args.dist_frac), ctx)
     bc = _profile("bc", sizing.get("bc"), _floats(args.size_bc), _floats(args.dist_bc), ctx)
+    well = _profile("well", sizing.get("well"), _floats(args.size_well), _floats(args.dist_well), ctx)
 
-    region_max = pick("size_region_max", "region_max") or 0.5 * (min(frac.finest, bc.finest) + outer)
+    finest = min(frac.finest, bc.finest, well.finest)
+    region_max = pick("size_region_max", "region_max") or 0.5 * (finest + outer)
     growth = pick("boundary_growth", "boundary_growth")
     growth = 0.25 if growth is None else growth
     if not 0 < region_max <= outer or growth < 0:
         ap.error("expected 0 < region_max <= outer and boundary_growth >= 0")
-    return Sizes(outer, frac, bc, region_max, growth)
+    return Sizes(outer, frac, bc, well, region_max, growth)
 
 
 def write_msh(geo_path: Path, nsd: int) -> Path:
@@ -992,6 +1067,8 @@ def main(argv: list[str] | None = None) -> int:
     sz.add_argument("--dist-frac", help="fracture stage lengths, comma-separated")
     sz.add_argument("--size-bc", "--size-BC", help="point/line BC sizes, comma-separated")
     sz.add_argument("--dist-bc", "--dist-BC", help="BC stage lengths, comma-separated")
+    sz.add_argument("--size-well", help="well sizes, comma-separated")
+    sz.add_argument("--dist-well", help="well stage lengths, comma-separated")
     sz.add_argument("--transition", type=float, help="stage length when only sizes are given")
     sz.add_argument("--size-region-max", type=float, help="coarsest size on region boundaries")
     sz.add_argument("--boundary-growth", type=float, help="boundary grading as fraction of normal slope")

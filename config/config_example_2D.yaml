@@ -6,7 +6,7 @@ mesh:
         values: [[-51, -50], [102, 75]]
   sizing:  # element sizes, used by scripts/raft_to_geo.py
       outer: 20
-      frac: [[0.25, 0.5, 2], [0.5, 5, 20]]
+      frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
   regions:
       - shape: "sphere"
@@ -54,7 +54,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-4, 1.0e-4, 1.1e-4]
-    nusselt: [2, 2, 2]
+    heat_transfer_factor: [1, 1, 1]
 
 initial_conditions:
   assignment: "constant"
@@ -71,7 +71,7 @@ boundary_conditions:
         # Inlet/outlet example: a rate-controlled well, switching to a pressure
         # limit if it would otherwise exceed the given bounds.
         - lines: [[[43.4, 20.0], [45, 30]]]
-          tag: "inlet"
+          label: "inlet"
           hydraulics:
               type: "flux"
               values: [[0, 0.01], 1000]
@@ -84,7 +84,7 @@ boundary_conditions:
               values: [330]
 
         - lines: [[[0, 40.0], [-20, 25]]]
-          tag: "outlet"
+          label: "outlet"
           hydraulics:
               type: "flux"
               values: [[0, -0.01], 1000]
@@ -110,6 +110,12 @@ boundary_conditions:
               values: [410]
 
 
+physics:
+  matrix:
+    flow: transient
+    heat: transient
+    advection: on
+
 simulation:
   # Time
   t_start: 0.0
@@ -129,10 +135,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 1
   gravity: 0    # m/s^2
-  steady_pressure: 0
-  steady_temperature: 0
   axisymmetric_on: 0
 
   # Numerical controls

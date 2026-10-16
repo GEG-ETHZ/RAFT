@@ -62,10 +62,16 @@ boundary_conditions:
       values: []
       type: flux
 
+physics:
+  matrix:
+    flow: steady
+    heat: steady
+    advection: off
+
 simulation:
   # Time
   t_start: 0.0
-  t_end: 1.0
+  t_end: 2.0  # each step is one sequential pass of the steady coupled solve
   timestep: 1.0
   timestep_min: 1.0
   timestep_max: 1.0
@@ -77,10 +83,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 0
   gravity: 0.0    # m/s^2
-  steady_pressure: 1
-  steady_temperature: 1
 
   # Numerical controls
   rel_error_T: 1.0e-2 # Relative error for extrapolation

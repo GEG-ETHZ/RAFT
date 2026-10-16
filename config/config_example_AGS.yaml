@@ -1,0 +1,134 @@
+mesh:
+  file: AGS_with_laterals.msh
+  dimensions: 3
+  domain:  # outer boundary, used by scripts/raft_to_geo.py
+      shape: "box"
+      values: [[0,0,0], [200, 100, 100]]
+  sizing:  # element sizes, used by scripts/raft_to_geo.py
+    outer: 50
+    bc: 1
+    well: [[1,2],[2, 2]]
+  wells:
+    - alignment: [ [[10, 50, 150], [10, 50, 75]],
+                    [[10, 50, 75], [30, 50, 50]],
+                    [[30, 50, 50], [170, 50, 50]],
+                    [[170, 50, 50], [190, 50, 75]],
+                    [[190, 50, 75],  [190, 50, 150]] ]
+
+    - alignment: [  [[30, 50, 50], [40, 20, 50]],
+                    [[40, 20, 50], [160, 20, 50]],
+                    [[160, 20, 50], [170, 50, 50]]  ]
+
+    - alignment: [  [[30, 50, 50], [40, 70, 50]],
+                    [[40, 70, 50], [160, 70, 50]],
+                    [[160, 70, 50], [170, 50, 50]]  ]
+
+
+material:
+  # Rock mass parameters - define lists with properties corresponding to each region
+  solid:
+      bulk_mod:  [20.0e+9]        # Pa
+      density: [2600]             # kg/m^3
+      therm_cond: [2.5]          # W/mK
+      specific_heat: [850]        # J/kgK
+      therm_expansion: [12.0e-6]  # 1/K  (3 * 4e-6)
+      porosity: [0.01]                # -
+      biot_coeff: [0.5]               # -
+      permeability: [1.0e-15]       # m^2
+      rotation_x: [0.0]  # rotation of local coordinates around x-axis (degrees)
+      rotation_y: [0.0] # rotation of local coordinates around y-axis (degrees)
+      rotation_z: [0.0]  # rotation of local coordinates around z-axis (degrees)
+
+  # Fluid parameters - single phase flow is assumed
+  fluid:
+      fluid_type: "Water"
+      density: 968            # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
+      bulk_mod: 2.10e+9       # Pa
+      therm_expansion: 200.0e-6 # 1/K
+      specific_heat: 4250     # J/kgK
+      therm_cond: 0.6        # W/mK
+      viscosity: -1           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      reference_pressure: 1.0e+6
+      reference_temperature: 350
+
+  wells:
+    diameter: [0.15, 0.15, 0.15]
+    perforation_conductance: [0, 0, 0]
+    heat_transfer_factor: [1, 1, 1]
+    roughness: [0.0002, 0.002, 0.002]
+
+initial_conditions:
+  assignment: "gradient"
+  T_ini: 410
+  p_ini: 1.0e+6
+  T_grad: 0.1
+  p_grad: 0
+  grad_direction_T: [0,0,-1]
+  grad_direction_p: [0,0,-1]
+
+
+
+boundary_conditions:
+     # AGS in hot dry rock
+      - nodes: "matrix" # "matrix" fixes the pressure in the rock mass
+        hydraulics:
+            type: "pressure"
+            values: [1.0e6]
+
+      - well: [0, "inlet"]
+        hydraulics:
+            type: "flux"
+            values: [1]
+        thermal:
+            type: "temperature"
+            values: [310]
+
+      - well: [0, "outlet"]
+        label: "outlet"
+        hydraulics:
+            type: "pressure"
+            values: [1.0e+6]
+
+      - faces: ["z_min"]
+        thermal:
+           type: "temperature"
+           values: [425]
+
+
+physics:
+  matrix:
+    flow: off
+    heat: transient
+    advection: off
+  wells:
+    flow: steady
+    heat: transient
+    advection: on
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 30.0e+7 # 10 years
+  timestep: 10000.0
+  timestep_min: 1000.0
+  timestep_max: 2.5e+6 # one month
+
+  # Output
+  output_frequency: 1
+  output_vtk: 1        # turn vtk output on/off
+  # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
+  output_viscosity: 1
+  output_density: 1
+  output_porosity: 1
+
+  # Physical controls
+  rate_order: 1     # order of rate of change approximation
+  gravity: -9.81    # m/s^2
+
+  # Numerical controls
+  solver_type: "linearized"
+  rel_error_T: 2.0e-2 # Relative error for extrapolation
+  iterative_controls:
+      NR_tol: 1.0e-7 # Newton-Raphson residual tolerance
+      iter_max: 50 # Maximum number of iterations
+      aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

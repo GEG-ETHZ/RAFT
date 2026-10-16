@@ -26,7 +26,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-3]
-    nusselt: [5.0]
+    heat_transfer_factor: [0.634115]  # equivalent to Nu = 5
 
 initial_conditions:
   assignment: "constant"
@@ -51,6 +51,12 @@ boundary_conditions:
       values: [300]
       type: temperature
 
+physics:
+  matrix:
+    flow: steady
+    heat: steady
+    advection: on
+
 simulation:
   # Time
   t_start: 0.0
@@ -65,10 +71,7 @@ simulation:
 
   # Physical controls
   rate_order: 1
-  advection_on: 1
   gravity: 0.0    # m/s^2
-  steady_pressure: 1
-  steady_temperature: 1
   axisymmetric_on: 0
 
   # Numerical controls

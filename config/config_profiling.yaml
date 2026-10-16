@@ -50,6 +50,12 @@ boundary_conditions:
       type: temperature
 
 
+physics:
+  matrix:
+    flow: transient
+    heat: transient
+    advection: on
+
 simulation:
   # Time
   t_start: 0.0
@@ -68,7 +74,6 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  advection_on: 1
   gravity: -9.81    # m/s^2
 
   # Numerical controls

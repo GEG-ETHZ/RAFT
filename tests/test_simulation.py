@@ -32,13 +32,27 @@ def _test_data_dir() -> Path:
     return Path(__file__).parent / "test_configs"
 
 
+def test_well_conduction() -> None:
+    """Test well heat exchange against analytical solution"""
+    case_dir = _test_data_dir()
+    test_name = "Wellbore heat conduction"
+    config_filename = "config_test_wellconvection.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_well_convection(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_fracture_advection_bounded() -> None:
     """Check p/T stay within the boundary-value envelope for a fracture angled into the
     pressure/temperature gradient, with advective leak-off turned on."""
     case_dir = _test_data_dir()
     test_name = "Fracture Advection - Boundedness"
     config_filename = "config_test_fracture_advection_bounded.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_fracture_advection_bounded(
@@ -53,7 +67,7 @@ def test_enthalpy_bndry_pressure() -> None:
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Pressure Outlet"
     config_filename = "config_test_enthalpy_bndry_pressure.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_enthalpy_bndry_bounded(
@@ -69,7 +83,7 @@ def test_enthalpy_bndry_flux() -> None:
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Flux Outlet"
     config_filename = "config_test_enthalpy_bndry_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_enthalpy_bndry_bounded(
@@ -83,7 +97,7 @@ def test_patch_anisotropy() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Anisotropy"
     config_filename = "config_test_anisotropic.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
     plot_on = False
@@ -98,7 +112,7 @@ def test_buoyancy() -> None:
     case_dir = _test_data_dir()
     test_name = "Buoyancy Test"
     config_filename = "config_test_buoyancy.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_buoyancy(
@@ -112,7 +126,7 @@ def test_advection() -> None:
     case_dir = _test_data_dir()
     test_name = "Advection Test"
     config_filename = "config_test_advection.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_advection(
@@ -126,7 +140,7 @@ def test_heterogeneous() -> None:
     case_dir = _test_data_dir()
     test_name = "Heterogeneous Test"
     config_filename = "config_test_heterogeneous.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_heterogeneous(
@@ -140,7 +154,7 @@ def test_nonlinear_viscosity() -> None:
     case_dir = _test_data_dir()
     test_name = "Non-linear Viscosity"
     config_filename = "config_test_NL_viscosity.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="full")
 
     plot_on = False
     test_pass = test_checks.check_NL_viscosity(
@@ -154,7 +168,7 @@ def test_axisymmetry() -> None:
     case_dir = _test_data_dir()
     test_name = "Axisymmetric"
     config_filename = "config_test_axisymmetry.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_axisymmetry(
@@ -168,7 +182,7 @@ def test_patch_x_flux_2D() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - X - flux - 2D Q4"
     config_filename = "config_test_patchX2D.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 0
     plot_on = False
@@ -183,7 +197,7 @@ def test_patch_y_flux_2D() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Y - flux - 2D T3"
     config_filename = "config_test_patchY2D.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 1
     plot_on = False
@@ -198,7 +212,7 @@ def test_patch_z_flux() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z - flux"
     config_filename = "config_test_patchZ_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=True)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="full")
 
     dimension = 2
     plot_on = False
@@ -213,7 +227,7 @@ def test_patch_y_flux() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Y - flux"
     config_filename = "config_test_patchY_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 1
     plot_on = False
@@ -228,7 +242,7 @@ def test_patch_x_flux() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - X - flux"
     config_filename = "config_test_patchX_flux.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 0
     plot_on = False
@@ -243,7 +257,7 @@ def test_patch_z_T4() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z - T4"
     config_filename = "config_test_patchZ_T4.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 2
     plot_on = False
@@ -258,7 +272,7 @@ def test_patch_y_T4() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Y - T4"
     config_filename = "config_test_patchY_T4.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 1
     plot_on = False
@@ -273,7 +287,7 @@ def test_patch_x_T4() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - X - T4"
     config_filename = "config_test_patchX_T4.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 0
     plot_on = False
@@ -288,7 +302,7 @@ def test_regions() -> None:
     case_dir = _test_data_dir()
     # test_name = "Regions Test"
     config_filename = "config_test_regions.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     test_pass = test_checks.check_regions(case_dir, mesh)
     assert test_pass
@@ -299,7 +313,7 @@ def test_patch_y() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Y"
     config_filename = "config_test_patchY.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 1
     plot_on = False
@@ -314,7 +328,7 @@ def test_patch_x() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - X"
     config_filename = "config_test_patchX.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 0
     plot_on = False
@@ -329,7 +343,7 @@ def test_patch_z() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Z"
     config_filename = "config_test_patchZ.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 2
     plot_on = False
@@ -344,7 +358,7 @@ def test_line_bc_patch_flux_2D() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Line BC - flux - 2D Q4"
     config_filename = "config_test_line_bc.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 0
     plot_on = False
@@ -369,7 +383,7 @@ def test_fracture_perpendicular_patch() -> None:
     case_dir = _test_data_dir()
     test_name = "Fracture Patch Test - Perpendicular"
     config_filename = "config_test_fracture_perpendicular.yaml"
-    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbose=False)
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     plot_on = False
     test_pass = test_checks.check_fracture_perpendicular_patch(

@@ -32,6 +32,13 @@ def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[n
     match incoming["function"]:
         case "constant":
             incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["nodes"])
+        case "external":
+            # Standalone runs only; the coupling API replaces this with a table each solve
+            if not incoming.get("values"):
+                raise ValueError(
+                    "External boundary condition has no values; set them via the API or in the config."
+                )
+            incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["nodes"])
         case "linear":
             incoming["BCvalues"] = [t * incoming["values"][0] + incoming["values"][1]] * len(
                 incoming["nodes"]
@@ -67,7 +74,7 @@ def _apply_field(
 ) -> tuple[npt.NDArray[np.float64], bool] | None:
     """Evaluate one field spec ("hydraulics" or "thermal") on a group into [node, value] pairs."""
     spec = group.get(field)
-    if spec is None or not nodes:
+    if spec is None or len(nodes) == 0:
         return None
 
     spec["nodes"] = nodes
@@ -118,7 +125,7 @@ def parsebcs(
 
     for group in BC_config:
         nodes = group["nodes"]
-        if not nodes:
+        if len(nodes) == 0:
             continue
 
         hydraulics = _apply_field(mesh, t, group, "hydraulics", nodes)

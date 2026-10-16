@@ -31,6 +31,14 @@ _P_MAX = 7e8
 _P_MIN = 1e5
 _T_MAX = 1.9e3
 _T_MIN = 274
+_RE_MIN = 1.0e-3  # Reynolds number floor for the friction factor; phi = f Re is 64 below it
+_RE_MAX = 1.0e8  # Reynolds number cap for f and Nu, the end of the Moody chart; f is constant above it
+_PR_MIN = 0.5  # Prandtl number range of the Gnielinski correlation
+_PR_MAX = 2000.0
+_RE_LAMINAR = 2000.0  # upper bound of laminar heat transfer
+_RE_TURBULENT = 2300.0  # lower bound of turbulent heat transfer (Gnielinski)
+_NU_LAM_PIPE = 0.5 * (3.66 + 4.36)  # laminar pipe Nu, average of constant wall temperature and heat flux
+_NU_LAM_PLATES = 0.5 * (7.54 + 8.23)  # laminar parallel plate Nu (D_h = 2w), same average
 
 # Sentinel for an optional input not needed unless explicitly requested (e.g. `get_enthalpy`'s `cp`).
 _EMPTY = np.empty((0, 0))
@@ -111,9 +119,8 @@ def get_viscosity(
 
     if mu0 > 0:
         # Constant Viscosity
-        mu = np.full(T.shape, mu0)
         zeros = _const_array(0.0, T.shape)
-        return PropertyResult(mu, zeros, zeros)
+        return PropertyResult(_const_array(float(mu0), T.shape), zeros, zeros)
 
     # Determine if dT is wanted or not based on lagging.
     want_dT_eff = want_dT and not T_flow_lagged
@@ -633,3 +640,109 @@ def get_effective_permeability(
     dkf_dp = _const_array(0.0, T.shape)
 
     return PropertyResult(kf_eff, dkf_dp, dkf_dT)
+
+
+def get_friction_factor(
+    Re: npt.NDArray[np.float64], rel_roughness: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Churchill (1977) Darcy friction factor as phi = f Re and dphi/dRe.
+
+    Smooth across laminar, transitional, and turbulent flow; phi -> 64 as Re -> 0. Evaluated in
+    log space to avoid overflow; f is held constant above `_RE_MAX`.
+    """
+    Re = np.maximum(Re, _RE_MIN)
+    Re_c = np.minimum(Re, _RE_MAX)
+    r7 = (7.0 / Re_c) ** 0.9
+    t = r7 + 0.27 * rel_roughness
+    L = -np.log(t)
+    dL = 0.9 * r7 / (Re_c * t)
+
+    # ln of the turbulent term A = (2.457 L)^16 and transition term B = (37530/Re)^16
+    with np.errstate(divide="ignore"):
+        ln_aL = np.log(np.abs(2.457 * L))  # -inf when L = 0, giving A = 0
+    lnA = 16.0 * ln_aL
+    lnB = 16.0 * np.log(37530.0 / Re_c)
+    lnAB = np.logaddexp(lnA, lnB)
+
+    # P = Re^12 (A + B)^-1.5 and phi = 8 (8^12 + P)^(1/12)
+    lnP = 12.0 * np.log(Re_c) - 1.5 * lnAB
+    ln_sum = np.logaddexp(12.0 * np.log(8.0), lnP)
+    phi_c = 8.0 * np.exp(ln_sum / 12.0)
+
+    # Chain rule through ln P, with dA/(A + B) and dB/(A + B) kept in log space
+    dA_AB = 16.0 * 2.457 * np.sign(L) * np.exp(15.0 * ln_aL - lnAB) * dL
+    dB_AB = -16.0 * np.exp(lnB - lnAB) / Re_c
+    dlnP = 12.0 / Re_c - 1.5 * (dA_AB + dB_AB)
+    dphi_c = phi_c * np.exp(lnP - ln_sum) * dlnP / 12.0
+
+    # Above the cap, f = phi_c / Re_c is constant, so phi = f Re
+    capped = Re > _RE_MAX
+    f_c = phi_c / Re_c
+    phi = np.where(capped, f_c * Re, phi_c)
+    dphi = np.where(capped, f_c, dphi_c)
+    return phi, dphi
+
+
+def _gnielinski_values(
+    Re: npt.NDArray[np.float64], Pr: npt.NDArray[np.float64], rel_roughness: float
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Gnielinski turbulent Nu, with Churchill Darcy f, and its derivatives wrt Re and Pr."""
+    phi, dphi = get_friction_factor(Re, rel_roughness)
+    f = phi / Re
+    df_dRe = (dphi - f) / Re
+
+    # Nu = k (Re - 1000) Pr / D, with k = f/8 and D = 1 + 12.7 sqrt(k) (Pr^(2/3) - 1)
+    k = f / 8.0
+    s = np.sqrt(k)
+    pr_term = Pr ** (2.0 / 3.0) - 1.0
+    D = 1.0 + 12.7 * s * pr_term
+    Nu = k * (Re - 1000.0) * Pr / D
+
+    # Quotient rule through k(Re) and Pr
+    dk_dRe = df_dRe / 8.0
+    dD_dRe = 12.7 * pr_term * dk_dRe / (2.0 * s)
+    dNu_dRe = ((dk_dRe * (Re - 1000.0) + k) * Pr - Nu * dD_dRe) / D
+    dD_dPr = 12.7 * s * (2.0 / 3.0) * Pr ** (-1.0 / 3.0)
+    dNu_dPr = (k * (Re - 1000.0) - Nu * dD_dPr) / D
+    return Nu, dNu_dRe, dNu_dPr
+
+
+def get_nusselt_number(
+    Re: npt.NDArray[np.float64],
+    Pr: npt.NDArray[np.float64],
+    rel_roughness: float,
+    *,
+    parallel_plates: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Nusselt number and its derivatives wrt Re and Pr, for pipes or parallel plates.
+
+    Constant laminar Nu below Re = 2000, Gnielinski above Re = 2300, and log-interpolated between.
+    Re and Pr are clipped to Gnielinski's range of validity (`_RE_MAX`, `_PR_MIN`-`_PR_MAX`).
+    """
+    Re = np.asarray(Re, dtype=np.float64)
+    Pr_in = np.asarray(Pr, dtype=np.float64)
+    Nu_lam = _NU_LAM_PLATES if parallel_plates else _NU_LAM_PIPE
+
+    # Pr clipped into Gnielinski's range of validity; Nu is constant in Pr outside it
+    Pr = np.clip(Pr_in, _PR_MIN, _PR_MAX)
+    pr_inside = (Pr_in > _PR_MIN) & (Pr_in < _PR_MAX)
+
+    # Turbulent: Gnielinski, evaluated with Re clipped into its range of validity
+    Nu_turb, dturb_dRe, dturb_dPr = _gnielinski_values(np.clip(Re, _RE_TURBULENT, _RE_MAX), Pr, rel_roughness)
+    dturb_dRe = np.where(Re > _RE_MAX, 0.0, dturb_dRe)
+
+    # Transition: log-interpolate from Nu_lam at Re = 2000 to Gnielinski at Re = 2300
+    Nu_2300, _, d2300_dPr = _gnielinski_values(np.full_like(Re, _RE_TURBULENT), Pr, rel_roughness)
+    log_span = np.log(_RE_TURBULENT / _RE_LAMINAR)
+    w = np.log(np.clip(Re, _RE_LAMINAR, _RE_TURBULENT) / _RE_LAMINAR) / log_span
+    Nu_trans = Nu_lam ** (1.0 - w) * Nu_2300**w
+    dtrans_dRe = Nu_trans * np.log(Nu_2300 / Nu_lam) / (np.maximum(Re, _RE_MIN) * log_span)
+    dtrans_dPr = Nu_trans * w * d2300_dPr / Nu_2300
+
+    # Select the regime
+    laminar = Re <= _RE_LAMINAR
+    turbulent = Re >= _RE_TURBULENT
+    Nu = np.where(laminar, Nu_lam, np.where(turbulent, Nu_turb, Nu_trans))
+    dNu_dRe = np.where(laminar, 0.0, np.where(turbulent, dturb_dRe, dtrans_dRe))
+    dNu_dPr = np.where(laminar | ~pr_inside, 0.0, np.where(turbulent, dturb_dPr, dtrans_dPr))
+    return Nu, dNu_dRe, dNu_dPr

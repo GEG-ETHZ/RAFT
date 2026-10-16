@@ -19,6 +19,7 @@
 
 import bisect
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,8 @@ import numpy as np
 import numpy.typing as npt
 
 from .matprops import get_EOS, get_porosity, get_viscosity
-from .shapefunctions import GNMATRIX_FUNCS, getB
+from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
+from .solvers import rate_coefficients
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
@@ -242,6 +244,93 @@ def compute_fluid_flux(  # noqa
     return q
 
 
+def compute_well_flux(
+    mesh_well: dict[str, Any],
+    material: dict[str, Any],
+    p: npt.NDArray[np.float64],
+    T: npt.NDArray[np.float64],
+    T_flow: npt.NDArray[np.float64],  # temperature for flow properties, as in the solver
+    gravity: float = 0.0,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Computes well mass flow rate, Reynolds number, and heat transfer coefficient at element midpoints.
+
+    Returns nsd x ne array of mass flow rates along the element tangent, and ne arrays of Reynolds
+    numbers and heat transfer coefficients.
+    Per-element values avoid the cancellation of nodally averaging differently oriented elements.
+    """
+    from .matprops import PropertyResult
+    from .matrixassembly import (
+        _evaluate_well_flow,
+        _evaluate_well_heat_transfer_coefficient,
+        _get_gravity,
+    )
+
+    ne = mesh_well["ne"]
+    nsd = mesh_well["nsd"]
+    conn = mesh_well["conn"]
+    nodes = mesh_well["nodes"]
+    tangent = mesh_well["well_tangent"]
+    region_lists = mesh_well["region_lists"]
+
+    # Initialize output arrays
+    q = np.zeros((nsd, ne))
+    Re = np.zeros(ne)
+    hc = np.zeros(ne)
+
+    # Material properties
+    fluid = material["fluid"]
+    lambda_f = fluid["therm_cond"]
+    wells = material["wells"]
+    g = _get_gravity(nsd, gravity)  # nsd x 1, matching matrixassembly's convention
+
+    # L2 shape functions and gradients at the element midpoint
+    xi_c = np.zeros(1)
+    N_c = NMATRIX_FUNCS["L2"](xi_c).reshape(1, 1, 2)
+    GN_c = GNMATRIX_FUNCS["L2"](xi_c).reshape(1, 1, 2)
+
+    for r, elems in enumerate(region_lists):
+        radius = wells["radius"][r]
+        roughness = wells["roughness"][r]
+        heat_transfer_factor = wells["heat_transfer_factor"][r]
+
+        for e in elems:
+            enodes = conn[e]
+
+            # Project onto the element tangent for 1D local coordinates and gravity
+            t_e = tangent[e].reshape(-1, 1)
+            xI = nodes[enodes, :] @ t_e
+            B_c = getB(GN_c, xI, 1)[0]
+            g_r = t_e.T @ g
+
+            # Nodal density and specific heat, and midpoint viscosity
+            pe = p[enodes].reshape(-1, 1)
+            Te = T[enodes].reshape(-1, 1)
+            Te_flow = T_flow[enodes].reshape(-1, 1)
+            # Density at T_flow, internal energy at T; cp is assembled from temperature derivatives
+            rho_n, _, hf_n = get_EOS(
+                Te, Te_flow, pe, fluid, want_density=True, want_enthalpy=True, want_dT=True
+            )
+            zeros = np.zeros_like(rho_n.value)
+            rho_e = PropertyResult(rho_n.value, zeros, zeros)
+            mu_c = get_viscosity(N_c @ Te_flow, N_c @ pe, fluid)
+
+            # Element mass flow rate along the tangent and Reynolds number, as in the solver
+            _, q_c, _, _, Re_c, _, _ = _evaluate_well_flow(
+                N_c, B_c, B_c @ pe, g_r, mu_c, rho_e, radius, roughness
+            )
+            q[:, e] = t_e.ravel() * q_c.item()
+            Re[e] = Re_c.item()
+
+            # Element heat transfer coefficient, with midpoint Pr from the nodal cp
+            Pr_c = mu_c.value * (N_c @ hf_n.cp) / lambda_f
+            hc_c, _, _ = _evaluate_well_heat_transfer_coefficient(
+                heat_transfer_factor, lambda_f, radius, roughness, Re_c, Pr_c
+            )
+            hc[e] = hc_c.item()
+
+    return q, Re, hc
+
+
 def _extract_cartesian_properties(
     material_list: list[Any], indx: npt.NDArray[np.int64], nsd: int
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -283,13 +372,13 @@ def _export_flow_logs(
     io_path: str,
     t: float,
 ) -> None:
-    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
+    """Export pressure, flow rate, and flow-weighted temperature for each labeled BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
-    # ---- Collect tagged groups
-    tagged_groups = [group for group in BC_config if "tag" in group]
+    # ---- Collect labeled groups
+    labeled_groups = [group for group in BC_config if "label" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -297,18 +386,19 @@ def _export_flow_logs(
             fid.write("time\t")
             fid.write(
                 "\t".join(
-                    f"{grp['tag']}_pressure\t{grp['tag']}_flow\t{grp['tag']}_T" for grp in tagged_groups
+                    f"{grp['label']}_pressure\t{grp['label']}_flow\t{grp['label']}_T"
+                    for grp in labeled_groups
                 )
             )
             fid.write("\n")
 
     # Extract and group flows
-    p = primary_variables["p"][:, 1].flatten()
+    p = primary_variables["p"][:, 0].flatten()
     q = primary_variables["q"].flatten()
-    T = primary_variables["T"][:, 1].flatten()
+    T = primary_variables["T"][:, 0].flatten()
 
     outflow_values: list[float] = []
-    for group in tagged_groups:
+    for group in labeled_groups:
         indx = np.asarray(group["nodes"])
 
         p_group = p[indx]
@@ -499,15 +589,16 @@ def _build_fracture_cell_data(
 ) -> list[dict[str, Any]]:
     """Build per-element aperture and heat transfer coefficient fields for the fracture VTK output.
 
-    Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar
-    aperture and Nusselt number. The heat transfer coefficient is computed as
-    h = nusselt * lambda_f / 2 / aperture, where lambda_f is the fluid thermal conductivity.
+    Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar aperture
+    and heat transfer factor; h is evaluated as in the fracture-matrix conduction coupling.
     """
+    from .matrixassembly import _evaluate_fracture_heat_transfer_coefficient
+
     region_lists = mesh_fracture["region_lists"]
     num_regions = len(region_lists)
 
     apertures = material["fracture"]["aperture"]
-    nusselts = material["fracture"]["nusselt"]
+    heat_transfer_factors = material["fracture"]["heat_transfer_factor"]
     lambda_f = material["fluid"]["therm_cond"]
 
     nelem = len(mesh_fracture["conn"])
@@ -516,8 +607,7 @@ def _build_fracture_cell_data(
 
     for r in range(num_regions):
         w = apertures[r]
-        nu = nusselts[r]
-        h = nu * lambda_f / 2 / w
+        h = _evaluate_fracture_heat_transfer_coefficient(heat_transfer_factors[r], lambda_f, w)
 
         elems = region_lists[r]
         aperture_cell[elems] = w
@@ -527,6 +617,22 @@ def _build_fracture_cell_data(
         {"name": "aperture", "data": _sanitize(aperture_cell)},
         {"name": "heat_transfer_coefficient", "data": _sanitize(h_cell)},
     ]
+
+
+def _build_well_cell_data(mesh_well: dict[str, Any], material: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build per-element well property fields for domain_wells.vtk."""
+    wells = material["wells"]
+    nelem = len(mesh_well["conn"])
+
+    # Assign each well's (region's) properties to its elements
+    fields = {
+        name: np.zeros(nelem) for name in ("diameter", "perforation_conductance", "heat_transfer_factor")
+    }
+    for r, elems in enumerate(mesh_well["region_lists"]):
+        for name, data in fields.items():
+            data[elems] = wells[name][r]
+
+    return [{"name": name, "data": _sanitize(data)} for name, data in fields.items()]
 
 
 def _element_scaled_jacobian(xI: npt.NDArray[np.float64], linear_etype: str) -> float:
@@ -622,6 +728,83 @@ def _build_mesh_quality_cell_data(mesh: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _extrapolate_T_flow(
+    T: npt.NDArray[np.float64], controls: dict[str, Any], dt: list[float]
+) -> npt.NDArray[np.float64]:
+    """Re-create the temperature the solver used for flow properties, from T's time history.
+
+    The linearized solver evaluates flow properties at T extrapolated from the previous
+    timesteps; fixed temperature DoFs hold their prescribed value in every history column, so
+    the extrapolation reproduces them too. The fully coupled solver uses T itself.
+    """
+    T_flow: npt.NDArray[np.float64]
+    if controls["solver_type"] != "linearized":
+        T_flow = T[:, 0]
+    else:
+        _, cx = rate_coefficients(dt, controls["rate_order"])
+        T_flow = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
+    return T_flow
+
+
+@dataclass(frozen=True, slots=True)
+class WellProfile:
+    """Solution along one well, ordered from its first alignment point."""
+
+    s: npt.NDArray[np.float64]  # distance along the well at each node (m)
+    coords: npt.NDArray[np.float64]  # node coordinates, (n_nodes, nsd)
+    p: npt.NDArray[np.float64]  # pressure (Pa)
+    T: npt.NDArray[np.float64]  # temperature (K)
+    inside: npt.NDArray[np.bool_]  # node lies inside the rock domain
+    s_mid: npt.NDArray[np.float64]  # distance along the well at each element midpoint (m)
+    q: npt.NDArray[np.float64]  # mass flow rate in the direction of increasing s (kg/s)
+    reynolds: npt.NDArray[np.float64]
+    heat_transfer_coefficient: npt.NDArray[np.float64]  # well to rock (W/m^2K)
+
+
+def well_profiles(
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    dt: list[float],  # timestep sizes of this step, to re-create T_flow
+) -> list[WellProfile]:
+    """Pressure, temperature and flow along each well, as written to Well.vtk."""
+    wmesh = mesh["well_mesh"]
+    offset = mesh["nn_total"] - wmesh["nn"]  # wells are numbered last
+    p = primary_variables["p"][offset:, 0]
+    T = primary_variables["T"][offset:, 0]
+    T_flow = _extrapolate_T_flow(primary_variables["T"][offset:, :], controls, dt)
+    flux, reynolds, hc = compute_well_flux(wmesh, material, p, T, T_flow, controls["gravity"])
+    q_along = np.einsum("de,ed->e", flux, wmesh["well_tangent"])  # along conn, i.e. along the well
+
+    # A well node is inside the domain if it coincides with a matrix node
+    inside = np.zeros(wmesh["nn"], dtype=bool)
+    for well_nodes, matrix_nodes in zip(wmesh["conn"], wmesh["matrix_node_conn"], strict=True):
+        for w, m in zip(well_nodes, matrix_nodes, strict=True):
+            inside[w] |= m >= 0
+
+    profiles = []
+    for elems in wmesh["region_lists"]:
+        # Elements are stored in order from the well's first alignment point
+        nodes = [wmesh["conn"][elems[0]][0]] + [wmesh["conn"][e][1] for e in elems]
+        coords = wmesh["nodes"][nodes]
+        s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(coords, axis=0), axis=1))])
+        profiles.append(
+            WellProfile(
+                s=s,
+                coords=coords,
+                p=p[nodes],
+                T=T[nodes],
+                inside=inside[nodes],
+                s_mid=0.5 * (s[:-1] + s[1:]),
+                q=q_along[elems],
+                reynolds=reynolds[elems],
+                heat_transfer_coefficient=hc[elems],
+            )
+        )
+    return profiles
+
+
 def _write_matrix_output(
     n: int,
     io_path: str,
@@ -629,6 +812,7 @@ def _write_matrix_output(
     controls: dict[str, Any],  # noqa
     material: dict[str, Any],
     primary_variables: dict[str, Any],
+    dt: list[float],  # timestep sizes of this step, to re-create T_flow
     verbose: bool,
 ) -> None:
     """Compute fluxes and write one solution to VTK for the matrix."""
@@ -641,9 +825,10 @@ def _write_matrix_output(
     # ----- Extract primary variables
     p = primary_variables["p"][0:nn, 0]
     T = primary_variables["T"][0:nn, 0]
+    T_flow = _extrapolate_T_flow(primary_variables["T"][0:nn, :], controls, dt)  # flow property temperature
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh, material, p, T, False, controls["gravity"])
+    flux = compute_fluid_flux(mesh, material, p, T_flow, False, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
 
@@ -669,6 +854,7 @@ def _write_fracture_output(
     controls: dict[str, Any],  # noqa
     material: dict[str, Any],
     primary_variables: dict[str, Any],
+    dt: list[float],  # timestep sizes of this step, to re-create T_flow
     verbose: bool,
 ) -> None:
     """Compute fluxes and write one solution to VTK for the fracture."""
@@ -676,15 +862,18 @@ def _write_fracture_output(
         print("     Writing fractures to output file...")
 
     nn = mesh["nn"]
-    nn_tot = mesh["nn_total"]
+    nn_f = nn + mesh["fracture_mesh"]["nn"]
     filename = os.path.join(io_path, f"Fracture.vtk.{n}")
 
-    # ----- Extract primary variables
-    p = primary_variables["p"][nn:(nn_tot), 0]
-    T = primary_variables["T"][nn:(nn_tot), 0]
+    # ----- Extract primary variables (fracture nodes follow matrix nodes)
+    p = primary_variables["p"][nn:nn_f, 0]
+    T = primary_variables["T"][nn:nn_f, 0]
+    T_flow = _extrapolate_T_flow(
+        primary_variables["T"][nn:nn_f, :], controls, dt
+    )  # flow property temperature
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T, True, controls["gravity"])
+    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T_flow, True, controls["gravity"])
 
     scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
 
@@ -703,6 +892,79 @@ def _write_fracture_output(
     )
 
 
+def _write_well_output(
+    n: int,
+    io_path: str,
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    dt: list[float],  # timestep sizes of this step, to re-create T_flow
+    verbose: bool,
+) -> None:
+    """Compute mass flow rates and write one solution to VTK for the wells."""
+    if verbose:
+        print("     Writing wells to output file...")
+
+    wmesh = mesh["well_mesh"]
+    nn_tot = mesh["nn_total"]
+    filename = os.path.join(io_path, f"Well.vtk.{n}")
+
+    # ----- Extract primary variables (well nodes are last in the global numbering)
+    p = primary_variables["p"][nn_tot - wmesh["nn"] : nn_tot, 0]
+    T = primary_variables["T"][nn_tot - wmesh["nn"] : nn_tot, 0]
+    T_flow = _extrapolate_T_flow(primary_variables["T"][nn_tot - wmesh["nn"] : nn_tot, :], controls, dt)
+
+    # --- Calculate mass flow rates, Reynolds numbers, and heat transfer coefficients
+    flux, reynolds, hc = compute_well_flux(wmesh, material, p, T, T_flow, controls["gravity"])
+
+    scalardata_point = _build_point_scalars(controls, wmesh, material, p, T)
+
+    scalardata_cell = [
+        {"name": "reynolds_number", "data": _sanitize(reynolds)},
+        {"name": "heat_transfer_coefficient", "data": _sanitize(hc)},
+    ]
+
+    vectordata_cell = [{"name": "mass_flow_rate", "data": _sanitize(flux.T)}]  # mass flow rate
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        wmesh["nodes"],
+        wmesh["conn"],
+        scalar_data_point=scalardata_point,
+        scalar_data_cell=scalardata_cell,
+        vector_data_cell=vectordata_cell,
+    )
+
+
+def _export_domain_wells(io_path: str, mesh: dict[str, Any], material: dict[str, Any]) -> None:
+    """Export the wells' static properties to "domain_wells.vtk"."""
+    wmesh = mesh["well_mesh"]
+    filename = os.path.join(io_path, "domain_wells.vtk")
+
+    # Well number of each element
+    well_id = np.zeros(wmesh["ne"])
+    for r, elems in enumerate(wmesh["region_lists"]):
+        well_id[elems] = r
+
+    # Elements outside the domain have no neighbouring matrix elements
+    inside_domain = np.array([float(elems != [-1]) for elems in wmesh["matrix_conn"]])
+
+    scalardata_cell = _build_well_cell_data(wmesh, material) + [
+        {"name": "well_id", "data": well_id},
+        {"name": "inside_domain", "data": inside_domain},
+    ]
+
+    write_mesh2vtk(
+        filename,
+        "TANGO",
+        wmesh["nodes"],
+        wmesh["conn"],
+        scalar_data_cell=scalardata_cell,
+    )
+
+
 def export_domain_properties(
     mesh: dict[str, Any],
     controls: dict[str, Any],
@@ -718,7 +980,8 @@ def export_domain_properties(
     mesh quality metrics (scaled Jacobian, skewness, aspect ratio - see
     `_build_mesh_quality_cell_data`) and, when fracturing is on, one
     phi_sign level-set field per fracture (see
-    `_build_phi_sign_point_scalars`).
+    `_build_phi_sign_point_scalars`). When wells are on, also writes
+    "domain_wells.vtk" (see `_export_domain_wells`).
     """
     io_path = prepare_output_directory(controls)
     filename = os.path.join(io_path, "domain.vtk")
@@ -741,6 +1004,9 @@ def export_domain_properties(
         scalar_data_cell=scalardata_cell,
     )
 
+    if controls["wells_on"]:
+        _export_domain_wells(io_path, mesh, material)
+
 
 def postprocessing(
     n: int,
@@ -750,6 +1016,7 @@ def postprocessing(
     BC_config: list[dict[str, Any]],
     primary_variables: dict[str, Any],
     t: float,
+    dt: list[float],  # timestep sizes of this step, to re-create the solver's T_flow
     verbose: bool,
 ) -> dict[str, Any]:
     """Postprocessing of FEM data.
@@ -760,10 +1027,13 @@ def postprocessing(
     output_now = (n % controls["output_frequency"]) == 0
 
     if output_now and controls["output_vtk"]:
-        _write_matrix_output(n, io_path, mesh, controls, material, primary_variables, verbose)
+        _write_matrix_output(n, io_path, mesh, controls, material, primary_variables, dt, verbose)
 
     if output_now and controls["output_vtk"] and controls["fracture_on"]:
-        _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, verbose)
+        _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, dt, verbose)
+
+    if output_now and controls["output_vtk"] and controls["wells_on"]:
+        _write_well_output(n, io_path, mesh, controls, material, primary_variables, dt, verbose)
 
     if output_now:
         _export_flow_logs(n, primary_variables, controls, BC_config, io_path, t)

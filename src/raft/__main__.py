@@ -18,7 +18,7 @@
 """Entry point for running the simulator as a module.
 
 Run a simulation:
-    uv run -m raft some-config-name.yaml
+    uv run -m raft some-config-name
 
 Run the test suite:
     uv run -m raft --test
@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument(
         "config",
         nargs="?",
-        help="Name of the config file (e.g. config_example.yaml) in CONFIG_DIR",
+        help="Name of the config file in CONFIG_DIR, with or without .yaml (e.g. config_example)",
     )
     parser.add_argument(
         "--config-dir",
@@ -46,9 +46,15 @@ def main() -> None:
         help="Directory containing the config file (default: <repo_root>/config/)",
     )
     parser.add_argument(
+        "--verbosity",
+        choices=["quiet", "lite", "full"],
+        default="full",
+        help="Console output: none, one line per timestep attempt, or full detail (default: full)",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
-        help="Suppress simulation output",
+        help="Suppress simulation output (same as --verbosity quiet)",
     )
     parser.add_argument(
         "--test",
@@ -70,7 +76,7 @@ def main() -> None:
         run_sim(
             config_name=args.config,
             config_dir=args.config_dir,
-            verbose=not args.quiet,
+            verbosity="quiet" if args.quiet else args.verbosity,
         )
     else:
         parser.print_help()
