@@ -12,6 +12,7 @@ adopt SemVer strictly.
 - `"external"` boundary condition function, set through the coupling API, with `"step"` or `"linear"` interpolation over each coupling step. Flow rates are given in kg/s for the whole group.
 - Config files can be named without their `.yaml` extension, on the command line and in `subsurface.main`/`RaftModel`.
 - `--verbosity {quiet,lite,full}` console output levels; `subsurface.main` and `RaftModel` take the same `verbosity="lite"`, etc., replacing their `verbose=True/False` argument. `lite` prints one line per timestep attempt, including cut and retried steps.
+- `RaftModel.solve_stats` (internal timesteps, cut attempts and timing of the last `solve`) and `RaftModel.well_profiles()` (pressure, temperature and flow along each well).
 - `config_example_AGS_coupled.yaml` and `scripts/coupling_example.py`: the AGS example coupled to a simple plant heat exchanger.
 
 ### Changed

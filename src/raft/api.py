@@ -29,9 +29,10 @@ from typing import Any
 import numpy as np
 
 from .logging_utils import RunLogger
-from .postprocessing import postprocessing, prepare_output_directory
+from .postprocessing import WellProfile, postprocessing, prepare_output_directory, well_profiles
 from .preprocessing import preprocessing
 from .subsurface import (
+    StepStats,
     Verbosity,
     _load_wb,
     _rollover,
@@ -113,6 +114,9 @@ class RaftModel:
             self._labels = sorted({ext.label for ext in self._external})
             self._trial = self._current
             self._trial_pending = False
+            # Last accepted step before its history shift, for well profiles; statistics of the last solve
+            self._accepted = self._current
+            self.solve_stats = StepStats()
 
     def solve(
         self, t_start: float, t_end: float, bcs: dict[str, dict[str, float]]
@@ -140,7 +144,10 @@ class RaftModel:
 
             # Advance a trial from the current state; a failed solve leaves no trial pending
             self._trial_pending = False
-            self._trial = advance(self._setup, start, t_end, self.verbose, progress=self._progress)
+            self.solve_stats = StepStats()
+            self._trial, self.solve_stats = advance(
+                self._setup, start, t_end, self.verbose, progress=self._progress
+            )
             self._trial_pending = True
 
             # Report each external group at t_end
@@ -182,7 +189,18 @@ class RaftModel:
                 setup.BC_config,
                 trial.ext_values,
             )
+            self._accepted = trial
             self._trial_pending = False
+
+    def well_profiles(self) -> list[WellProfile]:
+        """Pressure, temperature and flow along each well: the pending trial, else the last accepted step."""
+        if "well_mesh" not in self._setup.mesh:
+            raise ValueError("This model has no wells.")
+        state = self._trial if self._trial_pending else self._accepted
+        setup = self._setup
+        return well_profiles(
+            setup.mesh, setup.controls, setup.material, state.primary_variables, state.dt_hist[1:4]
+        )
 
     def _resume_log(self, run_logger: RunLogger) -> None:
         """Append this call's output to run.log, when logging is on."""

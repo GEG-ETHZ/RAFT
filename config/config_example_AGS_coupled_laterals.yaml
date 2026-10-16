@@ -77,7 +77,7 @@ boundary_conditions:
 
       # Set each coupling step by the power plant through the API (raft.api.RaftModel)
       - well: [0, "inlet"]
-        label: "inlet"
+        label: "well_1_inlet"
         hydraulics:
             type: "flux"              # API input "q", kg/s
             function: "external"
@@ -87,7 +87,7 @@ boundary_conditions:
             interpolation: "linear"     # or "linear", from the last accepted value
 
       - well: [0, "outlet"]
-        label: "outlet"
+        label: "well_1_outlet"
         hydraulics:
             type: "pressure"          # API input "p"
             function: "external"

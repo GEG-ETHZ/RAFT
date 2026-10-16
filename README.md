@@ -438,6 +438,12 @@ for t_start, t_end in coupling_steps:
   * Returns, for each label, `p` and `T` (arithmetic mean over the group's nodes, not flow-weighted), `q` (summed over the nodes, kg/s, positive into the domain) and `mode`, the active hydraulic condition: `"flux"`, `"pressure"` (for a pressure group, or a flux group held at a pressure [constraint](#boundary_conditions)) or `"none"` for a thermal-only group.
   * If the solver fails at `timestep_min`, `solve` raises `raft.subsurface.TimestepError` and the accepted state is unchanged, so the step can be retried, for example with a shorter coupling step.
 * **`get_fresh()`**: accepts the last `solve` and writes one output frame at its end time, so `output_frequency` counts coupling steps. Calling it without a new `solve` raises an error.
+* **`solve_stats`**: what the last `solve` did internally, as `raft.subsurface.StepStats`:
+  * `accepted_steps` and `dt_accepted`: the number and sizes of the internal timesteps taken.
+  * `attempts`: every timestep solve, including rejected ones; `cut_extrapolation` and `cut_newton` count rejections for temperature extrapolation error and Newton–Raphson failure.
+  * `constraint_switches`: extra solves after a wellbore constraint switched. `dt_min_proceeds`: steps accepted at `timestep_min` despite an error above tolerance.
+  * `wall_time`: seconds spent in the `solve`.
+* **`well_profiles()`**: one `WellProfile` per well, for the pending trial, or else the last accepted step. Nodes run from the well's first alignment point: `s` (distance along the well), `coords`, `p`, `T` and `inside` (whether the node lies in the rock domain). Element values sit at `s_mid`: `q` (mass flow rate in the direction of increasing `s`, kg/s), `reynolds` and `heat_transfer_coefficient` (well to rock). These are the same values written to `Well.vtk`.
 
 Notes:
 * RAFT chooses its own timesteps inside each coupling step and lands exactly on `t_end`. A coupling step longer than the internal timestep takes several internal steps, and each `solve` repeats all of them, so the iteration cost grows with the number of internal steps per coupling step.

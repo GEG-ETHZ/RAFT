@@ -26,6 +26,7 @@ import pytest
 import yaml
 
 import raft.api
+import raft.subsurface
 from raft.api import RaftModel
 from raft.preprocessing import _validate_external_groups
 from raft.subsurface import TimestepError, main
@@ -259,3 +260,59 @@ def test_external_group_validation(second: dict[str, Any], message: str) -> None
     inlet = {"well": [0, "inlet"], "label": "inlet", "hydraulics": {"type": "flux", "function": "external"}}
     with pytest.raises(ValueError, match=message):
         _validate_external_groups([inlet, second])
+
+
+# ----- Diagnostics
+PERFORM_TIME_INTEGRATION = raft.subsurface._perform_time_integration
+
+
+class _FailFirstAttempt:
+    """Report a Newton-Raphson failure on the first call, then integrate normally."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, *args: Any) -> Any:
+        self.calls += 1
+        primary_variables, dt, converged, timestep_error = PERFORM_TIME_INTEGRATION(*args)
+        if self.calls == 1:
+            return primary_variables, dt, False, -1
+        return primary_variables, dt, converged, timestep_error
+
+
+def test_solve_stats_count_steps_and_cuts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cut attempt is counted, and the accepted steps exactly cover the coupling step."""
+    config_name = _transient_config(tmp_path)
+    config = yaml.safe_load((tmp_path / config_name).read_text())
+    config["simulation"]["timestep_min"] = 10.0
+    (tmp_path / config_name).write_text(yaml.safe_dump(config))
+    monkeypatch.setattr(raft.subsurface, "_perform_time_integration", _FailFirstAttempt())
+
+    model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
+    model.solve(0.0, T_END, {})
+    stats = model.solve_stats
+
+    assert stats.cut_newton == 1
+    assert stats.cut_extrapolation == 0
+    assert stats.attempts == stats.accepted_steps + 1
+    assert stats.dt_accepted[0] == 0.5 * DT
+    assert sum(stats.dt_accepted) == pytest.approx(T_END, rel=1e-12)
+
+
+def test_well_profile_follows_the_well(tmp_path: Path) -> None:
+    """Nodes run from the well head, values match the solution, and steady flow carries the inlet rate."""
+    model = RaftModel(_external_config(tmp_path), 0.0, config_dir=tmp_path, verbosity="quiet")
+    model.solve(0.0, DT, {"inlet": INLET, "outlet": OUTLET})
+    (profile,) = model.well_profiles()
+
+    assert profile.s[0] == 0.0
+    assert np.all(np.diff(profile.s) > 0)
+    mesh = model._setup.mesh
+    offset = mesh["nn_total"] - mesh["well_mesh"]["nn"]
+    head = mesh["well_mesh"]["head_nodes"][0]
+    np.testing.assert_array_equal(profile.p[0], _trial(model)["p"][offset + head, 0])
+    np.testing.assert_allclose(profile.q, INLET["q"], rtol=1e-4)
+
+    # After acceptance the profile comes from the accepted step, unchanged
+    model.get_fresh()
+    np.testing.assert_array_equal(model.well_profiles()[0].T, profile.T)

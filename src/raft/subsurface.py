@@ -19,8 +19,10 @@
 
 import argparse
 import copy
+import dataclasses
 import datetime
 import sys
+import time
 from collections import deque
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -783,6 +785,24 @@ class SimSetup:
     critical_times: npt.NDArray[np.float64]
 
 
+@dataclass(slots=True)
+class StepStats:
+    """What one call of advance did: timestep attempts, cuts and the steps taken."""
+
+    attempts: int = 0  # every solve of a timestep, including rejected ones
+    cut_extrapolation: int = 0  # attempts rejected for temperature extrapolation error
+    cut_newton: int = 0  # attempts rejected because Newton-Raphson failed
+    constraint_switches: int = 0  # extra solves after a wellbore constraint switched
+    dt_min_proceeds: int = 0  # steps accepted at timestep_min despite an error above tolerance
+    dt_accepted: list[float] = dataclasses.field(default_factory=list)  # size of each accepted step
+    wall_time: float = 0.0  # seconds
+
+    @property
+    def accepted_steps(self) -> int:
+        """Number of internal timesteps taken."""
+        return len(self.dt_accepted)
+
+
 def advance(  # noqa
     setup: SimSetup,
     state: SimState,
@@ -790,8 +810,10 @@ def advance(  # noqa
     verbose: bool,
     write_steps: bool = False,
     progress: bool = False,
-) -> SimState:
+) -> tuple[SimState, StepStats]:
     """Advance from state to exactly t_target; the returned state precedes the history rollover."""
+    stats = StepStats()
+    wall_start = time.perf_counter()
     controls = setup.controls
     mesh = setup.mesh
     material = setup.material
@@ -807,6 +829,7 @@ def advance(  # noqa
 
     while True:
         # Loop through timesteps; every attempt is reported, so cut and retried steps show up
+        stats.attempts += 1
         if verbose:
             print(f"Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
         elif progress:
@@ -836,6 +859,7 @@ def advance(  # noqa
             BC_satisfied, BC_config = _check_BC_constraints(BC_config, primary_variables, t, WB_on, verbose)
             if BC_satisfied:
                 break
+            stats.constraint_switches += 1
 
         # Check error and propose the next timestep
         t_solved = t
@@ -844,7 +868,14 @@ def advance(  # noqa
             controls["solver_type"], t, dt, controls, converged, timestep_error, verbose
         )
         if not accepted:  # retry current timestep
+            if controls["solver_type"] == "linearized" and timestep_error != -1:
+                stats.cut_extrapolation += 1
+            else:
+                stats.cut_newton += 1
             continue
+        if not converged:
+            stats.dt_min_proceeds += 1
+        stats.dt_accepted.append(dt_step[0])
 
         if write_steps:
             if verbose:
@@ -855,9 +886,11 @@ def advance(  # noqa
 
         if t_solved >= t_target:
             dt_hist = [dt[0], *dt_step]  # dt[0] is the unclamped proposal
-            return snapshot_state(
+            stats.wall_time = time.perf_counter() - wall_start
+            final = snapshot_state(
                 t_solved, n_step, state.n_out, dt_hist, primary_variables, BC_config, state.ext_values
             )
+            return final, stats
 
         _rollover(primary_variables, BC_config, WB_on)
         n_step += 1
@@ -969,7 +1002,7 @@ def main(  # noqa
 
         setup, state = initialize_simulation(config, mesh, controls["t_start"], detailed)
         try:
-            state = advance(setup, state, controls["t_end"], detailed, write_steps=True, progress=progress)
+            state, _ = advance(setup, state, controls["t_end"], detailed, write_steps=True, progress=progress)
         except TimestepError as err:
             print(f"     {err}")
             sys.exit(1)
