@@ -6,7 +6,7 @@ mesh:
         values: [[-51, -50], [102, 75]]
   sizing:  # element sizes, used by scripts/raft_to_geo.py
       outer: 20
-      frac: [[0.25, 0.5, 2], [0.5, 5, 20]]
+      frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
   regions:
       - shape: "sphere"
@@ -71,7 +71,7 @@ boundary_conditions:
         # Inlet/outlet example: a rate-controlled well, switching to a pressure
         # limit if it would otherwise exceed the given bounds.
         - lines: [[[43.4, 20.0], [45, 30]]]
-          tag: "inlet"
+          label: "inlet"
           hydraulics:
               type: "flux"
               values: [[0, 0.01], 1000]
@@ -84,7 +84,7 @@ boundary_conditions:
               values: [330]
 
         - lines: [[[0, 40.0], [-20, 25]]]
-          tag: "outlet"
+          label: "outlet"
           hydraulics:
               type: "flux"
               values: [[0, -0.01], 1000]

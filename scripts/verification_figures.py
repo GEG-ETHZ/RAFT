@@ -60,7 +60,7 @@ def main_figures() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for prefix, config, check, test_name, suffixes in CASES:
         plt.close("all")
-        results, mesh = main(config_name=config, config_dir=CASE_DIR, verbose=False)
+        results, mesh = main(config_name=config, config_dir=CASE_DIR, verbosity="quiet")
         check(config, CASE_DIR, results, mesh, test_name, True)
         for num, suffix in zip(plt.get_fignums(), suffixes, strict=True):
             fig = plt.figure(num)

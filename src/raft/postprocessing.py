@@ -19,6 +19,7 @@
 
 import bisect
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -371,13 +372,13 @@ def _export_flow_logs(
     io_path: str,
     t: float,
 ) -> None:
-    """Export pressure, flow rate, and flow-weighted temperature for each tagged BC group."""
+    """Export pressure, flow rate, and flow-weighted temperature for each labeled BC group."""
     # ---- File name
     name = "outflow.log"
     filename = os.path.join(io_path, name)  # results folder path
 
-    # ---- Collect tagged groups
-    tagged_groups = [group for group in BC_config if "tag" in group]
+    # ---- Collect labeled groups
+    labeled_groups = [group for group in BC_config if "label" in group]
 
     # ---- Clear file on first pass
     if n == 0:
@@ -385,18 +386,19 @@ def _export_flow_logs(
             fid.write("time\t")
             fid.write(
                 "\t".join(
-                    f"{grp['tag']}_pressure\t{grp['tag']}_flow\t{grp['tag']}_T" for grp in tagged_groups
+                    f"{grp['label']}_pressure\t{grp['label']}_flow\t{grp['label']}_T"
+                    for grp in labeled_groups
                 )
             )
             fid.write("\n")
 
     # Extract and group flows
-    p = primary_variables["p"][:, 1].flatten()
+    p = primary_variables["p"][:, 0].flatten()
     q = primary_variables["q"].flatten()
-    T = primary_variables["T"][:, 1].flatten()
+    T = primary_variables["T"][:, 0].flatten()
 
     outflow_values: list[float] = []
-    for group in tagged_groups:
+    for group in labeled_groups:
         indx = np.asarray(group["nodes"])
 
         p_group = p[indx]
@@ -742,6 +744,65 @@ def _extrapolate_T_flow(
         _, cx = rate_coefficients(dt, controls["rate_order"])
         T_flow = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
     return T_flow
+
+
+@dataclass(frozen=True, slots=True)
+class WellProfile:
+    """Solution along one well, ordered from its first alignment point."""
+
+    s: npt.NDArray[np.float64]  # distance along the well at each node (m)
+    coords: npt.NDArray[np.float64]  # node coordinates, (n_nodes, nsd)
+    p: npt.NDArray[np.float64]  # pressure (Pa)
+    T: npt.NDArray[np.float64]  # temperature (K)
+    inside: npt.NDArray[np.bool_]  # node lies inside the rock domain
+    s_mid: npt.NDArray[np.float64]  # distance along the well at each element midpoint (m)
+    q: npt.NDArray[np.float64]  # mass flow rate in the direction of increasing s (kg/s)
+    reynolds: npt.NDArray[np.float64]
+    heat_transfer_coefficient: npt.NDArray[np.float64]  # well to rock (W/m^2K)
+
+
+def well_profiles(
+    mesh: dict[str, Any],
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    primary_variables: dict[str, Any],
+    dt: list[float],  # timestep sizes of this step, to re-create T_flow
+) -> list[WellProfile]:
+    """Pressure, temperature and flow along each well, as written to Well.vtk."""
+    wmesh = mesh["well_mesh"]
+    offset = mesh["nn_total"] - wmesh["nn"]  # wells are numbered last
+    p = primary_variables["p"][offset:, 0]
+    T = primary_variables["T"][offset:, 0]
+    T_flow = _extrapolate_T_flow(primary_variables["T"][offset:, :], controls, dt)
+    flux, reynolds, hc = compute_well_flux(wmesh, material, p, T, T_flow, controls["gravity"])
+    q_along = np.einsum("de,ed->e", flux, wmesh["well_tangent"])  # along conn, i.e. along the well
+
+    # A well node is inside the domain if it coincides with a matrix node
+    inside = np.zeros(wmesh["nn"], dtype=bool)
+    for well_nodes, matrix_nodes in zip(wmesh["conn"], wmesh["matrix_node_conn"], strict=True):
+        for w, m in zip(well_nodes, matrix_nodes, strict=True):
+            inside[w] |= m >= 0
+
+    profiles = []
+    for elems in wmesh["region_lists"]:
+        # Elements are stored in order from the well's first alignment point
+        nodes = [wmesh["conn"][elems[0]][0]] + [wmesh["conn"][e][1] for e in elems]
+        coords = wmesh["nodes"][nodes]
+        s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(coords, axis=0), axis=1))])
+        profiles.append(
+            WellProfile(
+                s=s,
+                coords=coords,
+                p=p[nodes],
+                T=T[nodes],
+                inside=inside[nodes],
+                s_mid=0.5 * (s[:-1] + s[1:]),
+                q=q_along[elems],
+                reynolds=reynolds[elems],
+                heat_transfer_coefficient=hc[elems],
+            )
+        )
+    return profiles
 
 
 def _write_matrix_output(

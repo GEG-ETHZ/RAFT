@@ -68,7 +68,7 @@ boundary_conditions:
             values: [300]
 
       - well: [0, "outlet"]
-        tag: "outlet"
+        label: "outlet"
         hydraulics:
             type: "pressure"
             values: [1.0e+6]

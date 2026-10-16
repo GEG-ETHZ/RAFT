@@ -2342,7 +2342,10 @@ def _create_well_section(
 
 
 def _create_well_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
-    """Create 1D well mesh along existing matrix element edges."""
+    """Create 1D well mesh along existing matrix element edges.
+
+    Each well's region_lists elements run from its first alignment point, with conn oriented along the well.
+    """
     well_specs = config_mesh["wells"]
     nsd = config_mesh["dimensions"]
     nodes = mesh["nodes"]

@@ -32,6 +32,13 @@ def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[n
     match incoming["function"]:
         case "constant":
             incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["nodes"])
+        case "external":
+            # Standalone runs only; the coupling API replaces this with a table each solve
+            if not incoming.get("values"):
+                raise ValueError(
+                    "External boundary condition has no values; set them via the API or in the config."
+                )
+            incoming["BCvalues"] = [incoming["values"][0]] * len(incoming["nodes"])
         case "linear":
             incoming["BCvalues"] = [t * incoming["values"][0] + incoming["values"][1]] * len(
                 incoming["nodes"]

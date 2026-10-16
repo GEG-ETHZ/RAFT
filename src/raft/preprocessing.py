@@ -250,11 +250,19 @@ def load_config(config_name: str, config_dir: Path | None = None, verbose: bool 
     else:
         config_dir = Path(config_dir)
 
+    # The .yaml suffix may be left off
     config_path = config_dir / config_name
+    if not config_path.is_file():
+        with_suffix = config_dir / f"{config_name}.yaml"
+        if not with_suffix.is_file():
+            raise FileNotFoundError(
+                f"Config '{config_name}' not found in {config_dir} (also tried '{with_suffix.name}')."
+            )
+        config_path = with_suffix
 
     with open(config_path) as f:
         config: dict[str, Any] = yaml.safe_load(f)
-    config["config_name"] = config_name
+    config["config_name"] = config_path.name
     config["config_dir"] = str(config_path.parent)
 
     if verbose:
@@ -458,6 +466,48 @@ def _find_well_BC_node(mesh: dict[str, Any], config_mesh: dict[str, Any], well_B
     return int(mesh["nn_total"] - wmesh["nn"] + local_node)
 
 
+_EXTERNAL_TYPES = {"hydraulics": ("pressure", "flux"), "thermal": ("temperature",)}
+_EXTERNAL_INTERPOLATION = ("step", "linear")
+
+
+def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
+    """Check BC fields with function "external" and mark them with spec["external"] = True."""
+    labels = [group["label"] for group in BC_groups if "label" in group]
+    for group in BC_groups:
+        external_fields = [
+            field for field in ("hydraulics", "thermal") if group.get(field, {}).get("function") == "external"
+        ]
+        if not external_fields:
+            continue
+
+        label = group.get("label")
+        if label is None:
+            raise ValueError(f"External boundary condition fields {external_fields} require a 'label'.")
+        if labels.count(label) > 1:
+            raise ValueError(f"External boundary condition label '{label}' is not unique.")
+
+        for field in external_fields:
+            spec = group[field]
+            if spec["type"] not in _EXTERNAL_TYPES[field]:
+                raise ValueError(
+                    f"External {field} on '{label}' has type '{spec['type']}'; "
+                    f"expected one of {_EXTERNAL_TYPES[field]}."
+                )
+            spec.setdefault("interpolation", "step")
+            if spec["interpolation"] not in _EXTERNAL_INTERPOLATION:
+                raise ValueError(
+                    f"External {field} on '{label}' has interpolation '{spec['interpolation']}'; "
+                    f"expected one of {_EXTERNAL_INTERPOLATION}."
+                )
+            spec["external"] = True
+
+        hydraulics = group.get("hydraulics", {})
+        if hydraulics.get("external") and "constraints" in hydraulics and hydraulics["type"] != "flux":
+            raise ValueError(
+                f"Pressure constraints on external group '{label}' require hydraulics type 'flux'."
+            )
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -471,6 +521,7 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
     4. Well boundary conditions map to the well's inlet or outlet node.
     """
     BC_groups = config["boundary_conditions"]
+    _validate_external_groups(BC_groups)
     nodes = mesh["nodes_total"]
     controls = config["simulation"]
     controls["wellbore_check"] = 0  # Default 0
@@ -596,6 +647,13 @@ def preprocessing(
     config["mesh"]["config_dir"] = config["config_dir"]
 
     mesh = load_mesh(config["mesh"], verbose)
+    if "well_mesh" in mesh:
+        # Well heads (first alignment point), local well numbering
+        offset = mesh["nn_total"] - mesh["well_mesh"]["nn"]
+        mesh["well_mesh"]["head_nodes"] = [
+            _find_well_BC_node(mesh, config["mesh"], [i, "inlet"]) - offset
+            for i in range(len(config["mesh"]["wells"]))
+        ]
 
     config = _preprocess_BCs(mesh, config, verbose)
 
