@@ -34,8 +34,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from raft.api import RaftModel  # noqa: E402
-from raft.postprocessing import WellProfile  # noqa: E402
+from geg_raft.api import RaftModel  # noqa: E402
+from geg_raft.postprocessing import WellProfile  # noqa: E402
 
 DAY = 86400.0
 PLOT_PATH = Path(__file__).parent.parent / "outputs" / "coupling_example_wells.png"
@@ -79,7 +79,7 @@ def main() -> None:
 
     cp = 4250.0  # fluid specific heat, as in the config (J/kgK)
     p_out = 1.0e6
-    model = RaftModel("config_example_AGS_coupled_single.yaml", 0.0, verbosity="lite")
+    model = RaftModel("config_example_AGS_coupled_single.yaml", 0.0, verbosity="quiet")
     # model = RaftModel("config_example_AGS_coupled_laterals.yaml", 0.0, verbosity="lite")
 
     profiles = [(0.0, model.well_profiles()[args.well])]  # initial condition
