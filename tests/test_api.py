@@ -25,11 +25,11 @@ import numpy as np
 import pytest
 import yaml
 
-import raft.api
-import raft.subsurface
-from raft.api import RaftModel
-from raft.preprocessing import _validate_external_groups
-from raft.subsurface import TimestepError, main
+import geg_raft.api
+import geg_raft.subsurface
+from geg_raft.api import RaftModel
+from geg_raft.preprocessing import _validate_external_groups
+from geg_raft.subsurface import TimestepError, main
 
 CONFIG_DIR = Path(__file__).parent / "test_configs"
 DT = 100.0
@@ -110,7 +110,7 @@ def test_timestep_error_keeps_current_state(tmp_path: Path, monkeypatch: pytest.
     expected = _trial(model)
 
     with monkeypatch.context() as patch:
-        patch.setattr(raft.api, "advance", _failing_advance)
+        patch.setattr(geg_raft.api, "advance", _failing_advance)
         with pytest.raises(TimestepError):
             model.solve(DT, 2 * DT, {})
     assert not model._trial_pending
@@ -263,7 +263,7 @@ def test_external_group_validation(second: dict[str, Any], message: str) -> None
 
 
 # ----- Diagnostics
-PERFORM_TIME_INTEGRATION = raft.subsurface._perform_time_integration
+PERFORM_TIME_INTEGRATION = geg_raft.subsurface._perform_time_integration
 
 
 class _FailFirstAttempt:
@@ -286,7 +286,7 @@ def test_solve_stats_count_steps_and_cuts(tmp_path: Path, monkeypatch: pytest.Mo
     config = yaml.safe_load((tmp_path / config_name).read_text())
     config["simulation"]["timestep_min"] = 10.0
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
-    monkeypatch.setattr(raft.subsurface, "_perform_time_integration", _FailFirstAttempt())
+    monkeypatch.setattr(geg_raft.subsurface, "_perform_time_integration", _FailFirstAttempt())
 
     model = RaftModel(config_name, 0.0, config_dir=tmp_path, verbosity="quiet")
     model.solve(0.0, T_END, {})

@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from raft.preprocessing import load_config
+from geg_raft.preprocessing import load_config
 
 
 def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
@@ -540,7 +540,7 @@ def check_NL_viscosity(
     temperature distribution to find the viscosity distribution and numerically
     integrate to find the semi-analytical pressure distribution.
     """
-    from raft.matprops import get_viscosity
+    from geg_raft.matprops import get_viscosity
 
     # Set tolerance
     tol = 1.0e-3

@@ -26,9 +26,9 @@ import numpy as np
 import pytest
 import yaml
 
-from raft.physics import DomainPhysics, Physics
-from raft.preprocessing import DEFAULTS, _apply_defaults, _parse_physics
-from raft.subsurface import main
+from geg_raft.physics import DomainPhysics, Physics
+from geg_raft.preprocessing import DEFAULTS, _apply_defaults, _parse_physics
+from geg_raft.subsurface import main
 
 CASE_DIR = Path(__file__).parent / "test_configs"
 

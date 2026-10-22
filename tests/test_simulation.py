@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 
 import tests.test_checks as test_checks
-from raft.preprocessing import preprocessing
-from raft.subsurface import main
+from geg_raft.preprocessing import preprocessing
+from geg_raft.subsurface import main
 
 
 def _test_data_dir() -> Path:

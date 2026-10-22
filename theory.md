@@ -123,7 +123,11 @@ $$\textbf{R}_T = \textbf{F}_{Tstorage} + \textbf{F}_{Tdiffusion} - \textbf{F}_{T
 | $\textbf{F}_{ext,T}$ | Prescribed Neumann heat flux | External forcing |
 | $\textbf{F}_{enth,\Gamma}$ | see below | Advective enthalpy boundary correction |
 
-$\textbf{F}_{Pstorage}$/$\textbf{F}_{Tstorage}$ use a **lumped-mass** discretization (nodal rather than quadrature-point quantities) to suppress spurious transient oscillations.
+$\textbf{F}_{Pstorage}$/$\textbf{F}_{Tstorage}$ use a **lumped-mass** discretization (nodal rather than quadrature-point quantities) to suppress spurious transient oscillations. The row-sum lumped mass matrix is diagonal,
+
+$$M_{lump,ii} = \sum_j\int_\Omega N_i N_j\,d\Omega = \int_\Omega N_i\,d\Omega,$$
+
+and the storage rates are evaluated from nodal values, e.g. $F_{Pstorage,i} = M_{lump,ii}\,\frac{d}{dt}(\phi_L\rho_f)_i$.
 
 **Advective enthalpy boundary correction** ($\textbf{F}_{enth,\Gamma}$) is a node-wise correction applied at an open pressure/flux (inflow or outflow) node whose temperature is otherwise unconstrained. The inflow/outflow otherwise acts as a false source of energy, and the spurious enthalpy contributions must be removed. $\textbf{F}_{enth,\Gamma}$ subtracts the enthalpy flux $q\,h_f(p,T)$ at that node - where $q$ is the node's mass flow rate and $h_f$ its current enthalpy — to impose an advective open condition on the boundary.
 
@@ -299,19 +303,21 @@ $$\frac{\partial\vec{q}}{\partial\textbf{p}} = \frac{\rho_f\boldsymbol{k}_f}{\mu
 
 $$\frac{\partial\vec{q}}{\partial\textbf{T}} = \frac{\rho_f\boldsymbol{k}_f}{\mu}\left(\frac{\partial\rho_f}{\partial T}\vec{g}\textbf{N}\right) + \left[\frac{\boldsymbol{k}_f}{\mu}\frac{\partial\rho_f}{\partial T} + \frac{\rho_f}{\mu}\frac{\partial k_f}{\partial T} - \frac{\rho_f\boldsymbol{k}_f}{\mu^2}\frac{\partial\mu}{\partial T}\right]\nabla p'\,\textbf{N}$$
 
+**Lumped storage tangents.** Since the storage terms are lumped, their tangents are diagonal: each nodal storage rate depends only on that node's $p_i$, $T_i$. Below, $\text{diag}(\cdot)_i$ is the diagonal matrix of the bracketed quantity evaluated at node $i$, so e.g. $\textbf{M}_{lump}\,\text{diag}(f)_i$ has entries $M_{lump,ii}\,f_i$.
+
 **Conservation of Mass wrt Pressure ($\textbf{K}_{pp}$):**
 
-$$\textbf{K}_{pp} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial p}\rho_f + \phi_L\frac{\partial\rho_f}{\partial p}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{p}}\,d\Omega$$
+$$\textbf{K}_{pp} = \textbf{M}_{lump}\,c_{v0}\,\text{diag}\left(\frac{\partial\phi_L}{\partial p}\rho_f + \phi_L\frac{\partial\rho_f}{\partial p}\right)_i + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{p}}\,d\Omega$$
 
 **Conservation of Mass wrt Temperature ($\textbf{K}_{pT}$):**
 
-$$\textbf{K}_{pT} = \int_\Omega \textbf{N}^\top c_{v1}\left(\frac{\partial\phi_L}{\partial T}\rho_f + \phi_L\frac{\partial\rho_f}{\partial T}\right)\textbf{N}\,d\Omega + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{T}}\,d\Omega$$
+$$\textbf{K}_{pT} = \textbf{M}_{lump}\,c_{v0}\,\text{diag}\left(\frac{\partial\phi_L}{\partial T}\rho_f + \phi_L\frac{\partial\rho_f}{\partial T}\right)_i + \int_\Omega \textbf{B}^\top \frac{\partial\vec{q}}{\partial\textbf{T}}\,d\Omega$$
 
 **Conservation of Energy wrt Pressure ($\textbf{K}_{Tp}$):**
 
 $$\textbf{K}_{Tp} = \frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_\lambda}{\partial\textbf{p}^n} + \frac{\partial\textbf{F}_{stab}}{\partial\textbf{p}^n}$$
 
-$$\frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]\textbf{N}\,d\Omega$$
+$$\frac{\partial\textbf{F}_C}{\partial\textbf{p}^n} = \textbf{M}_{lump}\,c_{v0}\,\text{diag}\left[\frac{\partial\phi_L}{\partial p}\left(\rho_f u_f - \rho_s c_{ps}T\right) + \phi_L\left(\frac{\partial\rho_f}{\partial p}u_f + \rho_f\frac{\partial u_f}{\partial p}\right)\right]_i$$
 
 $$\frac{\partial\textbf{F}_A}{\partial\textbf{p}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial p}\vec{q}\textbf{N} + h_f\frac{\partial\vec{q}}{\partial\textbf{p}}\right)d\Omega$$
 
@@ -330,7 +336,7 @@ $$\frac{\partial\mathcal{R}}{\partial\textbf{p}} = c_{v0}\left[\frac{\partial\ph
 
 $$\textbf{K}_{TT} = \frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_\lambda}{\partial\textbf{T}^n} + \frac{\partial\textbf{F}_{stab}}{\partial\textbf{T}^n}$$
 
-$$\frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} = \int_{\Omega} \textbf{N}^\top c_{v0}\left[(1-\phi_L)\rho_s c_{ps} + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right) + \frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T\right)\right]\textbf{N}\,d\Omega$$
+$$\frac{\partial\textbf{F}_C}{\partial\textbf{T}^n} = \textbf{M}_{lump}\,c_{v0}\,\text{diag}\left[(1-\phi_L)\rho_s c_{ps} + \phi_L\left(\frac{\partial\rho_f}{\partial T}u_f + \rho_f\frac{\partial u_f}{\partial T}\right) + \frac{\partial\phi_L}{\partial T}\left(\rho_f u_f - \rho_s c_{ps}T\right)\right]_i$$
 
 $$\frac{\partial\textbf{F}_A}{\partial\textbf{T}^n} = \int_\Omega \textbf{B}^\top\cdot\left(\frac{\partial h_f}{\partial T}\vec{q}\textbf{N} + h_f\frac{\partial\vec{q}}{\partial\textbf{T}}\right)d\Omega$$
 
