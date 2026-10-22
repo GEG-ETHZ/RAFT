@@ -22,8 +22,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from raft.matprops import get_EOS
-from raft.subsurface import (
+from geg_raft.matprops import get_EOS
+from geg_raft.subsurface import (
     _assign_well_ic_from_matrix,
     _check_BC_constraints,
     _initialize_WB_checks,

@@ -18,10 +18,10 @@
 """Entry point for running the simulator as a module.
 
 Run a simulation:
-    uv run -m raft some-config-name
+    uv run -m geg_raft some-config-name
 
 Run the test suite:
-    uv run -m raft --test
+    uv run -m geg_raft --test
 """
 
 import argparse
@@ -31,7 +31,7 @@ from pathlib import Path
 def main() -> None:
     """Run the TANGO geothermal simulator."""
     parser = argparse.ArgumentParser(
-        prog="raft",
+        prog="geg_raft",
         description="RAFT - Reservoir Analysis for TANGO",
     )
     parser.add_argument(
@@ -71,7 +71,7 @@ def main() -> None:
 
         sys.exit(pytest.main(["tests"]))
     elif args.config:
-        from raft.subsurface import main as run_sim
+        from geg_raft.subsurface import main as run_sim
 
         run_sim(
             config_name=args.config,

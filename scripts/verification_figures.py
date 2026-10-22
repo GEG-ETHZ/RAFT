@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT))  # for tests.test_checks
 
 import tests.test_checks as test_checks  # noqa: E402
 
-from raft.subsurface import main  # noqa: E402
+from geg_raft.subsurface import main  # noqa: E402
 
 CASE_DIR = ROOT / "tests" / "test_configs"
 OUT_DIR = ROOT / "figures" / "verification"

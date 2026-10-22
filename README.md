@@ -50,7 +50,17 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
 
 
 ### Installation
-1. navigate to the raft directory and run `uv sync`
+RAFT is published on PyPI as `geg-raft`:
+```
+pip install geg-raft
+```
+and imported as:
+```python
+import geg_raft as raft
+```
+
+For development:
+1. navigate to the repository directory and run `uv sync`
 1. execute a script via: `uv run some_script.py`
 
 
@@ -65,11 +75,11 @@ This builds the Sphinx HTML docs (including this README and [theory.md](theory.m
 ## Running the simulation
 Run a simulation by passing a config file name:
 ```
-uv run -m raft **config file name** **options**
+uv run -m geg_raft **config file name** **options**
 ```
 For example, to run the example config with one progress line per timestep:
 ```
-uv run -m raft config_example --verbosity lite
+uv run -m geg_raft config_example --verbosity lite
 ```
 
 The config name may be given with or without its `.yaml` extension, and is looked up in the `config/` directory unless `--config-dir` points elsewhere. The mesh file named under `mesh: file:` is read from the same directory. Running without a config name prints the help.
@@ -348,7 +358,7 @@ A group with only `hydraulics` affects pressure alone; a group with only `therma
   * Requires a `label`, unique among all labeled groups. Allowed types: `hydraulics` `"pressure"` or `"flux"`, and `thermal` `"temperature"`. `constraints` are allowed on a `"flux"` group.
   * A flow rate is given to the API as a total for the group in kg/s and spread over the group's nodes, line or face.
   * `interpolation` *(string, default: `"step"`)*: `"step"` holds the new value over the whole coupling step; `"linear"` ramps from the last accepted value to the new one. The first coupling step is always stepwise.
-  * `values` is optional; if given, it is used as a constant when the config is run directly with `uv run -m raft`.
+  * `values` is optional; if given, it is used as a constant when the config is run directly with `uv run -m geg_raft`.
 
 **Label Specification (Optional):**
 Flow boundary condition groups can optionally be marked with a `label: "groupname"` entry. If they are marked with a label, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:
@@ -421,9 +431,9 @@ Numerical solver controls
 `raft.RaftModel` couples RAFT to an external simulator running in the same Python process that sets the boundary conditions. The RaftModel relies on the external simulator to determine when a coupling timestep is converged and requires an explicit call to accept the trial state and proceed to the next timestep. Every `solve` restarts from the last accepted state, so it can be repeated as often as needed.
 
 ```python
-from raft import RaftModel
+import geg_raft as raft
 
-model = RaftModel("config_example_AGS_coupled.yaml", t_start=0.0)
+model = raft.RaftModel("config_example_AGS_coupled.yaml", t_start=0.0)
 for t_start, t_end in coupling_steps:
     while not converged:
         bcs = {"inlet": {"p": p_in, "T": T_in, "q": q_in}, "outlet": {"p": p_out, "T": T_out, "q": q_out}}
@@ -540,7 +550,7 @@ Region boundaries are refined according to their proximity to fractures, wells a
     │   ├── plot_fluid_props.py
     │   └── plot_fluid_props_functionofpressure.py
     ├── src/
-    │   └── raft/
+    │   └── geg_raft/
     │       ├── __init__.py
     │       ├── __main__.py
     │       ├── api.py

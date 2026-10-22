@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from raft.subsurface import TimestepError, _clamp_to_critical, _update_time
+from geg_raft.subsurface import TimestepError, _clamp_to_critical, _update_time
 
 
 def _controls() -> dict[str, Any]:

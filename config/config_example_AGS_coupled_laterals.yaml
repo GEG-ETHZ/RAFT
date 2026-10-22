@@ -75,7 +75,7 @@ boundary_conditions:
             type: "pressure"
             values: [1.0e6]
 
-      # Set each coupling step by the power plant through the API (raft.api.RaftModel)
+      # Set each coupling step by the power plant through the API (geg_raft.api.RaftModel)
       - well: [0, "inlet"]
         label: "well_1_inlet"
         hydraulics:

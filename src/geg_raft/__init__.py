@@ -22,4 +22,4 @@ from importlib.metadata import version
 from .api import RaftModel
 
 __all__ = ["RaftModel"]
-__version__ = version("raft")
+__version__ = version("geg-raft")
