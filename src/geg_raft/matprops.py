@@ -133,11 +133,11 @@ def get_viscosity(
         D = -3.376e-5  # K^-2
 
         # Cap limits on temperature
-        low_limit = 200.0
-        up_limit = 1.0e3
+        low_limit = 273.0
+        up_limit = 643.0
 
-        T = np.maximum(T, _T_MIN)
-        T = np.minimum(T, _T_MAX)
+        T = np.maximum(T, low_limit)
+        T = np.minimum(T, up_limit)
 
         mu = A * np.exp(B / T + C * T + D * T**2)
 

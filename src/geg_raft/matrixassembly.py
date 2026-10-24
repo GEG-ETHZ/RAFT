@@ -2035,7 +2035,8 @@ def _flux_magnitude(flux_vec: npt.NDArray[np.float64], nsd: int) -> float:
     return float(abs(flux_vec[0, 0]))
 
 
-@njit(cache=True)  # type: ignore[untyped-decorator]
+# error_model="numpy": scalar divide by zero gives inf/nan (caught by the NR nan check) instead of raising
+@njit(cache=True, error_model="numpy")  # type: ignore[untyped-decorator]
 def _effective_length(
     flux_vec: npt.NDArray[np.float64], flux_mag: float, L_vec: npt.NDArray[np.float64], nsd: int
 ) -> float:
@@ -2056,7 +2057,8 @@ def _effective_length(
     return float(L_vec[0, 0])
 
 
-@njit(cache=True)  # type: ignore[untyped-decorator]
+# error_model="numpy": see _effective_length
+@njit(cache=True, error_model="numpy")  # type: ignore[untyped-decorator]
 def _supg_tau_values(
     hf_cp: npt.NDArray[np.float64],
     q_D: npt.NDArray[np.float64],
