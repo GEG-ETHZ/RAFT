@@ -1,8 +1,8 @@
 // Gmsh project created on Wed Apr 29 11:24:58 2026
 SetFactory("Built-in");
 
-D = 8000; // Lateral Depth
-L = 3000; // Lateral Length
+D = 3000; // Lateral Depth
+L = 8000; // Lateral Length
 W = 100;  // Domain width
 
 b = 0.02; // Domain buffer
@@ -21,8 +21,8 @@ c  = R/Sqrt(2);
 
 
 nrf = 6; // Number of refined elements
-nrl = 30; // Number of lateral elements
-nrv = 40; // Number of vertical elements
+nrl = 40; // Number of lateral elements
+nrv = 20; // Number of vertical elements
 nrd = 2; // Number of diagonal elements
 g = 1.5; // diagonal growth rate
 
