@@ -88,7 +88,7 @@ DEFAULTS: dict[str, Any] = {
         "timestep": 1.0,
         "timestep_min": 1.0,
         "timestep_max": 1.0,
-        "solver_type": "linearized",
+        "solver_type": "operator_split",
         "output_frequency": 1,
         "output_vtk": 0,
         "output_log": 0,
@@ -226,14 +226,14 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     else:
         config["material"]["fluid"]["abstract_state"] = None
 
-    # One-pass linearized?
-    # If using the boussinesq approximation (rho !=0) and using the linearized solver, the linearized
+    # One-pass operator_split?
+    # If using the boussinesq approximation (rho !=0) and using the operator_split solver, the split
     #  temperature solves is guaranteed linear, so we can save the second residual calc.
-    if rho != 0 and mu != 0 and controls["solver_type"] == "linearized":
+    if rho != 0 and mu != 0 and controls["solver_type"] == "operator_split":
         controls["iterative_controls"]["one_pass"] = True
         if verbose:
             print(
-                "\nUsing the linearized solver with Boussinesq EOS. One-pass solve enabled."  # noqa
+                "\nUsing the operator_split solver with Boussinesq EOS. One-pass solve enabled."  # noqa
             )
     else:
         controls["iterative_controls"]["one_pass"] = False

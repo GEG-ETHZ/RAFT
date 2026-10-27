@@ -37,7 +37,7 @@ from .matprops import get_EOS
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
-from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
+from .solvers import monolithic_time_integration, operator_split_time_integration
 
 
 class TimestepError(RuntimeError):
@@ -72,18 +72,18 @@ def _propose_dt(  # noqa
         # <= since a step clamped to a critical time may lie below dt_min
         if dt[0] <= dt_min:
             # minimum timestep reached, proceed with simulation
-            if solver_type == "linearized" and timestep_error != -1:
+            if solver_type == "operator_split" and timestep_error != -1:
                 if verbose:
                     print(
                         f"     Minimum timestep reached, error is {timestep_error * 100:.2f} %. Proceeding with simulation."  # noqa: E501
                     )
             else:
-                # Fully coupled or Newton-Raphson failure at minmum timestep
+                # Monolithic or Newton-Raphson failure at minmum timestep
                 raise TimestepError(
                     f"Minimum timestep reached at t = {t:.6e}, unable to converge to solution."
                 )
         else:
-            if solver_type == "linearized" and timestep_error != -1:
+            if solver_type == "operator_split" and timestep_error != -1:
                 # Cut timestep in proportion with error
                 cut_factor = 0.85 * 4 / (1 + 3 * timestep_error / rel_tol_T)
             else:
@@ -100,7 +100,10 @@ def _propose_dt(  # noqa
             return t, dt, False
 
     # otherwise, increase the timestep
-    increase_factor = min(4 / (1 + 3 * timestep_error / rel_tol_T), 2) if solver_type == "linearized" else 1.5
+    if solver_type == "operator_split":
+        increase_factor = min(4 / (1 + 3 * timestep_error / rel_tol_T), 2)
+    else:
+        increase_factor = 1.5
 
     dt[2] = dt[1]
     dt[1] = dt[0]
@@ -215,7 +218,7 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     controls_SS = controls.copy()
     controls_SS["physics"] = controls["physics"].as_steady()
     controls_SS["wells_on"] = 0
-    controls_SS["fully_coupled"] = False
+    controls_SS["monolithic"] = False
     controls_SS["volumetric_strain_on"] = 0
     return controls_SS
 
@@ -430,7 +433,7 @@ def _solve_steady_state(  # noqa
     for num_passes in tries:
         primary_variables = copy.deepcopy(primary_variables_ini)
         for i in range(num_passes):
-            primary_variables, _, _, _ = lin_extrap_time_integration(
+            primary_variables, _, _, _ = operator_split_time_integration(
                 controls_SS,
                 mesh,
                 material,
@@ -442,12 +445,12 @@ def _solve_steady_state(  # noqa
                 verbose,
             )
             primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
-        # Perform fully coupled solution
+        # Perform monolithic solution
         if verbose:
-            print("   Solving for fully-coupled steady-state condition...")
+            print("   Solving for monolithic steady-state condition...")
 
-        controls_SS["fully_coupled"] = True
-        primary_variables, _, converged, _ = fully_coupled_time_integration(
+        controls_SS["monolithic"] = True
+        primary_variables, _, converged, _ = monolithic_time_integration(
             controls_SS,
             mesh,
             material,
@@ -534,11 +537,11 @@ def _perform_time_integration(
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Choose between time integration types."""
     solver_type = controls["solver_type"]
-    supported_types = ["linearized", "fully_coupled"]
+    supported_types = ["operator_split", "monolithic"]
 
-    if solver_type == "linearized":
-        controls["fully_coupled"] = False
-        primary_variables, dt, converged, timestep_error = lin_extrap_time_integration(
+    if solver_type == "operator_split":
+        controls["monolithic"] = False
+        primary_variables, dt, converged, timestep_error = operator_split_time_integration(
             controls,
             mesh,
             material,
@@ -549,9 +552,9 @@ def _perform_time_integration(
             n,
             verbose,
         )
-    elif solver_type == "fully_coupled":
-        controls["fully_coupled"] = True
-        primary_variables, dt, converged, timestep_error = fully_coupled_time_integration(
+    elif solver_type == "monolithic":
+        controls["monolithic"] = True
+        primary_variables, dt, converged, timestep_error = monolithic_time_integration(
             controls,
             mesh,
             material,
@@ -868,7 +871,7 @@ def advance(  # noqa
             controls["solver_type"], t, dt, controls, converged, timestep_error, verbose
         )
         if not accepted:  # retry current timestep
-            if controls["solver_type"] == "linearized" and timestep_error != -1:
+            if controls["solver_type"] == "operator_split" and timestep_error != -1:
                 stats.cut_extrapolation += 1
             else:
                 stats.cut_newton += 1

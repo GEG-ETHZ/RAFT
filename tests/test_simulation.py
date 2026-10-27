@@ -63,7 +63,7 @@ def test_fracture_advection_bounded() -> None:
 
 def test_enthalpy_bndry_pressure() -> None:
     """Check the advective enthalpy boundary vector/tangent at a pressure-type outlet with
-    no thermal BC of its own (also exercises the fully_coupled Kpp/KpT cross-term)."""
+    no thermal BC of its own (also exercises the monolithic Kpp/KpT cross-term)."""
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Pressure Outlet"
     config_filename = "config_test_enthalpy_bndry_pressure.yaml"
@@ -78,7 +78,7 @@ def test_enthalpy_bndry_pressure() -> None:
 
 def test_enthalpy_bndry_flux() -> None:
     """Same as test_enthalpy_bndry_pressure, but with a flux-type outlet, which should not
-    pick up the fully_coupled Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
+    pick up the monolithic Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
     never a function of p/T)."""
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Flux Outlet"

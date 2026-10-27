@@ -110,7 +110,7 @@ simulation:
   gravity: -9.81    # m/s^2
 
   # Numerical controls
-  solver_type: "linearized"
+  solver_type: "operator_split"
   rel_error_T: 2.0e-1 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 1.0e-5 # Newton-Raphson residual tolerance

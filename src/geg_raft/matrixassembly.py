@@ -2397,7 +2397,7 @@ def _integrate_fracture_coupling_tangent(
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
-    fully_coupled: bool,
+    monolithic: bool,
     advection_on: bool,
     T_flow_lagged: bool,
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
@@ -2469,7 +2469,7 @@ def _integrate_fracture_coupling_tangent(
                 RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
                 RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
 
-                if fully_coupled:
+                if monolithic:
                     ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_q, wJe_q, True)
                     fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
                         N_qm, -dfluxp_dTf, N_q, wJe_q, True
@@ -2612,15 +2612,13 @@ def _integrate_well_coupling_tangent(  # noqa
     roughness: float,
     mu_c: PropertyResult,  # element midpoint viscosity
     Re_c: npt.NDArray[np.float64],  # element midpoint Reynolds number
-    dRe_dp: npt.NDArray[
-        np.float64
-    ],  # element Reynolds number pressure tangent; `_EMPTY` unless fully_coupled
+    dRe_dp: npt.NDArray[np.float64],  # element Reynolds number pressure tangent; `_EMPTY` unless monolithic
     dRe_dT: npt.NDArray[np.float64],  # element Reynolds number temperature tangent
     hf: NodalEnthalpyState,  # enthalpy; nodal `cp` (lagged) used only when thermal_coupling
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
-    fully_coupled: bool,
+    monolithic: bool,
     advection_on: bool,
     T_flow_lagged: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -2673,7 +2671,7 @@ def _integrate_well_coupling_tangent(  # noqa
             dRe_dp=dRe_dp,
             dRe_dT=dRe_dT,
             want_tangent_dT=True,
-            want_tangent_dp=fully_coupled,
+            want_tangent_dp=monolithic,
         )
         # Tangent arrays carry the column node shape functions; well rows +flux, matrix rows -flux
         RTT_ww = _vctrzd_qp_vctr_integrate(N_q, dfluxc_dTw, wJe_q, False)
@@ -2682,7 +2680,7 @@ def _integrate_well_coupling_tangent(  # noqa
         RTT_mm = _vctrzd_qp_vctr_integrate(N_q, -dfluxc_dTm, wJe_q, False)
 
         # Conduction depends on well pressure through h
-        if fully_coupled:
+        if monolithic:
             ww_matrices["KTp_ww"] = _vctrzd_qp_vctr_integrate(N_q, dfluxc_dpw, wJe_q, False)
             wm_matrices["KTp_wm"] = _vctrzd_qp_vctr_integrate(N_q, -dfluxc_dpw, wJe_q, False)
 
@@ -2714,7 +2712,7 @@ def _integrate_well_coupling_tangent(  # noqa
             RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
 
             # Off-diagonal pressure/temperature coupling
-            if fully_coupled:
+            if monolithic:
                 ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
                 wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
                 mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
@@ -3524,7 +3522,7 @@ def integrate_tangent_matrices(  # noqa
                     )
                     element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dT, wJe_q, False)
 
-            # Fully coupled - off diagonal matrices
+            # Monolithic - off diagonal matrices
             if coupled:
                 # ----------- Conservation of mass wrt temperature
                 # Storage vector - Fs
@@ -3573,7 +3571,7 @@ def integrate_tangent_matrices(  # noqa
                     flow.w0,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
-                    fully_coupled=coupling_cross,
+                    monolithic=coupling_cross,
                     advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -3619,7 +3617,7 @@ def integrate_tangent_matrices(  # noqa
                     hf,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
-                    fully_coupled=coupling_cross,
+                    monolithic=coupling_cross,
                     advection_on=coupling_advection,
                     T_flow_lagged=T_flow_lagged,
                 )
@@ -3778,7 +3776,7 @@ def integrate_enthlpy_bndry_tangent(
     T_flow: npt.NDArray[np.float64],  # temperature field used for flow-property evaluations
     BC_config: list[dict[str, Any]],
     *,
-    fully_coupled: bool = False,
+    monolithic: bool = False,
     T_flow_lagged: bool = False,
     Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
     KpT: csc_matrix[Any] = csc_matrix((0, 0)),
@@ -3789,13 +3787,13 @@ def integrate_enthlpy_bndry_tangent(
     d(F_enth_bnd)/dT is q*dhf_dT (diagonal) plus hf_i*dq/dT;
 
     the latter is nonzero only for a Dirichlet-pressure node under
-    `fully_coupled`, via the Kpp/KpT cross-terms.
+    `monolithic`, via the Kpp/KpT cross-terms.
     """
     advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
 
     if not advection_nodes.any():
-        if fully_coupled:
+        if monolithic:
             return {
                 "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
                 "K_enth_bnd_Tp": csc_matrix((nn_total, nn_total), dtype=float),
@@ -3830,7 +3828,7 @@ def integrate_enthlpy_bndry_tangent(
             # A flux-type node's q is a prescribed BC value (never a function of
             # p/T); only a pressure-type node's q (a mass-residual row) needs the
             # Kpp/KpT cross-terms.
-            if fully_coupled and group["hydraulics"]["type"] == "pressure":
+            if monolithic and group["hydraulics"]["type"] == "pressure":
                 rows = KpT[nodes_i, :].tocoo()
                 K_enth_bnd = K_enth_bnd + csc_matrix(
                     (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
