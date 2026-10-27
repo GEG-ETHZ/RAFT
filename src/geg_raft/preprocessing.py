@@ -188,7 +188,7 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
             if mu == 0:
                 print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
             elif mu == -1:
-                print("\nViscosity computed imperical correlation, mu = A*exp(B/T + CT + DT^2).")
+                print("\nViscosity computed empirical correlation, mu = A*exp(B/T + CT + DT^2).")
     else:  # constant
         controls["viscosity_nonconstant"] = 0
 
