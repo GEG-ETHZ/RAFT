@@ -2025,6 +2025,17 @@ def _evaluate_effective_conductivity(
     return lambda_e
 
 
+def _conductive_flux(
+    lambda_e: npt.NDArray[np.float64] | float,
+    gradT: npt.NDArray[np.float64],
+    isotropic_cond: bool,
+) -> npt.NDArray[np.float64]:
+    """lambda_e·gradT (nq x nsd x 1) for scalar or tensor conductivity."""
+    if isotropic_cond:
+        return lambda_e * gradT
+    return lambda_e @ gradT
+
+
 @njit(cache=True)  # type: ignore[untyped-decorator]
 def _flux_magnitude(flux_vec: npt.NDArray[np.float64], nsd: int) -> float:
     """`|flux_vec|`, resolved per `nsd` since numba can't loop over a runtime-sized slice."""
@@ -2943,7 +2954,7 @@ def integrate_residuals(  # noqa
 
                 # Energy Diffusion vector
                 element_vectors["F_Tdiffusion"] = _vctrzd_qp_vctr_integrate(
-                    B_q, lambda_e * kin.gradT, wJe_q, isotropic_cond
+                    B_q, _conductive_flux(lambda_e, kin.gradT, isotropic_cond), wJe_q, isotropic_cond
                 )
 
                 # Advection and SUPG stabilization
@@ -3463,9 +3474,16 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTT"] = _diag_matrix(m_lump * integrand_dFCdT_e.ravel())
 
                 # Themal diffusion vector
-                integrand_dFlambdadT = (
-                    lambda_e * B_q + phi_L_n.dT * (lambda_f - solid.lambda_s) * kin.gradT * N_q
+                dlambda_dphi = (
+                    lambda_f - solid.lambda_s
+                    if isotropic_cond
+                    else lambda_f * np.eye(mesh_data.nsd) - solid.lambda_s
                 )
+                dlambda_dphi_gradT = _conductive_flux(dlambda_dphi, kin.gradT, isotropic_cond)
+                element_matrices["KTT"] += _vctrzd_quad_point_integration(
+                    B_q, lambda_e, B_q, wJe_q, isotropic_cond
+                )
+                integrand_dFlambdadT = phi_L_n.dT * dlambda_dphi_gradT * N_q
                 element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 # Advection and SUPG stabilization
@@ -3521,7 +3539,7 @@ def integrate_tangent_matrices(  # noqa
                 element_matrices["KTp"] = _diag_matrix(m_lump * integrand_dFCdp_e.ravel())
 
                 # Themal diffusion vector
-                integrand_dFlambdadT = phi_L_n.dp * (lambda_f - solid.lambda_s) * kin.gradT * N_q
+                integrand_dFlambdadT = phi_L_n.dp * dlambda_dphi_gradT * N_q
                 element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_dFlambdadT, wJe_q, False)
 
                 # Advection and stabilization
