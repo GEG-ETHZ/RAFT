@@ -107,6 +107,21 @@ def test_patch_anisotropy() -> None:
     assert test_pass
 
 
+def test_patch_anisotropy_conductivity() -> None:
+    """Check exact linear approximation with anisotropic thermal conductivity."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Anisotropic Conductivity"
+    config_filename = "config_test_anisotropic_cond.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    plot_on = False
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_buoyancy() -> None:
     """Test buoyancy against analytical solutions."""
     case_dir = _test_data_dir()
