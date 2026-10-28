@@ -385,9 +385,15 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             D = material["wells"]["diameter"][r]
             # Relative roughness within the Moody chart, where the Churchill friction factor applies
             rel_roughness = material["wells"]["roughness"][r] / D
-            if not 0.0 <= rel_roughness <= 0.05:
+            if rel_roughness < 0.0:
                 raise ValueError(
-                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must lie in [0, 0.05]."
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must not be negative."
+                )
+            if rel_roughness > 0.05:
+                warnings.warn(
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} is above 0.05, outside the Moody "
+                    "chart; the Churchill friction factor is extrapolated.",
+                    stacklevel=2,
                 )
             R = D / 2
             A = np.pi * R**2

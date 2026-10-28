@@ -23,6 +23,7 @@ adopt SemVer strictly.
 - Near a table/ramp time or `t_end`, the remaining time is split into two equal steps instead of leaving one short final step; landing on these times may take a step below `timestep_min`.
 - Timestep growth never proposes a step below `timestep_min`.
 - A run that fails to converge at `timestep_min` exits with status 1 (previously 0); through the API it raises `TimestepError`.
+- A well whose roughness / diameter is above 0.05 now gets a warning that the Churchill friction factor is extrapolated beyond the Moody chart, instead of an error; a negative value is still an error.
 
 ### Fixed
 - `outflow.log` reported pressure and temperature one timestep behind the flow rate.

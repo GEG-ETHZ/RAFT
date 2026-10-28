@@ -38,7 +38,7 @@ material:
     diameter: [0.311]
     perforation_conductance: [0]
     heat_transfer_factor: [1]
-    roughness: [5.5e-5]
+    roughness: [1e-2]
 
 initial_conditions:
   assignment: "gradient"
