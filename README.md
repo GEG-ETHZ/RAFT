@@ -66,7 +66,7 @@ For development:
 
 ### Building the documentation
 1. `uv sync --group docs`
-1. `just docs`
+1. `uv run just docs`
 1. open `docs/_build/html/index.html` in a browser
 
 This builds the Sphinx HTML docs (including this README and [theory.md](theory.md)) from source.
