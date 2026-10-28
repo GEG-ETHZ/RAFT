@@ -88,7 +88,7 @@ DEFAULTS: dict[str, Any] = {
         "timestep": 1.0,
         "timestep_min": 1.0,
         "timestep_max": 1.0,
-        "solver_type": "linearized",
+        "solver_type": "operator_split",
         "output_frequency": 1,
         "output_vtk": 0,
         "output_log": 0,
@@ -188,7 +188,7 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
             if mu == 0:
                 print(f"\nViscosity computed from CoolProp ({fluid_name}) as a function of T and p.")
             elif mu == -1:
-                print("\nViscosity computed imperical correlation, mu = A*exp(B/T + CT + DT^2).")
+                print("\nViscosity computed empirical correlation, mu = A*exp(B/T + CT + DT^2).")
     else:  # constant
         controls["viscosity_nonconstant"] = 0
 
@@ -226,14 +226,14 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     else:
         config["material"]["fluid"]["abstract_state"] = None
 
-    # One-pass linearized?
-    # If using the boussinesq approximation (rho !=0) and using the linearized solver, the linearized
+    # One-pass operator_split?
+    # If using the boussinesq approximation (rho !=0) and using the operator_split solver, the split
     #  temperature solves is guaranteed linear, so we can save the second residual calc.
-    if rho != 0 and mu != 0 and controls["solver_type"] == "linearized":
+    if rho != 0 and mu != 0 and controls["solver_type"] == "operator_split":
         controls["iterative_controls"]["one_pass"] = True
         if verbose:
             print(
-                "\nUsing the linearized solver with Boussinesq EOS. One-pass solve enabled."  # noqa
+                "\nUsing the operator_split solver with Boussinesq EOS. One-pass solve enabled."  # noqa
             )
     else:
         controls["iterative_controls"]["one_pass"] = False
@@ -385,9 +385,15 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             D = material["wells"]["diameter"][r]
             # Relative roughness within the Moody chart, where the Churchill friction factor applies
             rel_roughness = material["wells"]["roughness"][r] / D
-            if not 0.0 <= rel_roughness <= 0.05:
+            if rel_roughness < 0.0:
                 raise ValueError(
-                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must lie in [0, 0.05]."
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} must not be negative."
+                )
+            if rel_roughness > 0.05:
+                warnings.warn(
+                    f"Well {r}: roughness / diameter = {rel_roughness:.3g} is above 0.05, outside the Moody "
+                    "chart; the Churchill friction factor is extrapolated.",
+                    stacklevel=2,
                 )
             R = D / 2
             A = np.pi * R**2

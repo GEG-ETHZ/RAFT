@@ -390,7 +390,7 @@ def _newton_raphson_loop(  # noqa
 
     # Run-type labels
     if solve_p and solve_T:
-        label = "FULLY COUPLED"
+        label = "MONOLITHIC"
     elif solve_p:
         label = "ITERATIVE PRESSURE"
     else:
@@ -456,7 +456,7 @@ def _newton_raphson_loop(  # noqa
 
             # Assemble Jacobian - different by case
             if solve_p and solve_T:
-                # Fully coupled
+                # Monolithic
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
                     mesh,
                     material,
@@ -464,7 +464,7 @@ def _newton_raphson_loop(  # noqa
                     controls,
                     T_flow,
                     BC_config,
-                    fully_coupled=True,
+                    monolithic=True,
                     Kpp=jacobian["Kpp"],
                     KpT=jacobian["KpT"],
                 )
@@ -537,7 +537,7 @@ def _newton_raphson_loop(  # noqa
             d_n = d_new
             # Write the updated global vector back into each key's primary variable.
             # Uses in-place slice assignment (not a new array) so that a `T_flow`
-            # passed in as the SAME object as primary_variables["T"] (fully_coupled
+            # passed in as the SAME object as primary_variables["T"] (monolithic
             # case) stays aliased and reflects this update automatically.
             for key in keys:
                 primary_variables[key][:, 0:1] = d_n[key_dofs[key]]
@@ -569,8 +569,8 @@ def _newton_raphson_loop(  # noqa
     return primary_variables, converged, iteration_error
 
 
-# ------------------------ Primary time integration function with linearized extrapoloation --------
-def lin_extrap_time_integration(  # noqa
+# ------------------------ Primary time integration function with operator splitting ----------------
+def operator_split_time_integration(  # noqa
     controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -583,7 +583,7 @@ def lin_extrap_time_integration(  # noqa
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Assemble FEM matrices and vectors and solve for solution at next timestep.
 
-    Solution uses a linearized extrapoloation which lags temperature. Error
+    Solution uses operator splitting with an extrapolated, lagged temperature. Error
     is calculated between the predicted and calculated temperatures for convergence.
     """
     debug_pressure_plot_on = False
@@ -685,8 +685,8 @@ def lin_extrap_time_integration(  # noqa
     return primary_variables, dt, converged, timestep_error
 
 
-# --------------- Fully coupled time integration with Newton-Raphson iterations.
-def fully_coupled_time_integration(  # noqa
+# --------------- Monolithic time integration with Newton-Raphson iterations.
+def monolithic_time_integration(  # noqa
     controls: dict[str, Any],
     mesh: dict[str, Any],
     material: dict[str, Any],
@@ -699,7 +699,7 @@ def fully_coupled_time_integration(  # noqa
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Assemble FEM matrices and vectors and solve for solution at next timestep.
 
-    This fully-coupled iterative scheme uses Newton-Raphson to solve for temperature
+    This monolithic iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
     debug_plot_on = False
@@ -734,7 +734,7 @@ def fully_coupled_time_integration(  # noqa
         mesh,
         primary_variables,
         BC_config,
-        primary_variables["T"],  # T_flow must alias primary_variables["T"] for fully_coupled
+        primary_variables["T"],  # T_flow must alias primary_variables["T"] for monolithic
         cv,
         fixed_dofs,
         dirichlet_dofs,

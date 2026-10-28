@@ -139,7 +139,7 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "fully_coupled"
+  solver_type: "monolithic"
   rel_error_T: 5.0e-2 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 2.0e-5 # Newton-Raphson residual tolerance

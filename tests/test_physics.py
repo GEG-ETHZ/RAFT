@@ -81,7 +81,7 @@ def _run(
         return main(config_name=config_name, config_dir=tmp_path, verbosity="quiet")
 
 
-@pytest.mark.parametrize("solver_type", ["linearized", "fully_coupled"])
+@pytest.mark.parametrize("solver_type", ["operator_split", "monolithic"])
 @pytest.mark.parametrize(("off", "solved"), [("heat", "p"), ("flow", "T")])
 def test_single_physics_matches_coupled(tmp_path: Path, solver_type: str, off: str, solved: str) -> None:
     """In the decoupled patch test, one field `off` leaves the other's solution unchanged and
@@ -102,7 +102,7 @@ def test_single_physics_matches_coupled(tmp_path: Path, solver_type: str, off: s
     assert np.all(single[frozen][~on_bc] == DEFAULTS["initial_conditions"][frozen + "_ini"])
 
 
-@pytest.mark.parametrize("solver_type", ["linearized", "fully_coupled"])
+@pytest.mark.parametrize("solver_type", ["operator_split", "monolithic"])
 def test_matrix_off_matches_dirichlet_matrix(tmp_path: Path, solver_type: str) -> None:
     """Switching the matrix `off` reproduces the well solution of fixing every matrix node by
     Dirichlet BCs at the same values (the config's own approach); those BCs are then ignored."""

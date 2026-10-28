@@ -925,7 +925,7 @@ def check_enthalpy_bndry_bounded(
     The outlet's temperature is free, advected out through
     `integrate_enthlpy_bndry_residual`/`integrate_enthlpy_bndry_tangent` in matrixassembly.py
     rather than fixed by a Dirichlet condition, and (for a pressure-type outlet) also picks up
-    the `fully_coupled` Kpp/KpT cross-term there. With a single Dirichlet inlet value, no
+    the `monolithic` Kpp/KpT cross-term there. With a single Dirichlet inlet value, no
     sources, and steady, divergence-free flow, the uniform field T = T_in exactly satisfies
     the advection-diffusion equation everywhere (both the diffusive and advective terms vanish
     identically for a spatially constant field) and the natural BCs elsewhere - so T should

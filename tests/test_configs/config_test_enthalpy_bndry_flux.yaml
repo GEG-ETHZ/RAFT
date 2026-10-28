@@ -29,7 +29,7 @@ initial_conditions:
 # Same intent as config_test_enthalpy_bndry_pressure.yaml, but the outlet
 # (x_max) is now a flux-type hydraulics BC with no thermal BC on that face.
 # A flux-type node's "q" is a prescribed value (never a function of p/T), so
-# under `fully_coupled` this exercises the *other* branch at
+# under `monolithic` this exercises the *other* branch at
 # matrixassembly.py's integrate_enthlpy_bndry_tangent: no Kpp/KpT cross-term
 # should be assembled here, unlike the pressure-type outlet case.
 boundary_conditions:
@@ -70,7 +70,7 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "fully_coupled"
+  solver_type: "monolithic"
   rel_error_T: 1.0e-2
   iterative_controls:
       NR_tol: 1.0e-6

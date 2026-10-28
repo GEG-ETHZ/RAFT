@@ -66,7 +66,7 @@ For development:
 
 ### Building the documentation
 1. `uv sync --group docs`
-1. `just docs`
+1. `uv run just docs`
 1. open `docs/_build/html/index.html` in a browser
 
 This builds the Sphinx HTML docs (including this README and [theory.md](theory.md)) from source.
@@ -419,9 +419,9 @@ Physical controls
 * **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
 
 Numerical solver controls
-* **`solver_type`** *(string, default: `"linearized"`)*: Type of time integration solver. Options are `"linearized"` or `"fully_coupled"`. The `fully_coupled` solver solves both pressure and temperature monolithically for the current timestep. The `linearized` solver uses an operator splitting scheme, extrapolating temperature to the current timestep, solving pressure with the extrapolated temperature, then updating temperature with the new pressure.  See [Time Discretization and Solution Scheme](theory.md#time-discretization-and-solution-scheme) for more details.
-* **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks (`"linearized"` solver only).
-* **`iterative_controls`** *(dictionary)*: Non-linear Newton-Raphson solver settings. Because fluid properties are nonlinear functions of pressure and temperature, both solver types use these controls: `"fully_coupled"` for its single monolithic solve, and `"linearized"` for each of its two per-field (pressure, then temperature) sub-solves.
+* **`solver_type`** *(string, default: `"operator_split"`)*: Type of time integration solver. Options are `"operator_split"` or `"monolithic"`. The `monolithic` solver solves pressure and temperature together in a single coupled system for the current timestep. The `operator_split` solver uses an operator splitting scheme, extrapolating temperature to the current timestep, solving pressure with the extrapolated temperature, then updating temperature with the new pressure.  See [Time Discretization and Solution Scheme](theory.md#time-discretization-and-solution-scheme) for more details.
+* **`rel_error_T`** *(float, default: `1.0e-2`)*: Relative error tolerance used for temperature extrapolation checks (`"operator_split"` solver only).
+* **`iterative_controls`** *(dictionary)*: Non-linear Newton-Raphson solver settings. Because fluid properties are nonlinear functions of pressure and temperature, both solver types use these controls: `"monolithic"` for its single coupled solve, and `"operator_split"` for each of its two per-field (pressure, then temperature) sub-solves.
   * **`NR_tol`** *(float, default: `1.0e-6`)*: Newton-Raphson residual tolerance.
   * **`iter_max`** *(integer, default: `100`)*: Maximum number of iterations per timestep.
   * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.

@@ -38,7 +38,7 @@ material:
     diameter: [0.311]
     perforation_conductance: [0]
     heat_transfer_factor: [1]
-    roughness: [5.5e-5]
+    roughness: [1e-2]
 
 initial_conditions:
   assignment: "gradient"
@@ -108,7 +108,7 @@ simulation:
   gravity: 9.81    # m/s^2
 
   # Numerical controls
-  solver_type: "linearized"
+  solver_type: "operator_split"
   rel_error_T: 2.0e-2 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 1.0e-7 # Newton-Raphson residual tolerance

@@ -33,7 +33,7 @@ def test_update_time_raises_on_NR_failure_at_dt_min() -> None:
     """A Newton-Raphson failure at the minimum timestep raises instead of exiting."""
     dt = [1.0, 1.0, 1.0]
     with pytest.raises(TimestepError, match="Minimum timestep reached"):
-        _update_time("fully_coupled", 10.0, dt, _controls(), np.array([100.0]), False, -1, False)
+        _update_time("monolithic", 10.0, dt, _controls(), np.array([100.0]), False, -1, False)
 
 
 @pytest.mark.parametrize(

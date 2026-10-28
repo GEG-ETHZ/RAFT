@@ -318,7 +318,7 @@ def _eos_coolprop_values(  # noqa
 
     Density is read at `T_flow`.
     Internal energy at `T`.
-    In the linearized solver, T != T_flow. In the fully_coupled solver, T = T_flow.
+    In the operator_split solver, T != T_flow. In the monolithic solver, T = T_flow.
     """
     AS = fluid["abstract_state"]
     same_point = not T_flow_lagged
