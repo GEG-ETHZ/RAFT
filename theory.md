@@ -258,7 +258,27 @@ A temperature $\hat{\textbf{T}}^n$ is extrapolated from previously-solved states
 
 In the pressure subproblem, the flow properties $\mu$, $\boldsymbol{k}_f$ and $\rho_f$ are evaluated at $T_{flow}$. For consistency in the temperature subproblem, these flow properties continue to be evaluated at $T_{flow}$ while internal energy is evaluated at the current temperature $T^n$. Enthalpy thus becomes a mixed-timestep term in the conservation of energy.
 
-This operator splitting takes advantage of the difference in timescales in subsurface systems: pressure changes much more quickly relative to temperature. Pressure is solved first (rather than temperature) because at typical reservoir permeabilities ($k_f \gtrsim 10^{-16}\,m^2$) the characteristic timescale of pressure diffusion (hours–days) is much shorter than that of thermal transport (weeks-years), so pressure is expected to evolve faster than temperature between timesteps.
+Through non-dimensionalization of the governing equations and assuming all material properties are constant, we can estimate the characteristic timescales of fluid and temperature transport to the first order. The fluid transport timescale in a porous media is given by
+  $$\tau_p = \frac{PL}{MQ} $$
+
+in which $P, L, Q$ are the characteristic pressure, length, and Darcy flux of the system and $M^{-1} = \phi K_f^{-1} + (\beta - \phi) K_s^{-1}$ is the effective compressibility of the porous media.
+
+The advection dominant timescale of heat transport in the porous media becomes
+  $$ \tau_T = \frac{m_e L}{\rho_f c_{pf} Q}, \quad m_e = (1 - \phi) \rho_s c_{ps} + \phi \rho_f c_{pf} $$
+
+in which $m_e$ is the effective volumetric heat capacity of the porous media.
+
+By taking the ratio of the two timescales and setting them equal to 1, we can eliminate the characteristic length and flux and find that we can solve for the characteristic pressure under which the two timescales are similar.
+$$    \frac{\tau_p}{\tau_T}  = \frac{P\rho_f c_{pf}}{M m_e} = 1\implies P= M \left( (1-\phi) \frac{\rho_s c_{ps}}{\rho_f c_{pf}} + \phi\right) $$
+
+which is a function only of material properties whose natural distributions all fall within an order of magnitude. Thus, to an order of magnitude, we can find that
+
+$$    M^{-1} = \phi K_f^{-1} + (\beta - \phi) K_s^{-1} \approx 10^{-2} 10^{-9} + 10^{-2} 10^{-10} \implies M=O(10^{11}) \text{ Pa} $$
+$$ P =  M \left( (1-\phi) \frac{\rho_s c_{ps}}{\rho_f c_{pf}} + \phi\right) \approx 10^{11} \left(10^{-1} \frac{10^3 10^3}{10^3 10^3} + 10^{-2}\right) \implies P=O(10^{10})\text{ Pa}$$
+
+and thus the two timescales are of a similar order of magnitude only when the in-situ fluid pressure is on the order of 10 GPa. This is an extremely high fluid pressure for a geothermal reservoir and not a realistic or likely scenario. In reality, operating pressures in a reservoir tend to be on the order of $P=O(10^7 \text{ Pa})$, which therefore implies that the ratio $\tau_p / \tau_T = O(10^{-3})$ and thus the timescale for temperature change is several orders of magnitude slower than the timescale for pressure change.
+
+> **When the pressure and temperature time scales are similar, the operator-split solution scheme is not appropriate. For open systems, the operator-split solution is often a good choice. For closed systems (AGS), monolithic solution scheme is recommended.**
 
 After both sub-solves converge, the extrapolated temperature is checked against the actually-solved temperature and convergence is reported against [`rel_error_T`](README.md#simulation); if either sub-solve fails to converge, the whole step is treated as non-converged without even reaching the extrapolation check. If the extrapolation error is too large, the timestep is reduced in proportion to the error and the step is repeated until acceptable error is achieved or the minimum timestep is reached.
 
