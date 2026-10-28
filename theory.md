@@ -163,6 +163,9 @@ For evaluating the exchange direction, the pressure is lagged to the previous ti
 
 $Nu$ is the Nusselt number based on the parallel-plate hydraulic diameter $2w$, $F$ is the heat transfer factor, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. Cubic-law flow is laminar, for which steady, fully-developed flow between parallel plates gives $Nu = 7.54$ at constant wall temperature and $Nu = 8.23$ at constant wall heat flux (Bejan, 2013). The coupled fracture-matrix problem fits neither boundary condition exactly, so their average, $Nu = 7.885$, is used. The factor $F$ scales the exchange: $F < 1$ reduces it, $F = 0$ insulates the fracture, and local thermal equilibrium can be approached with an arbitrarily large $F$.
 
+![Conceptual Coupling Diagram](figures/couplingdiagram.png)
+_Process coupling and idealizations between rock, fracture, and well domains. The true pressure/temperature distributions are illustrated compared against the discontinuous distributions at the interfaces with wells and fractures. As lower-dimensional bodies, temperature and pressure fields in the fracture and wells represent the average pressure and temperature over their respective cross-sections. Fractures permit a discontinuity across the fracture plane ($T_m^+ \neq T_m^-$), while wells do not permit discontinuities ($T_m^+ = T_m^- = T_m$)._
+
 ## Fracture Mesh Cutting Algorithm
 Fracture coupling requires a mesh that conforms to each fracture line, so RAFT cuts an ordinary matrix mesh to fit (2D only).
 
@@ -172,6 +175,9 @@ Fracture coupling requires a mesh that conforms to each fracture line, so RAFT c
 * **Junction placement.** Fracture junctions are placed before any cutting. If the intersection isn't already a mesh node, the containing matrix element is located and a new node is inserted there, splitting that element — so any two crossing fractures always share a common node from the start, before either is cut in.
 * **Matrix cutting.** Matrix elements are split and cut, preserving Q4 geometry when possible, but reverting to T3s when not. This may affect accuracy. Review the mesh quality heuristics (Scaled Jacobian, Skewness, Aspect Ratio). Fracture typically require finer meshes around them to fully resolve the normal boundary layers.
 * **Matrix–fracture correspondence.** Once cutting is complete, each fracture element is matched to the corresponding matrix elements which is the fracture-matrix coupling occurs.
+
+![Mesh Assembly](figures/meshassembly.png)
+_Exploded conforming mesh across domains. Fracture faces correspond with matrix element faces and well lines correspond with matrix element edges. Grey dashed lines illustrate the connecting nodes. In the unexploded assembly, the connecting nodes would share the same set of coordinates. The assembly is illustrated with B8, Q4, and L2 elements, but could also be assembled with T4, T3, and L2 elements or higher order B27/B20, Q9/Q8, and L3 elements. In a two-dimensional analysis, the matrix elements would be Q4/T3, fracture elements would be L2, and well elements would be points._
 
 ## Well Coupling
 Wells are modelled as lines that follow element edges of the matrix mesh. Each well node has its own pressure and temperature, coincident with a matrix node, and the well exchanges mass and heat with the matrix through its wall. Wells are not porous media, and are thus governed by unique governing equations. See [`wells`](README.md#wells-optional-field) and [`material`](README.md#material) for the inputs.
@@ -284,6 +290,9 @@ After both sub-solves converge, the extrapolated temperature is checked against 
 
 **`"monolithic"` — single Newton-Raphson solve of the coupled system.**
 Pressure and temperature are assembled into a single combined system and solved iteratively with Newton-Raphson using the tangent matrices below, subject to [`iterative_controls`](README.md#simulation). The convergence can be accelerated using Aitken's $\Delta^2$ relaxation method. If convergence is not achieved, the timestep is reduced and the non-linear solve is attempted again; if the minimum timestep is reached and the solver is unable to find a converged solution, the simulation ends.
+
+![Solution Algorithms](figures/SolutionAlgorithms.png)
+_Monolithic and operator split solution algorithms._
 
 ## Adaptive Timestep Control
 The timestep is adapted every step based on solution error/convergence. The three most recent timesteps are tracked as a rolling history $\Delta t = [\Delta t^n, \Delta t^{n-1}, \Delta t^{n-2}]$, since the second-order rate/extrapolation coefficients above need timestep history beyond just the current step.
