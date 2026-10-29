@@ -1,4 +1,4 @@
-# RAFT 0.2.0 — Reservoir Analysis for TANGO
+# RAFT 0.2.1 — Reservoir Analysis for TANGO
 
 A finite element method (FEM) simulator for coupled subsurface fluid flow and heat transport in geothermal reservoirs, specifically developed for native coupling with TANGO.
 

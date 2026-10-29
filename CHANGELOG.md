@@ -1,19 +1,29 @@
 # Changelog
 
-All notable changes to `TANGO Reservoir Simulator` are documented here.
-`TANGO Reservoir Simulator` does not yet follow [Semantic Versioning](https://semver.org/) — everything is
-pre-release. Once the first public release (`1.0.0`) is cut, the project will
-adopt SemVer strictly.
+All notable changes to RAFT are documented here.
+RAFT does not yet follow [Semantic Versioning](https://semver.org/) — everything is
+pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ## [In Development]
 
+---
+
+## [0.2.1] — 2026-10-23
+
+Patch release: renames the package to `geg-raft` for publishing on PyPI and
+adds solver diagnostics and well profiles to the coupling API.
+
 ### Added
-- Coupling API, `raft.RaftModel`, for driving RAFT from an external simulator in the same Python process: `solve` advances a trial from the last accepted state and returns boundary values, `get_fresh` accepts the step and writes its output.
-- `"external"` boundary condition function, set through the coupling API, with `"step"` or `"linear"` interpolation over each coupling step. Flow rates are given in kg/s for the whole group.
-- Config files can be named without their `.yaml` extension, on the command line and in `subsurface.main`/`RaftModel`.
-- `--verbosity {quiet,lite,full}` console output levels; `subsurface.main` and `RaftModel` take the same `verbosity="lite"`, etc., replacing their `verbose=True/False` argument. `lite` prints one line per timestep attempt, including cut and retried steps.
-- `RaftModel.solve_stats` (internal timesteps, cut attempts and timing of the last `solve`) and `RaftModel.well_profiles()` (pressure, temperature and flow along each well).
-- `config_example_AGS_coupled.yaml` and `scripts/coupling_example.py`: the AGS example coupled to a simple plant heat exchanger.
+
+- **Coupling diagnostics** — `RaftModel.solve_stats` reports the internal
+  timesteps, cut attempts and wall time of the last `solve`.
+- **Well profiles** — `RaftModel.well_profiles()` returns pressure,
+  temperature and flow along each well, the same values written to
+  `Well.vtk`.
+- **Coupling example plot** — `scripts/coupling_example.py` plots the well
+  temperature and pressure at each accepted step to
+  `outputs/coupling_example_wells.png`; its default coupling step is now 60
+  days.
 
 ### Changed
 - Boundary condition groups are named with `label:` instead of `tag:`. Rename it in existing configs; a group with `tag:` is no longer written to `outflow.log`.
@@ -26,14 +36,21 @@ adopt SemVer strictly.
 - A well whose roughness / diameter is above 0.05 now gets a warning that the Churchill friction factor is extrapolated beyond the Moody chart, instead of an error; a negative value is still an error.
 
 ### Fixed
-- `outflow.log` reported pressure and temperature one timestep behind the flow rate.
-- Flux constraints on line and face groups compared each node's flow with the group total.
-- Division by zero in the SUPG stabilization for near-zero (but non-zero) flux.
-- `BC_compatible` initial conditions wrote debug output frames and reset `outflow.log`.
-- `BC_compatible` initial conditions failed to converge for wells with no pressure reference other than their own boundary conditions.
 
-### Removed
+- **`outflow.log` lag** — pressure and temperature were reported one
+  timestep behind the flow rate.
+- **Flux constraints** — on line and face groups, each node's flow was
+  compared with the group total.
+- **SUPG stabilization** — division by zero for near-zero (but non-zero)
+  flux.
+- **`BC_compatible` output** — the initial-condition solve wrote debug
+  output frames and reset `outflow.log`.
+- **`BC_compatible` convergence** — failed for wells with no pressure
+  reference other than their own boundary conditions.
 
-<!-- Version comparison links — verify and update when cutting a release.
-     Label is [Unreleased] (not [In Development]) so changelog tooling recognises it. -->
-[Unreleased]: https://github.com/your-org/your-repo/-/commits/main
+---
+
+<!-- Version comparison links — verify and update when cutting a release -->
+[In Development]: https://github.com/GEG-ETHZ/RAFT/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/GEG-ETHZ/RAFT/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/GEG-ETHZ/RAFT/tree/v0.2.0
