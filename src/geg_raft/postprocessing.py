@@ -733,12 +733,12 @@ def _extrapolate_T_flow(
 ) -> npt.NDArray[np.float64]:
     """Re-create the temperature the solver used for flow properties, from T's time history.
 
-    The linearized solver evaluates flow properties at T extrapolated from the previous
+    The operator_split solver evaluates flow properties at T extrapolated from the previous
     timesteps; fixed temperature DoFs hold their prescribed value in every history column, so
-    the extrapolation reproduces them too. The fully coupled solver uses T itself.
+    the extrapolation reproduces them too. The monolithic solver uses T itself.
     """
     T_flow: npt.NDArray[np.float64]
-    if controls["solver_type"] != "linearized":
+    if controls["solver_type"] != "operator_split":
         T_flow = T[:, 0]
     else:
         _, cx = rate_coefficients(dt, controls["rate_order"])

@@ -63,7 +63,7 @@ def test_fracture_advection_bounded() -> None:
 
 def test_enthalpy_bndry_pressure() -> None:
     """Check the advective enthalpy boundary vector/tangent at a pressure-type outlet with
-    no thermal BC of its own (also exercises the fully_coupled Kpp/KpT cross-term)."""
+    no thermal BC of its own (also exercises the monolithic Kpp/KpT cross-term)."""
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Pressure Outlet"
     config_filename = "config_test_enthalpy_bndry_pressure.yaml"
@@ -78,7 +78,7 @@ def test_enthalpy_bndry_pressure() -> None:
 
 def test_enthalpy_bndry_flux() -> None:
     """Same as test_enthalpy_bndry_pressure, but with a flux-type outlet, which should not
-    pick up the fully_coupled Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
+    pick up the monolithic Kpp/KpT cross-term (a flux-type node's q is a prescribed value,
     never a function of p/T)."""
     case_dir = _test_data_dir()
     test_name = "Enthalpy Boundary Flux - Flux Outlet"
@@ -97,6 +97,21 @@ def test_patch_anisotropy() -> None:
     case_dir = _test_data_dir()
     test_name = "Patch Test - Anisotropy"
     config_filename = "config_test_anisotropic.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2
+    plot_on = False
+    test_pass = test_checks.check_patch_test(
+        config_filename, case_dir, primary_variables, mesh, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_anisotropy_conductivity() -> None:
+    """Check exact linear approximation with anisotropic thermal conductivity."""
+    case_dir = _test_data_dir()
+    test_name = "Patch Test - Anisotropic Conductivity"
+    config_filename = "config_test_anisotropic_cond.yaml"
     primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
 
     dimension = 4  # not aligned with cartesian grid, use d =/= 0,1,2

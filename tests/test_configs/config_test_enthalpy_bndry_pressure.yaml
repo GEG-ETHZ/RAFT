@@ -32,7 +32,7 @@ initial_conditions:
 # so its temperature is free, advected out of the domain by
 # `integrate_enthlpy_bndry_residual`/`integrate_enthlpy_bndry_tangent`
 # (matrixassembly.py) rather than fixed by a Dirichlet condition. Under
-# `fully_coupled`, this is also a pressure-type node, so it exercises the
+# `monolithic`, this is also a pressure-type node, so it exercises the
 # Kpp/KpT cross-term branch in the boundary tangent.
 boundary_conditions:
   - faces: [x_min]
@@ -72,7 +72,7 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "fully_coupled"
+  solver_type: "monolithic"
   rel_error_T: 1.0e-2
   iterative_controls:
       NR_tol: 1.0e-6

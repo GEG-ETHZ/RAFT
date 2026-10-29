@@ -133,11 +133,11 @@ def get_viscosity(
         D = -3.376e-5  # K^-2
 
         # Cap limits on temperature
-        low_limit = 200.0
-        up_limit = 1.0e3
+        low_limit = 273.0
+        up_limit = 643.0
 
-        T = np.maximum(T, _T_MIN)
-        T = np.minimum(T, _T_MAX)
+        T = np.maximum(T, low_limit)
+        T = np.minimum(T, up_limit)
 
         mu = A * np.exp(B / T + C * T + D * T**2)
 
@@ -318,7 +318,7 @@ def _eos_coolprop_values(  # noqa
 
     Density is read at `T_flow`.
     Internal energy at `T`.
-    In the linearized solver, T != T_flow. In the fully_coupled solver, T = T_flow.
+    In the operator_split solver, T != T_flow. In the monolithic solver, T = T_flow.
     """
     AS = fluid["abstract_state"]
     same_point = not T_flow_lagged

@@ -75,5 +75,5 @@ simulation:
   axisymmetric_on: 0
 
   # Numerical controls
-  solver_type: "linearized"
+  solver_type: "operator_split"
   rel_error_T: 1.0e-2

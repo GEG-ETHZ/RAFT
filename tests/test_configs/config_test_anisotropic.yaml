@@ -15,7 +15,7 @@ material:
       therm_expansion: 12.0e-6  # 1/K  (3 * 4e-6)
       porosity: 0.01                # -
       biot_coeff: 0.5               # -
-      permeability: [1.0e-13, 1.0e-19, 1.0e-19]         # m^2
+      permeability: [[1.0e-13, 1.0e-19, 1.0e-19]]       # m^2, region 0 principal values
       rotation_x: 0.0  # rotation of local coordinates around x-axis (degrees)
       rotation_y: 0.0 # rotation of local coordinates around y-axis (degrees)
       rotation_z: 10.0  # rotation of local coordinates around z-axis (degrees)
