@@ -75,8 +75,8 @@ simulation:
 
   # Output
   output_frequency: 1
-  output_vtk: 1        # turn vtk output on/off
-  output_density: 1
+  output_vtk: 0        # turn vtk output on/off
+  output_density: 0
   # output_directory: "/some/custom/path"  # optional; defaults to /main_folder/outputs/
 
   # Physical controls
