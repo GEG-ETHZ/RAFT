@@ -629,15 +629,81 @@ def get_enthalpy(
 
 def get_effective_permeability(
     kf: npt.NDArray[np.float64] | float,
-    T: npt.NDArray[np.float64],  # noqa
-    p: npt.NDArray[np.float64],  # noqa
-    fluid: dict[str, Any],  # noqa
-    T_flow_lagged: bool = False,  # noqa
+    T: npt.NDArray[np.float64],
+    p: npt.NDArray[np.float64],
+    solid: dict[str, Any],
+    T_0: npt.NDArray[np.float64],
+    p_0: npt.NDArray[np.float64],
+    T_flow_lagged: bool = False,
 ) -> PropertyResult:
-    """Get the effective permeability. Apply Forchheimer flow and other modifiers."""
-    kf_eff = np.asarray(kf, dtype=np.float64)
-    dkf_dT = _const_array(0.0, T.shape)
-    dkf_dp = _const_array(0.0, T.shape)
+    """Get pressure- and temperature-dependent effective permeability."""
+    kf_0 = np.asarray(kf, dtype=np.float64)
+
+    stress_init = 32.0e6  # Pa
+    biot_coeff = solid["biot_coeff"]
+    drained_bulk_mod = (1 - biot_coeff) * solid["bulk_mod"]
+    vol_therm_expansion = solid["therm_expansion"]
+    A = solid["a_BB"]
+    B = solid["b_BB"]
+
+    # effective stress and aperture calculations
+    stress_eff = stress_init + drained_bulk_mod * vol_therm_expansion * (T - T_0) - biot_coeff * (p - p_0)
+    denominator = 1.0 + B * stress_eff
+
+    if not np.all(np.isfinite(denominator)):
+        raise FloatingPointError("Non-finite aperture denominator in get_effective_permeability")
+
+    if np.any(denominator <= 0.0):
+        raise FloatingPointError(
+            "Aperture law left its valid range: "
+            f"minimum denominator={np.min(denominator):.6e}, "
+            f"minimum effective stress={np.min(stress_eff):.6e} Pa"
+        )
+
+    aperture = A / (B * denominator)
+
+    denominator_init = 1.0 + B * stress_init
+    aperture_init = A / (B * denominator_init)
+
+    # Preserve the directional ratios of the configured permeability
+    reference_permeability = aperture_init**2 / 12.0
+    anisotropy = kf_0 / reference_permeability
+
+    # Scalar cubic-law permeability and derivatives.
+    permeability = aperture**2 / 12.0
+
+    dk_dp = A * aperture * biot_coeff / (6.0 * denominator**2)
+
+    if T_flow_lagged:
+        dk_dT = _const_array(0.0, T.shape)
+    else:
+        dk_dT = -A * aperture * drained_bulk_mod * vol_therm_expansion / (6 * denominator**2)
+
+    if kf_0.ndim == 0:
+        # Isotropic scalar permeability.
+        kf_eff = permeability * anisotropy
+        dkf_dp = dk_dp * anisotropy
+        dkf_dT = dk_dT * anisotropy
+    else:
+        # Anisotropic tensor permeability.
+        scalar_permeability = np.asarray(permeability).reshape(-1, 1, 1)
+        scalar_dk_dp = np.asarray(dk_dp).reshape(-1, 1, 1)
+        scalar_dk_dT = np.asarray(dk_dT).reshape(-1, 1, 1)
+
+        kf_eff = scalar_permeability * anisotropy
+        dkf_dp = scalar_dk_dp * anisotropy
+        dkf_dT = scalar_dk_dT * anisotropy
+
+    if not np.all(np.isfinite(aperture)):
+        raise FloatingPointError("Non-finite aperture in get_effective_permeability")
+
+    if np.any(aperture <= 0.0):
+        raise FloatingPointError(
+            f"Non-positive aperture in get_effective_permeability: min={np.min(aperture)}"
+        )
+
+    if not np.all(np.isfinite(kf_eff)):
+        raise FloatingPointError("Non-finite effective permeability in get_effective_permeability")
 
     return PropertyResult(kf_eff, dkf_dp, dkf_dT)
 

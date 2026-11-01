@@ -8,6 +8,11 @@ mesh:
       outer: 20
       frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
+
+      # TEST: coarser mesh for faster simulation
+      # outer: 40
+      # frac: [[4, 4, 8], [4, 10, 20]]
+      # bc: [[4, 8], [8, 20]]
   regions:
       - shape: "sphere"
         values: [[25.5, 25, 0], 10]
@@ -38,6 +43,8 @@ material:
       rotation_x: [0.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [30.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
+      a_BB: [3.7e-11, 3.7e-11, 3.7e-11]  # m/Pa
+      b_BB: [3.16e-7, 3.16e-7, 3.16e-7]  # 1/Pa
 
   # Fluid parameters - single phase flow is assumed
   fluid:
@@ -45,11 +52,13 @@ material:
       density: 1000           # kg/m^3 - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup
       reference_temperature: 293 # Reference temperature for density (K)
       reference_pressure: 1.0e+5 # Reference pressure for density (Pa)
-      bulk_mod: 2.10e+9       # Pa
+      bulk_mod: 2.10e+9 #Pa
+      # bulk_mod: 2.10e+19       # TEST
       therm_expansion: 200.0e-6 # 1/K
       specific_heat: 4200     # J/kgK
       therm_cond: 0.6         # W/mK
       viscosity: -1           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
+      # viscosity: 1.0e-3 #TEST
 
   # Fracture parameters
   fracture:
@@ -74,7 +83,8 @@ boundary_conditions:
           label: "inlet"
           hydraulics:
               type: "flux"
-              values: [[0, 0.01], 1000]
+              # values: [[0, 0.01], 1000]
+              values: [[0, 0.001], 1000] # TEST
               function: "ramp"
               constraints:
                   maximum_pressure: 3.0e+7
@@ -87,7 +97,8 @@ boundary_conditions:
           label: "outlet"
           hydraulics:
               type: "flux"
-              values: [[0, -0.01], 1000]
+              # values: [[0, -0.01], 1000]
+              values: [[0, -0.001], 1000] # TEST --> any higher causes the model to go out of valid aperture range
               function: "ramp"
               constraints:
                   maximum_pressure: 3.0e+7
@@ -119,10 +130,14 @@ physics:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 3.0e+7
-  timestep: 10.0
-  timestep_min: 1.0
-  timestep_max: 6.0e+5
+  # t_end: 3.0e+7
+  # timestep: 10.0
+  # timestep_min: 1.0
+  # timestep_max: 6.0e+5
+  t_end: 3.0e+7 # TEST --> 1.0e+5 works thus far
+  timestep: 10.0 # TEST --> 10.0 is highest that works
+  timestep_min: 1.0 # TEST
+  timestep_max: 1.0e+4 # TEST --> 1.0e+4.0 works thus far with original t_end
 
   # Output
   output_frequency: 1
@@ -143,6 +158,11 @@ simulation:
   rel_error_T: 5.0e-2 # Relative error for extrapolation
   iterative_controls:
       NR_tol: 2.0e-5 # Newton-Raphson residual tolerance
+      # iter_max: 50 # Maximum number of iterations
+      # NR_step: 1
+      # aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation
+
+      #TEST
       iter_max: 50 # Maximum number of iterations
       NR_step: 1
       aitken_relaxation: 1 # Turn on/off Aitken's delta^2 relaxation

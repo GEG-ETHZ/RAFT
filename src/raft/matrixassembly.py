@@ -974,7 +974,7 @@ def _get_region_flow_data(
     nan_arr = np.asarray(np.nan)
     return RegionFlowData(
         kf=kf,
-        isotropic_perm=bool(isinstance(kf, (float, int))),
+        isotropic_perm=np.asarray(kf).ndim == 0,
         nodes_r=mesh["nodes"],
         w0=nan,
         u=np.full((1, 1), np.nan),
@@ -1569,6 +1569,8 @@ def _evaluate_flow_and_storage_state(
     kin_n: ElementKinematics,
     N_q: npt.NDArray[np.float64],
     fluid: dict[str, Any],
+    _material: dict[str, Any],
+    solid_r: dict[str, Any],
     nodal_state: StackedNodalState,
     enodes: npt.NDArray[np.intp],
     *,
@@ -1594,7 +1596,10 @@ def _evaluate_flow_and_storage_state(
 
     # ---- Quadrature-point flow properties, only for Darcy flux and matrix coupling
     if want_flow:
-        kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
+        T_0_q = N_q @ kin_n.T_0e
+        p_0_q = N_q @ kin_n.p_0e
+
+        kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, solid_r, T_0_q, p_0_q, T_flow_lagged)
         mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
     else:
         kf = mu_q = _EMPTY_PROPERTY
@@ -2818,6 +2823,15 @@ def integrate_residuals(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+
+        solid_r = {
+            "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
+            "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
+            "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
+            "a_BB": _get_region_value(material["solid"]["a_BB"], r),
+            "b_BB": _get_region_value(material["solid"]["b_BB"], r),
+        }
+
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -2887,6 +2901,8 @@ def integrate_residuals(  # noqa
                 kin_n,
                 N_q,
                 fluid,
+                material,
+                solid_r,
                 nodal_state,
                 np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
@@ -3289,6 +3305,13 @@ def integrate_tangent_matrices(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        solid_r = {
+            "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
+            "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
+            "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
+            "a_BB": _get_region_value(material["solid"]["a_BB"], r),
+            "b_BB": _get_region_value(material["solid"]["b_BB"], r),
+        }
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -3358,6 +3381,8 @@ def integrate_tangent_matrices(  # noqa
                 kin_n,
                 N_q,
                 fluid,
+                material,
+                solid_r,
                 nodal_state,
                 np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
