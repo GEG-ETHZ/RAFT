@@ -2828,9 +2828,15 @@ def integrate_residuals(  # noqa
             "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
             "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
-            "a_BB": _get_region_value(material["solid"]["a_BB"], r),
-            "b_BB": _get_region_value(material["solid"]["b_BB"], r),
         }
+        aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
+        if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:
+            raise ValueError("Both material.solid.a_BB and material.solid.b_BB must be configured together")
+        if aperture_keys:
+            solid_r.update(
+                a_BB=_get_region_value(material["solid"]["a_BB"], r),
+                b_BB=_get_region_value(material["solid"]["b_BB"], r),
+            )
 
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
@@ -3309,9 +3315,15 @@ def integrate_tangent_matrices(  # noqa
             "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
             "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
-            "a_BB": _get_region_value(material["solid"]["a_BB"], r),
-            "b_BB": _get_region_value(material["solid"]["b_BB"], r),
         }
+        aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
+        if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:
+            raise ValueError("Both material.solid.a_BB and material.solid.b_BB must be configured together")
+        if aperture_keys:
+            solid_r.update(
+                a_BB=_get_region_value(material["solid"]["a_BB"], r),
+                b_BB=_get_region_value(material["solid"]["b_BB"], r),
+            )
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,

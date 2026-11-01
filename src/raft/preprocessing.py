@@ -52,8 +52,6 @@ DEFAULTS: dict[str, Any] = {
             "rotation_x": 0.0,  # rotation of local coordinates around x-axis (degrees)
             "rotation_y": 0.0,  # rotation of local coordinates around y-axis (degrees)
             "rotation_z": 0.0,  # rotation of local coordinates around z-axis (degrees)
-            "a_BB": 3.7e-11,  # m/Pa
-            "b_BB": 3.16e-7,  # 1/Pa
         },
         "fluid": {
             "fluid_type": "WATER",  # Fluid name for property lookup

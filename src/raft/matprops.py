@@ -639,6 +639,13 @@ def get_effective_permeability(
     """Get pressure- and temperature-dependent effective permeability."""
     kf_0 = np.asarray(kf, dtype=np.float64)
 
+    has_a_BB = "a_BB" in solid
+    has_b_BB = "b_BB" in solid
+    if not has_a_BB and not has_b_BB:
+        return PropertyResult(kf_0, _const_array(0.0, T.shape), _const_array(0.0, T.shape))
+    if has_a_BB != has_b_BB:
+        raise ValueError("Both solid.a_BB and solid.b_BB must be configured together")
+
     stress_init = 32.0e6  # Pa
     biot_coeff = solid["biot_coeff"]
     drained_bulk_mod = (1 - biot_coeff) * solid["bulk_mod"]

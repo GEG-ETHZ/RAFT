@@ -46,8 +46,8 @@ def _read_vtk(path: Path) -> dict[str, Any]:  # noqa: C901
             count = int(parts[1])
             cells: list[list[int]] = []
             for line in lines[i + 1 : i + 1 + count]:
-                values = [int(value) for value in line.split()]
-                cells.append(values[1:])
+                cell_values = [int(value) for value in line.split()]
+                cells.append(cell_values[1:])
             result["cells"] = cells
             i += count + 1
         elif keyword == "CELL_TYPES":
