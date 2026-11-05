@@ -1,6 +1,9 @@
+# SPDX-FileCopyrightText: 2026 ETH Zurich
+# SPDX-License-Identifier: Apache-2.0
+
 project = "RAFT"
-copyright = "ETHZ/EAPS/GEG Group"
-author = "ETHZ/EAPS/GEG Group"
+copyright = "2026 ETH Zurich"
+author = "Geothermal Energy and Geofluids Group, ETH Zurich"
 
 extensions = [
     "myst_parser",

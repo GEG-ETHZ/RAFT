@@ -1,0 +1,71 @@
+# Publish a release: build once, upload to TestPyPI, then, after a
+# maintainer approves, upload the same files to PyPI. Runs when a version
+# tag (v*) is pushed.
+#
+# Uploads use PyPI Trusted Publishing, so no API token is stored anywhere:
+# pypi.org and test.pypi.org each have a trusted publisher registered for
+# this repository, this workflow, and the job's environment (`pypi` or
+# `testpypi`), and they accept the short-lived identity GitHub gives the job.
+# The `pypi` environment (Settings → Environments) requires a reviewer, so
+# the PyPI job waits until someone has installed the TestPyPI upload and
+# approved the run. PyPI never accepts the same version twice, which is why
+# TestPyPI comes first.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: build the wheel and sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Tag matches the version in pyproject.toml
+        run: |
+          version="$(uv version --short)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in pyproject.toml"
+            exit 1
+          fi
+      - run: uv build
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/geg-raft/
+    permissions:
+      id-token: write  # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v7
+      - run: uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/ dist/*
+
+  pypi:
+    name: publish to PyPI
+    needs: testpypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi  # requires a reviewer's approval
+      url: https://pypi.org/project/geg-raft/
+    permissions:
+      id-token: write  # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v7
+      - run: uv publish --trusted-publishing always dist/*

@@ -2,10 +2,21 @@
 name = "geg-raft"
 version = "0.2.1"
 description = "THM simulator for native coupling with TANGO"
-authors = [{name = "ETHZ/EAPS/GEG Group"}]
+authors = [{name = "Geothermal Energy and Geofluids Group, ETH Zurich"}]
+maintainers = [{name = "Chad Baker", email = "chad.baker@eaps.ethz.ch"}]
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "numpy",
     "scipy",
@@ -14,6 +25,11 @@ dependencies = [
     "numba",
     "CoolProp",
     ]
+
+[project.urls]
+Repository = "https://github.com/GEG-ETHZ/RAFT"
+Changelog = "https://github.com/GEG-ETHZ/RAFT/blob/main/CHANGELOG.md"
+Issues = "https://github.com/GEG-ETHZ/RAFT/issues"
 
 
 [dependency-groups]   # e.g. uv add --group dev ruff
@@ -35,8 +51,25 @@ docs = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # 1.27 writes the SPDX license expression (PEP 639)
 build-backend = "hatchling.build"
+
+# The sdist holds the package's source, its tests (with their configs and
+# meshes), and the release files. Everything else in the repository (agent
+# config, CI, docs sources, example configs, figures, scripts) stays out of the
+# published release. pyproject.toml is always included.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CITATION.cff",
+    "/LICENSE",
+    "/LICENSES",
+    "/NOTICE",
+    "/REUSE.toml",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/geg_raft"]

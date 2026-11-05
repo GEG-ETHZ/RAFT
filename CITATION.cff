@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If RAFT contributes to your work, please cite it using these metadata."
+type: software
+title: "RAFT: Reservoir Analysis For TANGO"
+abstract: >-
+  A finite element method (FEM) simulator for coupled subsurface fluid flow
+  and heat transport in geothermal reservoirs, developed for native coupling
+  with TANGO.
+authors:
+  - family-names: Gee
+    given-names: Bruce
+    affiliation: "Geothermal Energy and Geofluids Group, Department of Earth and Planetary Sciences, ETH Zurich"
+contact:
+  - family-names: Baker
+    given-names: Chad
+    email: chad.baker@eaps.ethz.ch
+    orcid: "https://orcid.org/0000-0003-2233-221X"
+    affiliation: "Geothermal Energy and Geofluids Group, Department of Earth and Planetary Sciences, ETH Zurich"
+license: Apache-2.0
+version: 0.2.1
+date-released: 2026-10-23
+repository-code: "https://github.com/GEG-ETHZ/RAFT"
+keywords:
+  - geothermal energy
+  - reservoir simulation
+  - finite element method
+  - fluid flow
+  - heat transport
+  - fractures

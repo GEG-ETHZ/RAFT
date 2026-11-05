@@ -42,6 +42,8 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
 - [Project Structure](#project-structure)
 - [Developers](#developers)
   - [Running Checks](#running-checks)
+- [Citation](#citation)
+- [License](#license)
 
 ## Getting Started
 ### Prerequisites
@@ -586,3 +588,13 @@ View [CONTRIBUTING.md](./CONTRIBUTING.md) and install the git hooks: `uv run pre
 - **Linting:** `uv run ruff check .`
 - **Formatting:** `uv run ruff format .` (use `--check` to verify without modifying)
 - **Type checking:** `uv run mypy .`
+
+## Citation
+
+If RAFT contributes to your work, please cite it using the metadata in [`CITATION.cff`](CITATION.cff); GitHub shows a "Cite this repository" button for it.
+
+## License
+
+Copyright © 2026 ETH Zurich. Author: Bruce Gee, Geothermal Energy and Geofluids (GEG) group, Department of Earth and Planetary Sciences. Maintainer: Chad Baker.
+
+RAFT is licensed under the Apache License, Version 2.0; see [`LICENSE`](LICENSE).
