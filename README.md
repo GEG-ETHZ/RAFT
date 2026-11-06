@@ -225,6 +225,7 @@ Hydraulic and thermal properties (`diameter`, `perforation_conductance`, `heat_t
   * **`porosity`** *(float, default: `0.01`)*: Reservoir porosity (dimensionless fraction).
   * **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless).
   * **`permeability`** *(float or list, default: `1.0e-16`)*: Permeability in $\text{m}^2$. Can be a scalar for isotropic permeability, or a list of length equal to the dimensions for anisotropic permeability (e.g. `[1.0e-13, 1.0e-11, 1.0e-12]`). For anisotropic properties, the list corresponds to the local x, y, z axes which can be rotated with `rotation_x/y/z`.
+  * **`stress_init`** *(float, default: `32.0e6`)*: Initial effective stress used by the pressure- and temperature-dependent aperture/permeability law, in Pa.
   * **`rotation_x`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the x-axis in degrees.
   * **`rotation_y`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the y-axis in degrees.
   * **`rotation_z`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the z-axis in degrees.

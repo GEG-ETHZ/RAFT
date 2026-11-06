@@ -41,6 +41,7 @@ material:
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
       a_BB: [3.7e-11, 3.7e-11, 3.7e-11]  # m/Pa
       b_BB: [3.16e-7, 3.16e-7, 3.16e-7]  # 1/Pa
+      stress_init: [32.0e+6, 32.0e+6, 32.0e+6]  # Pa
 
   # Fluid parameters - single phase flow is assumed
   fluid:

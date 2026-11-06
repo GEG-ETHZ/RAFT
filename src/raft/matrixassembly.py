@@ -2828,6 +2828,7 @@ def integrate_residuals(  # noqa
             "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
             "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
+            "stress_init": _get_region_value(material["solid"]["stress_init"], r),
         }
         aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
         if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:
@@ -3315,6 +3316,7 @@ def integrate_tangent_matrices(  # noqa
             "biot_coeff": _get_region_value(material["solid"]["biot_coeff"], r),
             "bulk_mod": _get_region_value(material["solid"]["bulk_mod"], r),
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
+            "stress_init": _get_region_value(material["solid"]["stress_init"], r),
         }
         aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
         if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:

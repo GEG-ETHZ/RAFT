@@ -49,6 +49,7 @@ DEFAULTS: dict[str, Any] = {
             "porosity": 0.01,  # -
             "biot_coeff": 0.5,  # -
             "permeability": 1.0e-16,  # m^2
+            "stress_init": 32.0e6,  # Pa
             "rotation_x": 0.0,  # rotation of local coordinates around x-axis (degrees)
             "rotation_y": 0.0,  # rotation of local coordinates around y-axis (degrees)
             "rotation_z": 0.0,  # rotation of local coordinates around z-axis (degrees)

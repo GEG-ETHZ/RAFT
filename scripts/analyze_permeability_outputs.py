@@ -110,6 +110,7 @@ def _effective_stress(
     drained_bulk_modulus: npt.NDArray[np.float64],
     thermal_expansion: npt.NDArray[np.float64],
     biot_coefficient: npt.NDArray[np.float64],
+    stress_init: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
     """Return effective stress at every element's nodes, shape (elements, nodes)."""
     element_regions = np.rint(regions).astype(int)
@@ -122,7 +123,7 @@ def _effective_stress(
         region = element_regions[element]
         node_ids = np.asarray(nodes, dtype=int)
         stresses[element, : len(nodes)] = (
-            32.0e6
+            stress_init[region]
             + drained_bulk_modulus[region]
             * thermal_expansion[region]
             * (temperature[node_ids] - temperature_0[node_ids])
@@ -141,6 +142,7 @@ def _cell_fields(
     drained_bulk_modulus: npt.NDArray[np.float64],
     thermal_expansion: npt.NDArray[np.float64],
     biot_coefficient: npt.NDArray[np.float64],
+    stress_init: npt.NDArray[np.float64],
     a_bb: npt.NDArray[np.float64],
     b_bb: npt.NDArray[np.float64],
     permeability_ratios: npt.NDArray[np.float64],
@@ -158,7 +160,7 @@ def _cell_fields(
     cell_temperature_0 = np.array([np.mean(temperature_0[nodes]) for nodes in cells])
     region = element_regions
     stress = (
-        32.0e6
+        stress_init[region]
         + drained_bulk_modulus[region] * thermal_expansion[region] * (cell_temperature - cell_temperature_0)
         - biot_coefficient[region] * (cell_pressure - cell_pressure_0)
     )
@@ -245,9 +247,10 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
     biot = _as_region_array(solid["biot_coeff"], max_region, "biot_coeff")
     drained_bulk_modulus = (1.0 - biot) * bulk_modulus
     thermal_expansion = _as_region_array(solid["therm_expansion"], max_region, "therm_expansion")
+    stress_init = _as_region_array(solid["stress_init"], max_region, "stress_init")
     a_bb = _as_region_array(solid["a_BB"], max_region, "a_BB")
     b_bb = _as_region_array(solid["b_BB"], max_region, "b_BB")
-    reference_aperture = a_bb / (b_bb * (1.0 + b_bb * 32.0e6))
+    reference_aperture = a_bb / (b_bb * (1.0 + b_bb * stress_init))
     reference_permeability = reference_aperture**2 / 12.0
     configured_permeability = solid["permeability"]
     permeability_values = [np.atleast_1d(np.asarray(value, dtype=float)) for value in configured_permeability]
@@ -282,6 +285,7 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
             drained_bulk_modulus,
             thermal_expansion,
             biot,
+            stress_init,
         )
         (
             cell_stress,
@@ -298,6 +302,7 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
             drained_bulk_modulus,
             thermal_expansion,
             biot,
+            stress_init,
             a_bb,
             b_bb,
             permeability_ratios,

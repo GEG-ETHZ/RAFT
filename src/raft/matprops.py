@@ -646,7 +646,7 @@ def get_effective_permeability(
     if has_a_BB != has_b_BB:
         raise ValueError("Both solid.a_BB and solid.b_BB must be configured together")
 
-    stress_init = 32.0e6  # Pa
+    stress_init = solid["stress_init"]
     biot_coeff = solid["biot_coeff"]
     drained_bulk_mod = (1 - biot_coeff) * solid["bulk_mod"]
     vol_therm_expansion = solid["therm_expansion"]
