@@ -56,7 +56,8 @@ material:
 
   # Fracture parameters
   fracture:
-    aperture: [1.0e-4, 1.0e-4, 1.1e-4]
+    # aperture: [1.0e-4, 1.0e-4, 1.1e-4]
+    aperture: [1.0e-6, 1.0e-6, 1.1e-6]
     heat_transfer_factor: [1, 1, 1]
 
 initial_conditions:

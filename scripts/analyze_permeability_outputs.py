@@ -3,7 +3,7 @@
 The script reconstructs the pressure- and temperature-dependent permeability
 law used by ``raft.matprops.get_effective_permeability``. It does not rerun
 RAFT. Each saved timestep is written to a separate VTK file with cell-wise
-``effective_stress`` and permeability fields.
+``effective_stress``, aperture, and permeability fields.
 
 Example:
     uv run python scripts/analyze_permeability_outputs.py
@@ -144,8 +144,13 @@ def _cell_fields(
     a_bb: npt.NDArray[np.float64],
     b_bb: npt.NDArray[np.float64],
     permeability_ratios: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Return cell-wise effective stress, scalar permeability, and directional ratios."""
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Return cell-wise stress, aperture, permeability, and directional permeability."""
     element_regions = np.rint(regions).astype(int)
     cell_pressure = np.array([np.mean(pressure[nodes]) for nodes in cells])
     cell_temperature = np.array([np.mean(temperature[nodes]) for nodes in cells])
@@ -161,13 +166,14 @@ def _cell_fields(
     aperture = a_bb[region] / (b_bb[region] * denominator)
     permeability = aperture**2 / 12.0
     ratios = permeability_ratios[region]
-    return stress, permeability, permeability[:, np.newaxis] * ratios
+    return stress, aperture, permeability, permeability[:, np.newaxis] * ratios
 
 
 def _write_analysis_vtk(
     path: Path,
     snapshot: dict[str, Any],
     stress: npt.NDArray[np.float64],
+    aperture: npt.NDArray[np.float64],
     permeability: npt.NDArray[np.float64],
     permeability_directional: npt.NDArray[np.float64],
 ) -> None:
@@ -190,7 +196,10 @@ def _write_analysis_vtk(
         for cell_type in cell_types:
             file.write(f"{int(cell_type)}\n")
         file.write(f"CELL_DATA {len(cells)}\n")
-        fields = [("effective_stress", stress)]
+        fields = [
+            ("effective_stress", stress),
+            ("aperture", aperture),
+        ]
         fields.extend(
             (f"permeability_{axis}", permeability_directional[:, index])
             for index, axis in enumerate(("x", "y", "z"))
@@ -211,7 +220,7 @@ def _format_id_list(values: npt.NDArray[np.int_], limit: int = 20) -> str:
 
 
 def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  # noqa: C901
-    """Analyze snapshots and write cell-wise stress and permeability fields."""
+    """Analyze snapshots and write cell-wise stress, aperture, and permeability fields."""
     config: dict[str, Any] = yaml.safe_load(config_path.read_text())
     solid = config["material"]["solid"]
     initial = config["initial_conditions"]
@@ -274,7 +283,12 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
             thermal_expansion,
             biot,
         )
-        cell_stress, cell_permeability, cell_permeability_directional = _cell_fields(
+        (
+            cell_stress,
+            cell_aperture,
+            cell_permeability,
+            cell_permeability_directional,
+        ) = _cell_fields(
             snapshot["scalars"]["p"],
             snapshot["scalars"]["T"],
             p_0,
@@ -292,6 +306,7 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
             analysis_dir / f"Matrix.vtk.{timestep}",
             snapshot,
             cell_stress,
+            cell_aperture,
             cell_permeability,
             cell_permeability_directional,
         )
