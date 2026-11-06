@@ -59,6 +59,8 @@ This enforces code quality and prevents accidental direct commits or pushes to `
 - **`pre-commit` (auto-format as you type):** Runs fast linting and formatting (Ruff).
 - **`pre-push` (test before you share):** Runs heavier validation (Mypy type checking, Pytest) only when sharing code with the remote.
 
+The `gitleaks` hook checks only what each commit stages. `just leaks` scans the whole history, every branch and tag. prek builds [gitleaks](https://github.com/gitleaks/gitleaks) itself, at the version pinned in `.pre-commit-config.yaml`, so it needs no separate install.
+
 ## Changelog
 
 [`CHANGELOG.md`](CHANGELOG.md) follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)

@@ -2,7 +2,7 @@
 name = "geg-raft"
 version = "0.2.1"
 description = "THM simulator for native coupling with TANGO"
-authors = [{name = "Geothermal Energy and Geofluids Group, ETH Zurich"}]
+authors = [{name = "Geothermal Energy and Geofluids Group, ETH Zurich", email = "chad.baker@eaps.ethz.ch"}]
 maintainers = [{name = "Chad Baker", email = "chad.baker@eaps.ethz.ch"}]
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]

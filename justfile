@@ -55,6 +55,12 @@ test:
 # Run all quality checks in CI order: format → lint → typecheck → test
 check: fmt lint typecheck test
 
+# The gitleaks hook only checks each commit's staged changes; run this before a repository goes public.
+# prek builds the gitleaks version pinned in .pre-commit-config.yaml, so nothing else needs installing.
+# Scan the whole git history (every branch and tag) for secrets
+leaks:
+    uv run prek run --hook-stage manual gitleaks-history
+
 # Generate config/<mesh>.geo and .msh from a RAFT config, e.g. `just geo config_example_2D -o 2D_generated`
 geo config *args:
     uv run --with gmsh scripts/raft_to_geo.py {{config}} --mesh {{args}}

@@ -17,7 +17,7 @@ Prepares RAFT for its public, open-source release (#18).
   `release.yml` publishes a version tag to TestPyPI, then to PyPI after a
   maintainer approves, using Trusted Publishing.
 - **REUSE compliance** — `REUSE.toml` and `LICENSES/`, with `reuse` and
-  `gitleaks` prek hooks.
+  `gitleaks` prek hooks; `just leaks` scans the whole history for secrets.
 
 ### Changed
 
