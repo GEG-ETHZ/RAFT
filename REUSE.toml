@@ -1,0 +1,14 @@
+# Copyright and license for every file that doesn't carry its own SPDX header.
+# Python files carry the header themselves and are deliberately not listed,
+# so `reuse lint` (a prek hook) fails on a Python file without one. A new
+# file type fails it too, until its pattern is added here.
+version = 1
+
+[[annotations]]
+path = [
+    "**.md", "**.yml", "**.yaml", "**.toml", "**.lock", "**.cff", "**.txt",
+    "**.typed", "**.msh", "**.geo", "**.png", "**.svg", "**.gitkeep",
+    "**.gitignore", "**.envrc", "**.python-version", "justfile", "NOTICE",
+]
+SPDX-FileCopyrightText = "2026 ETH Zurich"
+SPDX-License-Identifier = "Apache-2.0"

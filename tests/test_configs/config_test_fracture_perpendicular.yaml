@@ -67,7 +67,7 @@ simulation:
 
   # Output
   output_frequency: 1
-  output_vtk: 1
+  output_vtk: 0
 
   # Physical controls
   rate_order: 1

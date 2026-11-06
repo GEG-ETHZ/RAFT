@@ -23,6 +23,25 @@ repos:
         stages: [pre-push]
         # args: [ . ]
 
+  # Every file has a copyright and license (SPDX header or REUSE.toml).
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v6.2.0
+    hooks:
+      - id: reuse
+
+  # Secrets never reach a commit: gitleaks scans the staged diff.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+      # The whole history, every branch and tag; only on request: `just leaks`
+      - id: gitleaks
+        alias: gitleaks-history
+        name: Detect hardcoded secrets in the whole history
+        entry: gitleaks git --log-opts=--all --redact
+        stages: [manual]
+        always_run: true
+
   # Built-in hooks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -35,8 +54,8 @@ repos:
 
       - id: check-added-large-files
         args: ['--maxkb=2000']
-      - id: no-commit-to-branch # This perfectly replaces the custom bash script by blocking commits AND pushes to main/develop
-        args: [--branch, main, --branch, development]
+      - id: no-commit-to-branch # blocks commits AND pushes to main
+        args: [--branch, main]
         stages: [pre-commit, pre-push]
 
   # Tests (run ONLY on push)

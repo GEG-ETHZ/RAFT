@@ -6,6 +6,28 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ## [In Development]
 
+Prepares RAFT for its public, open-source release (#18).
+
+### Added
+
+- **Citation metadata** — `CITATION.cff`, so GitHub shows a "Cite this
+  repository" button; the README has Citation and License sections.
+- **GitHub Actions** — `tests.yml` runs formatting, lint, mypy and the tests
+  on Linux, macOS and Windows, and on newer Python versions;
+  `release.yml` publishes a version tag to TestPyPI, then to PyPI after a
+  maintainer approves, using Trusted Publishing.
+- **REUSE compliance** — `REUSE.toml` and `LICENSES/`, with `reuse` and
+  `gitleaks` prek hooks; `just leaks` scans the whole history for secrets.
+
+### Changed
+
+- **Copyright notice** — ETH Zurich is the copyright holder, in `NOTICE`, the
+  README and the docs; every Python file starts with the two SPDX lines
+  instead of the long license header.
+- **Package metadata** — maintainer, classifiers, project URLs and license
+  files in `pyproject.toml`; the sdist holds only the source, tests and
+  release files.
+
 ---
 
 ## [0.2.1] — 2026-10-23
