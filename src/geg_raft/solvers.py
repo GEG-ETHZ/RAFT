@@ -90,29 +90,33 @@ def _check_convergence_extrap(
     return converged, extrapolation_error
 
 
-def _unpack_boundary_conditions(
+def _apply_boundary_conditions(
     boundary_conditions: dict[str, Any],
-    p_dofs: npt.NDArray[np.float64],
-    T_dofs: npt.NDArray[np.float64],
-) -> tuple[
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-    npt.NDArray[np.float64],
-]:
-    """Parse Dirichlet and Neumann BCs into fixed dofs/values and force vectors."""
-    T_fix = boundary_conditions["T_dirichlet"][:, 0].astype(int)
-    T_bar = boundary_conditions["T_dirichlet"][:, 1:2]
-    p_fix = boundary_conditions["p_dirichlet"][:, 0].astype(int)
-    p_bar = boundary_conditions["p_dirichlet"][:, 1:2]
-
-    F_extT = np.zeros((len(T_dofs), 1))
-    F_extp = np.zeros((len(p_dofs), 1))
-    F_extT[boundary_conditions["T_neumann"][:, 0].astype(int)] = boundary_conditions["T_neumann"][:, 1:2]
-    F_extp[boundary_conditions["p_neumann"][:, 0].astype(int)] = boundary_conditions["p_neumann"][:, 1:2]
-    return T_fix, T_bar, p_fix, p_bar, F_extT, F_extp
+    primary_variables: dict[str, Any],
+    mesh: dict[str, Any],
+    physics: Physics,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Write Dirichlet values; return fixed DoFs, Dirichlet DoFs and Neumann forces per field."""
+    # DoFs held at their current values because their field is off in that domain
+    off = {
+        "u": np.empty(0, dtype=int),
+        "p": physics.off_nodes(mesh, "flow"),
+        "T": physics.off_nodes(mesh, "heat"),
+    }
+    fixed_dofs, dirichlet_dofs, F_ext = {}, {}, {}
+    for key in ("u", "p", "T"):
+        # Dirichlet DoFs and values
+        fix = boundary_conditions[key + "_dirichlet"][:, 0].astype(int)
+        primary_variables[key][fix, :] = boundary_conditions[key + "_dirichlet"][:, 1:2]
+        fixed_dofs[key] = np.union1d(fix, off[key])
+        # Dirichlet DoFs with an assembled residual, for reaction fluxes and convergence scaling
+        dirichlet_dofs[key] = np.setdiff1d(fix, off[key])
+        # Neumann forces
+        F_ext[key] = np.zeros((len(primary_variables[key + "_dofs"]), 1))
+        F_ext[key][boundary_conditions[key + "_neumann"][:, 0].astype(int)] = boundary_conditions[
+            key + "_neumann"
+        ][:, 1:2]
+    return fixed_dofs, dirichlet_dofs, F_ext
 
 
 def compute_residuals(
@@ -173,10 +177,10 @@ def _check_convergence_NR(
     much is actually flowing through the domain), rather than a raw per-element residual
     that can't tell a genuinely small residual from a tiny fraction of a much larger one.
     """
-    n_DoFs = np.arange(0, mesh["nn_total"])  # number of DoFs
     nn = mesh["nn_total"]
 
     for key in R:
+        n_DoFs = np.arange(0, len(R[key]))  # this key's DoFs
         nF = np.setdiff1d(n_DoFs, fixed_dofs[key]).astype(int)  # free DoFs
 
         numerator = np.linalg.norm(R[key][nF])
@@ -200,8 +204,8 @@ def _plot_nr_residuals(
     residual_keys: list[str],
 ) -> None:
     """Plot Newton-Raphson residual history and Aitken damping coefficients."""
-    labels = {"T": "Temperature", "p": "Pressure"}
-    styles = {"T": "r-", "p": "b-"}
+    labels = {"T": "Temperature", "p": "Pressure", "u": "Displacement"}
+    styles = {"T": "r-", "p": "b-", "u": "g-"}
 
     fig, ax1 = plt.subplots(figsize=(8, 8))
     ax2 = ax1.twinx()
@@ -303,6 +307,10 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+# Primary-variable keys and the physics field that solves them, in block order
+_FIELD_KEYS = (("u", "mechanics"), ("p", "flow"), ("T", "heat"))
+
+
 def _reaction_flow_rates(
     F_vec: dict[str, Any], F_ext: dict[str, Any], fixed_dofs: dict[str, Any], dirichlet_dofs: dict[str, Any]
 ) -> npt.NDArray[np.float64]:
@@ -337,7 +345,7 @@ def _newton_raphson_loop(  # noqa
     `T_flow` is a separate frozen/extrapolated copy when `T_flow_lagged`; otherwise it must
     be the SAME array object as `primary_variables["T"]` so it tracks the in-loop updates below.
     """
-    keys = [key for key, field in (("p", "flow"), ("T", "heat")) if physics.solves(field)]
+    keys = [key for key, field in _FIELD_KEYS if physics.solves(field)]
     solve_p, solve_T = "p" in keys, "T" in keys
     # Newton-Raphson controls
     iter_max = controls["iterative_controls"]["iter_max"]
@@ -389,7 +397,7 @@ def _newton_raphson_loop(  # noqa
     aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
 
     # Run-type labels
-    if solve_p and solve_T:
+    if len(keys) > 1:
         label = "MONOLITHIC"
     elif solve_p:
         label = "ITERATIVE PRESSURE"
@@ -454,7 +462,7 @@ def _newton_raphson_loop(  # noqa
             if iteration == 0 and solve_p:
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
-            # Assemble Jacobian - different by case
+            # Assemble Jacobian - different by case; mechanics cases are added explicitly in A1
             if solve_p and solve_T:
                 # Monolithic
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
@@ -589,11 +597,9 @@ def operator_split_time_integration(  # noqa
     debug_pressure_plot_on = False
     debug_temperature_plot_on = False
     # extract vectors of nodal dofs
-    p = primary_variables["p"]
     T = primary_variables["T"]
     p_orig = primary_variables["p"].copy()
     T_orig = primary_variables["T"].copy()
-    p_dofs = primary_variables["p_dofs"]
     T_dofs = primary_variables["T_dofs"]
     rate_order = controls["rate_order"]
     physics = controls["physics"]
@@ -601,20 +607,10 @@ def operator_split_time_integration(  # noqa
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
 
-    # unpack boundary conditions
-    p_off = physics.off_nodes(mesh, "flow")
-    T_off = physics.off_nodes(mesh, "heat")
-    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
-        boundary_conditions, p_dofs, T_dofs
+    # Apply fixed boundary conditions; off nodes hold their values
+    fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
+        boundary_conditions, primary_variables, mesh, physics
     )
-    fixed_dofs = {"p": np.union1d(p_fix, p_off), "T": np.union1d(T_fix, T_off)}  # off nodes hold their values
-    # Dirichlet dofs with an assembled residual, for reaction fluxes and convergence scaling
-    dirichlet_dofs = {"p": np.setdiff1d(p_fix, p_off), "T": np.setdiff1d(T_fix, T_off)}
-    F_ext = {"p": F_extp, "T": F_extT}
-
-    # Apply fixed boundary conditions
-    p[p_fix, :] = p_bar
-    T[T_fix, :] = T_bar
     nF_T = np.setdiff1d(T_dofs, fixed_dofs["T"]).astype(int)  # free temperature DoFs
 
     # Extrapolate temperature for free Dofs
@@ -703,28 +699,16 @@ def monolithic_time_integration(  # noqa
     and pressure monolithically.
     """
     debug_plot_on = False
-    p_dofs = primary_variables["p_dofs"]
-    T_dofs = primary_variables["T_dofs"]
     rate_order = controls["rate_order"]
     physics = controls["physics"]
 
     # calculate rate coefficients
     cv, cx = rate_coefficients(dt, rate_order)
 
-    # unpack boundary conditions
-    p_off = physics.off_nodes(mesh, "flow")
-    T_off = physics.off_nodes(mesh, "heat")
-    T_fix, T_bar, p_fix, p_bar, F_extT, F_extp = _unpack_boundary_conditions(
-        boundary_conditions, p_dofs, T_dofs
+    # Apply fixed boundary conditions; off nodes hold their values
+    fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
+        boundary_conditions, primary_variables, mesh, physics
     )
-    fixed_dofs = {"p": np.union1d(p_fix, p_off), "T": np.union1d(T_fix, T_off)}  # off nodes hold their values
-    # Dirichlet dofs with an assembled residual, for reaction fluxes and convergence scaling
-    dirichlet_dofs = {"p": np.setdiff1d(p_fix, p_off), "T": np.setdiff1d(T_fix, T_off)}
-    F_ext = {"p": F_extp, "T": F_extT}
-
-    # Apply fixed boundary conditions
-    primary_variables["p"][p_fix, :] = p_bar
-    primary_variables["T"][T_fix, :] = T_bar
     if not (physics.solves("flow") or physics.solves("heat")):
         return primary_variables, dt, True, 0.0
 

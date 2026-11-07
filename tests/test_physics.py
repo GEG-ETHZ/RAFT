@@ -54,6 +54,9 @@ def test_inheritance_and_yaml_booleans() -> None:
         ("matrix: {advection: 2}", ValueError),
         ("matrix: {pressure: steady}", ValueError),
         ("well: {advection: on}", ValueError),
+        ("matrix: {mechanics: plastic}", ValueError),
+        ("fractures: {mechanics: quasi_static}", ValueError),
+        ("matrix: {mechanics: quasi_static}", NotImplementedError),
     ],
 )
 def test_invalid(physics_yaml: str, error: type[Exception]) -> None:

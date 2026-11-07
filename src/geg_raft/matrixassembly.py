@@ -242,8 +242,13 @@ def _assemble_global_matrices(
     elem_indx: list[int],
     elem_order: npt.NDArray[np.int32],  # sequence the values were written
     isvector: bool = False,
+    row_ndof: int = 1,  # DoFs per node of the row field
+    col_ndof: int = 1,  # DoFs per node of the column field
 ) -> dict[str, csc_matrix]:
-    """Assemble vector of rows and columns all at once and assemble sparse matrix."""
+    """Assemble vector of rows and columns all at once and assemble sparse matrix.
+
+    Element matrices are row-major over node-interleaved DoFs; the result is (nn*row_ndof, nn*col_ndof).
+    """
     # For vectorized sparse matrix assembly, we feed in 3 vectors:
     # vec: each entry of the element-by-element sparse matrices
     # row_vec: each entry indicates the row that the entry in vec belongs to
@@ -270,22 +275,34 @@ def _assemble_global_matrices(
             run = elem_order[start:i]
             conn_run = np.asarray([conn[e] for e in run], dtype=np.int32)
 
+            # Element DoFs, node-interleaved (identity for scalar fields)
+            row_dofs = _element_dofs(conn_run, row_ndof)
+            col_dofs = _element_dofs(conn_run, col_ndof)
+
             if isvector:
-                # Vector assembly: 1 entry per node per element
-                row_chunks.append(conn_run.ravel())
-                col_chunks.append(np.zeros(conn_run.size, dtype=np.int32))
+                # Vector assembly: 1 entry per DoF per element
+                row_chunks.append(row_dofs.ravel())
+                col_chunks.append(np.zeros(row_dofs.size, dtype=np.int32))
             else:
-                # Matrix assembly: nne^2 entries per element
-                row_chunks.append(np.repeat(conn_run, nne, axis=1).ravel())
-                col_chunks.append(np.tile(conn_run, (1, nne)).ravel())
+                # Matrix assembly: (nne*row_ndof)(nne*col_ndof) entries per element
+                row_chunks.append(np.repeat(row_dofs, nne * col_ndof, axis=1).ravel())
+                col_chunks.append(np.tile(col_dofs, (1, nne * row_ndof)).ravel())
 
             start = i
 
     row_vec = np.concatenate(row_chunks)
     col_vec = np.concatenate(col_chunks)
-    nn2 = 1 if isvector else nn
+    nn2 = 1 if isvector else nn * col_ndof
 
-    return {name: _make_sparse(vec[name], row_vec, col_vec, nn, nn2) for name in vec}
+    return {name: _make_sparse(vec[name], row_vec, col_vec, nn * row_ndof, nn2) for name in vec}
+
+
+def _element_dofs(conn_run: npt.NDArray[np.int32], ndof: int) -> npt.NDArray[np.int32]:
+    """Node-interleaved DoFs of each element in a run, (n_elem, nne*ndof)."""
+    if ndof == 1:
+        return conn_run
+    dofs = conn_run[:, :, None] * ndof + np.arange(ndof, dtype=np.int32)
+    return np.asarray(dofs, dtype=np.int32).reshape(conn_run.shape[0], -1)
 
 
 def _get_quad_points_and_shape_functions(

@@ -32,6 +32,8 @@ from typing import Any, Literal, get_args
 import numpy as np
 import numpy.typing as npt
 
+from .dofmap import field_layouts
+from .history import History
 from .logging_utils import RunLogger
 from .matprops import get_EOS
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
@@ -162,7 +164,7 @@ def get_critical_times(BC_config: list[dict[str, Any]]) -> npt.NDArray[np.float6
     """Collect the change times of BC groups using the 'table' or 'ramp' function."""
     times: set[float] = set()
     for group in BC_config:
-        for field in ("hydraulics", "thermal"):
+        for field in ("hydraulics", "thermal", "mechanics"):
             spec = group.get(field)
             if spec is None:
                 continue
@@ -263,6 +265,9 @@ def _no_wells_problem(
         "p": primary_variables["p"][:nn_no_wells].copy(),
         "T": primary_variables["T"][:nn_no_wells].copy(),
         "q": primary_variables["q"][:nn_no_wells].copy(),
+        # displacement lives on matrix nodes only, unaffected by removing wells
+        "u_dofs": primary_variables["u_dofs"],
+        "u": primary_variables["u"].copy(),
     }
 
     BC_no_wells = []
@@ -276,7 +281,7 @@ def _no_wells_problem(
         elif in_no_wells.any():
             # Field specs are copied too, since parsebcs writes the node list into them
             trimmed = {**group, "nodes": nodes[in_no_wells]}
-            for field in ("hydraulics", "thermal"):
+            for field in ("hydraulics", "thermal", "mechanics"):
                 if field in group:
                     trimmed[field] = dict(group[field])
             BC_no_wells.append(trimmed)
@@ -537,6 +542,8 @@ def _perform_time_integration(
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Choose between time integration types."""
     solver_type = controls["solver_type"]
+    # each attempt starts from the committed history
+    primary_variables["history"].begin_step()
     supported_types = ["operator_split", "monolithic"]
 
     if solver_type == "operator_split":
@@ -771,8 +778,10 @@ def load_state(state: SimState, BC_config: list[dict[str, Any]]) -> dict[str, An
 def _rollover(primary_variables: dict[str, Any], BC_config: list[dict[str, Any]], WB_on: int) -> None:
     """Shift the time history after an accepted step and update the wellbore flags."""
     # column 0 gets overwritten in time integration
-    primary_variables["p"][:, [3, 2, 1]] = primary_variables["p"][:, [2, 1, 0]]
-    primary_variables["T"][:, [3, 2, 1]] = primary_variables["T"][:, [2, 1, 0]]
+    for key in ("p", "T", "u"):
+        primary_variables[key][:, [3, 2, 1]] = primary_variables[key][:, [2, 1, 0]]
+    # accept irreversible history
+    primary_variables["history"].commit()
     if WB_on:
         _update_WB_flags(BC_config)
 
@@ -923,7 +932,7 @@ def initialize_simulation(
     critical_times = get_critical_times(BC_config)
 
     ## Initialize vectors
-    primary_variables = {}  # storage structure for all primary variables and results
+    primary_variables: dict[str, Any] = {}  # storage structure for all primary variables and results
     p_dofs = np.arange(0, mesh["nn_total"])
     T_dofs = np.arange(0, mesh["nn_total"])
     primary_variables["p_dofs"] = p_dofs
@@ -932,6 +941,12 @@ def initialize_simulation(
     # [t_n, t_(n-1), t_(n-2), ...]
     primary_variables["p"] = 1e5 * np.ones((len(p_dofs), 4))
     primary_variables["T"] = 300 * np.ones((len(T_dofs), 4))
+    # Displacement on matrix nodes, node-interleaved; zero at the in-situ reference state
+    u_dofs = np.arange(0, field_layouts(mesh)["u"].size)
+    primary_variables["u_dofs"] = u_dofs
+    primary_variables["u"] = np.zeros((len(u_dofs), 4))
+    # Irreversible history (e.g. cohesive opening), committed on accepted steps
+    primary_variables["history"] = History()
 
     ## Wellbore boundary conditions
     WB_on = controls["wellbore_check"]

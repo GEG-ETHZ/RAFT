@@ -25,10 +25,11 @@ import numpy as np
 import numpy.typing as npt
 import yaml
 
+from .dofmap import COMPONENTS, component_dofs
 from .matprops import create_abstract_state
 from .matrixassembly import integrate_boundary_flux_matrices
 from .meshprocessing import _build_edge_element_map, _find_lineBC_connectivity, load_mesh
-from .physics import DOMAINS, FIELD_MODES, DomainPhysics, Physics
+from .physics import DOMAINS, FIELD_MODES, MECHANICS_MODES, DomainPhysics, Physics
 
 # ----- Default values for config file
 DEFAULTS: dict[str, Any] = {
@@ -138,6 +139,16 @@ def _parse_field_mode(value: Any, where: str) -> str:
     return str(mode)
 
 
+def _parse_mechanics_mode(value: Any) -> str:
+    """Validate the matrix mechanics mode; YAML reads a bare `off` as False."""
+    mode = "off" if value is False else value
+    if mode not in MECHANICS_MODES:
+        raise ValueError(f"physics.matrix.mechanics = {value!r}; expected one of {MECHANICS_MODES}")
+    if mode != "off":
+        raise NotImplementedError("physics.matrix.mechanics = 'quasi_static' is not implemented yet")
+    return str(mode)
+
+
 def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
     """Resolve the `physics` block into per-domain switches."""
     block = config["physics"]
@@ -145,9 +156,18 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
     if unknown:
         raise ValueError(f"Unknown physics domain(s) {sorted(unknown)}; expected {DOMAINS}")
 
+    # Mechanics is solved over the matrix only; fractures and wells do not inherit it
+    for domain in ("fractures", "wells"):
+        if "mechanics" in (block.get(domain) or {}):
+            raise ValueError(
+                f"physics.{domain}.mechanics is not allowed; mechanics is set on the matrix only"
+            )
+    mechanics = _parse_mechanics_mode(block["matrix"].get("mechanics", "off"))
+
     resolved: dict[str, DomainPhysics] = {}
     for domain in DOMAINS:
         spec = {**block["matrix"], **(block.get(domain) or {})}
+        spec.pop("mechanics", None)
         unknown = set(spec) - {"flow", "heat", "advection"}
         if unknown:
             raise ValueError(f"Unknown physics.{domain} field(s) {sorted(unknown)}")
@@ -157,6 +177,7 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
             flow=_parse_field_mode(spec["flow"], f"{domain}.flow"),
             heat=_parse_field_mode(spec["heat"], f"{domain}.heat"),
             advection=bool(spec["advection"]),
+            mechanics=mechanics if domain == "matrix" else "off",
         )
         if verbose and domain != "matrix" and resolved[domain] != resolved["matrix"]:
             print(f"\nPhysics in {domain} differs from matrix: {resolved[domain]}")
@@ -514,6 +535,78 @@ def _validate_external_groups(BC_groups: list[dict[str, Any]]) -> None:
             )
 
 
+_MECHANICS_TYPES = ("displacement", "traction")
+_MECHANICS_COMPONENT_KEYWORDS = ("fixed", "roller")
+
+
+def _mechanics_dofs(group: dict[str, Any], mesh: dict[str, Any], where: str) -> npt.NDArray[np.int64]:
+    """Displacement DoFs constrained or loaded by a group's "mechanics" components.
+
+    A list of "x"/"y"/"z" applies to every node; "fixed" applies to all components; "roller"
+    applies to the normal component of each face (x on x_min/x_max, and so on).
+    """
+    spec = group["mechanics"]
+    nsd = mesh["nsd"]
+    allowed = COMPONENTS[:nsd]
+    components = spec.get("components", [])
+
+    # keywords: displacement only
+    if isinstance(components, str):
+        if components not in _MECHANICS_COMPONENT_KEYWORDS:
+            raise ValueError(
+                f"{where} has components {components!r}; "
+                f"expected a list or one of {_MECHANICS_COMPONENT_KEYWORDS}"
+            )
+        if spec["type"] != "displacement":
+            raise ValueError(f"{where}: components {components!r} applies to displacement only")
+        if components == "fixed":
+            return component_dofs(group["nodes"], nsd, allowed)
+        # roller: normal component of each face
+        if "faces" not in group:
+            raise ValueError(f"{where}: components 'roller' requires 'faces'")
+        return np.concatenate(
+            [component_dofs(sorted(mesh["boundaries"][face]), nsd, [face[0]]) for face in group["faces"]]
+        )
+
+    # explicit list of components
+    if not components or any(c not in allowed for c in components):
+        raise ValueError(f"{where} has components {components!r}; expected a non-empty subset of {allowed}")
+    return component_dofs(group["nodes"], nsd, components)
+
+
+def _preprocess_mechanics_group(
+    group: dict[str, Any], mesh: dict[str, Any], controls: dict[str, Any], verbose: bool
+) -> None:
+    """Validate a group's "mechanics" spec and cache its DoFs and nodal force weights."""
+    spec = group["mechanics"]
+    where = f"mechanics on '{group.get('label', group.get('faces', ''))}'"
+
+    # type and value function
+    if spec.get("type") not in _MECHANICS_TYPES:
+        raise ValueError(f"{where} has type {spec.get('type')!r}; expected one of {_MECHANICS_TYPES}")
+    if spec.get("function") == "external":
+        raise NotImplementedError(f"{where}: external mechanics boundary conditions are not implemented yet")
+
+    # displacement lives on matrix nodes only
+    if np.any(np.asarray(group["nodes"], dtype=int) >= mesh["nn"]):
+        raise ValueError(f"{where} includes fracture or well nodes; mechanics applies to matrix nodes only")
+
+    # DoFs, unique nodes, and each DoF's row in the node list (faces share corner nodes)
+    dofs = np.unique(_mechanics_dofs(group, mesh, where))
+    spec["_dofs"] = dofs
+    spec["_nodes"] = np.unique(dofs // mesh["nsd"])
+    spec["_dof_rows"] = np.searchsorted(spec["_nodes"], dofs // mesh["nsd"])
+
+    # traction on faces/lines: consistent nodal forces over the unique nodes; otherwise point loads
+    if spec["type"] == "traction" and "_conn" in group:
+        spec["_force_matrix"] = integrate_boundary_flux_matrices(
+            mesh, group["_conn"], spec["_nodes"], controls, group["_conn_kind"]
+        )["A"]
+
+    if verbose and not controls["physics"].solves("mechanics"):
+        print(f"  {where} is ignored while physics.matrix.mechanics is off.")
+
+
 def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
     """Preprocessing of boundary conditions.
 
@@ -640,6 +733,8 @@ def _preprocess_BCs(mesh: dict[str, Any], config: dict[str, Any], verbose: bool 
             field in group and group[field]["type"] == "flux" for field in ("hydraulics", "thermal")
         )
         _resolve_group_geometry(mesh, group, controls, need_flux_integral)
+        if "mechanics" in group:
+            _preprocess_mechanics_group(group, mesh, controls, verbose)
 
     config["boundary_conditions"] = BC_groups
     return config

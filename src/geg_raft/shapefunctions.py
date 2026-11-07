@@ -283,18 +283,52 @@ def _inverseJ(J: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
 
 
 @njit(cache=True)  # type: ignore[untyped-decorator]
+def _strain_displacement(B: npt.NDArray[np.float64], nsd: int) -> npt.NDArray[np.float64]:
+    """Voigt strain-displacement matrix from scalar gradients, node-interleaved columns.
+
+    2D rows [xx, yy, xy]; 3D rows [xx, yy, zz, xz, yz, xy].
+    """
+    nq = B.shape[0]
+    nne = B.shape[2]
+    nv = nsd * (nsd + 1) // 2
+    Bu = np.zeros((nq, nv, nsd * nne))
+    for i in range(nne):
+        cx = nsd * i  # column of the x-DoF of node i
+        # normal strains
+        for d in range(nsd):
+            Bu[:, d, cx + d] = B[:, d, i]
+        # shear strains
+        if nsd == 2:
+            Bu[:, 2, cx] = B[:, 1, i]
+            Bu[:, 2, cx + 1] = B[:, 0, i]
+        else:
+            Bu[:, 3, cx] = B[:, 2, i]
+            Bu[:, 3, cx + 2] = B[:, 0, i]
+            Bu[:, 4, cx + 1] = B[:, 2, i]
+            Bu[:, 4, cx + 2] = B[:, 1, i]
+            Bu[:, 5, cx] = B[:, 1, i]
+            Bu[:, 5, cx + 1] = B[:, 0, i]
+    return Bu
+
+
+@njit(cache=True)  # type: ignore[untyped-decorator]
 def getB(
     GN_list: npt.NDArray[np.float64],
     phys_coords: npt.NDArray[np.float64],
     nsd: int,
+    ndof: int = 1,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Calculate the B matrix in global coordinates and corresponding Jacobian determinant."""
+    """B matrix at quadrature points and det(J).
+
+    ndof=1: scalar gradients (nq, nsd, nne). ndof=nsd: Voigt strain-displacement (nq, nv, nsd*nne).
+    """
     nq = GN_list.shape[0]
     nne = GN_list.shape[2]
 
     B = np.empty((nq, nsd, nne))
     detJe = np.empty((nq,))
 
+    # physical gradients and Jacobian determinant per quadrature point
     for q in range(nq):
         GN = GN_list[q]
         J = GN @ phys_coords
@@ -302,7 +336,22 @@ def getB(
 
         B[q] = Jinv @ GN
         detJe[q] = _calc_detJe(J, nsd)
-    return B, detJe
+
+    # vector field: expand gradients to the strain-displacement matrix
+    if ndof == 1:
+        return B, detJe
+    return _strain_displacement(B, nsd), detJe
+
+
+def getN(N_q: npt.NDArray[np.float64], ndof: int = 1) -> npt.NDArray[np.float64]:
+    """N matrix at quadrature points; ndof>1 repeats N on each row, node-interleaved (nq, ndof, ndof*nne)."""
+    if ndof == 1:
+        return N_q
+    nq, nne = N_q.shape[0], N_q.shape[-1]
+    Nu = np.zeros((nq, ndof, ndof * nne))
+    for d in range(ndof):
+        Nu[:, d, d::ndof] = N_q.reshape(nq, nne)
+    return Nu
 
 
 def getquadrature(qt: int, ndim: int, etyp: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:  # noqa

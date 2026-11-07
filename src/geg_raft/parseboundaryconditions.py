@@ -18,7 +18,7 @@
 """Parse the input boundary conditions and translate them into FEM input.
 
 Each group in `config["boundary_conditions"]` describes one geometry feature and
-carries up to two field specs, "hydraulics" and "thermal".
+carries up to three field specs, "hydraulics", "thermal" and "mechanics".
 """
 
 from typing import Any
@@ -72,7 +72,7 @@ def evaluateBCfunctions(incoming: dict[str, Any], t: float, nodes: npt.NDArray[n
 def _apply_field(
     mesh: dict[str, Any], t: float, group: dict[str, Any], field: str, nodes: list[int]
 ) -> tuple[npt.NDArray[np.float64], bool] | None:
-    """Evaluate one field spec ("hydraulics" or "thermal") on a group into [node, value] pairs."""
+    """Evaluate one field spec of a group into [node, value] pairs."""
     spec = group.get(field)
     if spec is None or len(nodes) == 0:
         return None
@@ -100,6 +100,41 @@ def _stack_unique(rows: list[npt.NDArray[np.float64]]) -> npt.NDArray[np.float64
     return arr[idx]
 
 
+def _apply_mechanics(
+    mesh: dict[str, Any], t: float, group: dict[str, Any]
+) -> tuple[npt.NDArray[np.float64], bool]:
+    """Evaluate a group's "mechanics" spec into [u DoF, value] pairs on its preprocessed DoFs."""
+    spec = group.get("mechanics")
+    if spec is None or len(spec["_dofs"]) == 0:
+        return np.empty((0, 2)), False
+
+    # one value per unique node
+    spec["nodes"] = spec["_nodes"]
+    if "function" not in spec:
+        spec["function"] = "constant"  # assume constant value if no function given
+    spec = evaluateBCfunctions(spec, t, mesh["nodes"])
+    values = np.asarray(spec["BCvalues"], dtype=np.float64)
+
+    # distributed traction becomes consistent nodal forces
+    if spec["type"] == "traction" and "_force_matrix" in spec:
+        values = spec["_force_matrix"] @ values
+
+    # each DoF takes its node's value
+    pairs = np.column_stack((spec["_dofs"].astype(np.float64), values[spec["_dof_rows"]]))
+    return pairs, spec["type"] == "displacement"
+
+
+def _sum_by_dof(rows: list[npt.NDArray[np.float64]]) -> npt.NDArray[np.float64]:
+    """Stack [dof, value] row blocks, summing values on shared DoFs (nodal forces from adjacent groups)."""
+    if not rows:
+        return np.empty((0, 2))
+    arr = np.vstack(rows)
+    dofs, inverse = np.unique(arr[:, 0], return_inverse=True)
+    values = np.zeros(len(dofs))
+    np.add.at(values, inverse, arr[:, 1])
+    return np.column_stack((dofs, values))
+
+
 def parsebcs(
     BC_config: list[dict[str, Any]],
     mesh: dict[str, Any],
@@ -117,11 +152,17 @@ def parsebcs(
                         [ nodes, pressures]
     p_neumann:        n x 2 vector containing a list of fixed fluid flux nodes and values
                         [ nodes, flux]
+    u_dirichlet:      n x 2 vector containing a list of fixed displacement DoFs and values
+                        [ u DoFs, displacements]
+    u_neumann:        n x 2 vector containing a list of nodal traction forces, summed per DoF
+                        [ u DoFs, forces]
     """
     p_dirichlet_rows: list[npt.NDArray[np.float64]] = []
     p_neumann_rows: list[npt.NDArray[np.float64]] = []
     T_dirichlet_rows: list[npt.NDArray[np.float64]] = []
     T_neumann_rows: list[npt.NDArray[np.float64]] = []
+    u_dirichlet_rows: list[npt.NDArray[np.float64]] = []
+    u_neumann_rows: list[npt.NDArray[np.float64]] = []
 
     for group in BC_config:
         nodes = group["nodes"]
@@ -138,9 +179,16 @@ def parsebcs(
             pairs, is_dirichlet = thermal
             (T_dirichlet_rows if is_dirichlet else T_neumann_rows).append(pairs)
 
+        # Vector mechanics BCs act on the group's preprocessed displacement DoFs
+        if "mechanics" in group:
+            pairs, is_dirichlet = _apply_mechanics(mesh, t, group)
+            (u_dirichlet_rows if is_dirichlet else u_neumann_rows).append(pairs)
+
     return {
         "T_dirichlet": _stack_unique(T_dirichlet_rows),
         "T_neumann": _stack_unique(T_neumann_rows),
         "p_dirichlet": _stack_unique(p_dirichlet_rows),
         "p_neumann": _stack_unique(p_neumann_rows),
+        "u_dirichlet": _stack_unique(u_dirichlet_rows),
+        "u_neumann": _sum_by_dof(u_neumann_rows),
     }

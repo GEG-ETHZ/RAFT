@@ -25,6 +25,7 @@ import numpy as np
 import numpy.typing as npt
 
 FIELD_MODES = ("off", "steady", "transient")
+MECHANICS_MODES = ("off", "quasi_static")
 DOMAINS = ("matrix", "fractures", "wells")
 
 
@@ -35,6 +36,7 @@ class DomainPhysics:
     flow: str = "transient"  # one of FIELD_MODES
     heat: str = "transient"
     advection: bool = False
+    mechanics: str = "off"  # one of MECHANICS_MODES; matrix only
 
     @property
     def solve_flow(self) -> bool:
@@ -45,6 +47,11 @@ class DomainPhysics:
     def solve_heat(self) -> bool:
         """Energy balance assembled; `off` holds temperature at its current values."""
         return self.heat != "off"
+
+    @property
+    def solve_mechanics(self) -> bool:
+        """Force balance assembled."""
+        return self.mechanics != "off"
 
     @property
     def steady_flow(self) -> bool:
@@ -86,14 +93,16 @@ class Physics:
         return Physics(self.matrix.as_steady(), self.fractures.as_steady(), self.wells.as_steady())
 
     def with_off(self, field: str) -> "Physics":
-        """`field` ("flow" or "heat") switched off in every domain."""
+        """`field` ("flow", "heat" or "mechanics") switched off in every domain."""
         domains = (self.matrix, self.fractures, self.wells)
         if field == "flow":
             return Physics(*(replace(d, flow="off") for d in domains))
-        return Physics(*(replace(d, heat="off") for d in domains))
+        if field == "heat":
+            return Physics(*(replace(d, heat="off") for d in domains))
+        return Physics(*(replace(d, mechanics="off") for d in domains))
 
     def solves(self, field: str) -> bool:
-        """Whether `field` ("flow" or "heat") is on in any domain."""
+        """Whether `field` ("flow", "heat" or "mechanics") is on in any domain."""
         return any(getattr(d, field) != "off" for d in (self.matrix, self.fractures, self.wells))
 
     def node_mask(self, mesh: dict[str, Any], test: Callable[[DomainPhysics], bool]) -> npt.NDArray[np.bool_]:
