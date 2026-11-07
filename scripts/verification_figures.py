@@ -52,6 +52,8 @@ CASES = [
      "Buoyancy Test", ["p"]),
     ("well_convection", "config_test_wellconvection.yaml", test_checks.check_well_convection,
      "Wellbore heat conduction", ["T"]),
+    ("lame_cylinder", "config_test_lame_cylinder.yaml", test_checks.check_lame_cylinder,
+     "Thick-Walled Cylinder (Lame)", ["u"]),
 ]  # fmt: skip
 
 

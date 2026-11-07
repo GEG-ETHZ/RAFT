@@ -103,8 +103,8 @@ The run exits with status 0 when it completes, and status 1 if a timestep fails 
 
 ### Outputs
 Results are written to `outputs/<config name>/`, or to `<output_directory>/<config name>/` if [`output_directory`](#simulation) is set:
-* `domain.vtk` (and `domain_wells.vtk` with wells): material properties and boundary condition nodes, written once at the start.
-* `Matrix.vtk.<n>`, plus `Fracture.vtk.<n>` and `Well.vtk.<n>` when fractures or wells exist: solution fields at output step `n`, if `output_vtk` is on. View them in [Paraview](https://www.paraview.org/).
+* `domain.vtk` (and `domain_wells.vtk` with wells): material properties and boundary condition nodes, written once at the start. Material properties include the drained bulk modulus and, with mechanics on, the shear modulus, Young's modulus and Poisson ratio.
+* `Matrix.vtk.<n>`, plus `Fracture.vtk.<n>` and `Well.vtk.<n>` when fractures or wells exist: solution fields at output step `n`, if `output_vtk` is on. With mechanics on, `Matrix.vtk.<n>` also holds the `displacement` vector and the total stress components (`stress_xx`, `stress_yy`, ...; `stress_rr`, `stress_zz`, `stress_rz`, `stress_tt` axisymmetric), averaged to nodes. View them in [Paraview](https://www.paraview.org/).
 * `outflow.log`: time, pressure, flow rate and temperature of each [labeled boundary condition group](#boundary_conditions), at every output step.
 * `run.log`: the console output, if `output_log` is on. It is written at the chosen verbosity.
 
@@ -233,7 +233,8 @@ Hydraulic and thermal properties (`diameter`, `perforation_conductance`, `heat_t
   * **`specific_heat`** *(float, default: `800.0`)*: Rock specific heat capacity in $\text{J/kg}\cdot\text{K}$.
   * **`therm_expansion`** *(float, default: `12.0e-6`)*: Rock volumetric linear thermal expansion coefficient in $1/\text{K}$.
   * **`porosity`** *(float, default: `0.01`)*: Reservoir porosity (dimensionless fraction).
-  * **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless).
+  * **`biot_coeff`** *(float, default: `0.5`)*: Biot-Willis coefficient (dimensionless). Must be below 1 when mechanics is on.
+  * **`poisson_ratio`** *(float, required when `physics.matrix.mechanics` is on)*: Drained Poisson ratio $\nu$, in $(-1, 0.5)$. With the drained bulk modulus $K_d = (1-\beta)K_s$ it gives the shear modulus $G = 3K_d(1-2\nu)/(2(1+\nu))$ and Young's modulus $E = 3K_d(1-2\nu)$.
   * **`permeability`** *(float or list, default: `1.0e-16`)*: Permeability in $\text{m}^2$. Can be a scalar for isotropic permeability, or a list of length equal to the dimensions for anisotropic permeability (e.g. `[1.0e-13, 1.0e-11, 1.0e-12]`). For anisotropic properties, the list corresponds to the local x, y, z axes which can be rotated with `rotation_x/y/z`.
   * **`rotation_x`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the x-axis in degrees.
   * **`rotation_y`** *(float, default: `0.0`)*: Rotation angle of the local coordinate system around the y-axis in degrees.
@@ -287,6 +288,17 @@ These rotation parameters define a 3D rotation matrix $R = R_x \cdot R_y \cdot R
     * The steady state describes the unperturbed formation: wells, boundary conditions on well nodes, and `"external"` boundary conditions are left out of this solve.
     * Wells then take the temperature of the rock they pass through; outside the domain, they take the temperature of the nearest well node inside it. Well pressure is hydrostatic along each well, starting from `p_ini` at the well head (the first alignment point). Connected wells share the head of the lowest-numbered well.
 
+* **`stress`** *(optional, used when mechanics is on)*: In-situ total stress $\boldsymbol{\sigma}_0$ (tension positive), the reference state for the force balance. It is taken to balance gravity, so its vertical gradient should match the overburden; gravity does not otherwise enter the force balance. Missing components are 0.
+  * **`values`**: Stress components at the shallowest point along `grad_direction`, in $\text{Pa}$.
+    * **`Sxx`** *(float, default: `0.0`)*: $\sigma_{xx}$; $\sigma_{rr}$ axisymmetric.
+    * **`Syy`** *(float, default: `0.0`)*: $\sigma_{yy}$; $\sigma_{zz}$ axisymmetric.
+    * **`Szz`** *(float, default: `0.0`)*: $\sigma_{zz}$; $\sigma_{\theta\theta}$ axisymmetric. Not used in 2D plane strain or plane stress.
+    * **`Sxy`** *(float, default: `0.0`)*: $\sigma_{xy}$; $\sigma_{rz}$ axisymmetric.
+    * **`Sxz`** *(float, default: `0.0`)*: $\sigma_{xz}$. 3D only.
+    * **`Syz`** *(float, default: `0.0`)*: $\sigma_{yz}$. 3D only.
+  * **`gradient`**: Gradient of each stress component along `grad_direction`, in $\text{Pa/m}$. Takes the same keys as `values` (*float, default: `0.0`*).
+  * **`grad_direction`** *(list[float], default: `[0,-1]` in 2D, `[0,0,-1]` in 3D)*: Vector in the direction of the stress gradient. Automatically normalized.
+
 ### `boundary_conditions`
 `boundary_conditions` is a list of groups at the root of the config. Each group applies to one geometry feature (specified using one of four geometric methods: node indices, coordinate proximity, named faces, or lines), and can carry a `hydraulics` block specifying pressure or fluid flux, a `thermal` block specifying temperature or heat flux, or both.
 
@@ -328,7 +340,7 @@ Each boundary condition group must specify nodes using one or a combination of t
   * `type: "temperature"`: Dirichlet condition (fixed temperature).
   * `type: "flux"`: Neumann condition (fixed heat flux).
 
-A group with only `hydraulics` affects pressure alone; a group with only `thermal` affects temperature alone; a group with both applies both conditions over the same geometry. Each block carries its own `function`/`values` (and, for `hydraulics`, an optional `constraints` block — see **Constraints** below).
+A group with only `hydraulics` affects pressure alone; a group with only `thermal` affects temperature alone; a group with both applies both conditions over the same geometry. A `mechanics` block (below) acts on displacement. Each block carries its own `function`/`values` (and, for `hydraulics`, an optional `constraints` block — see **Constraints** below).
 
 **Value (Required) and Function (Optional) Specification:**
  The function applied to the nodes is determined by the field `function`. Each group should contain a field named `"values"` which depends on the type of function being applied.
@@ -359,6 +371,24 @@ A group with only `hydraulics` affects pressure alone; a group with only `therma
   * A flow rate is given to the API as a total for the group in kg/s and spread over the group's nodes, line or face.
   * `interpolation` *(string, default: `"step"`)*: `"step"` holds the new value over the whole coupling step; `"linear"` ramps from the last accepted value to the new one. The first coupling step is always stepwise.
   * `values` is optional; if given, it is used as a constant when the config is run directly with `uv run -m geg_raft`.
+
+**Mechanics (Optional):**
+A `mechanics` block prescribes displacement or traction on matrix nodes, using the same `values`/`function` specification (not `"external"`).
+
+```yaml
+- faces: [x_min, y_min]
+  mechanics:
+      type: "displacement"     ("displacement" or "traction")
+      components: "roller"     (list from "x", "y", "z", or "fixed" or "roller")
+      values: [0.0]
+```
+
+* `type: "displacement"` fixes the selected displacement components. `type: "traction"` applies a distributed traction over the group's faces or lines, integrated to nodal forces; on a group of points it is a nodal force.
+* Tractions are **increments from the in-situ state**: a boundary held at its in-situ load needs no traction condition.
+* `components` selects the displacement components. One value applies to every selected component.
+  * A list such as `["x", "y"]` applies to every node of the group.
+  * `"fixed"` applies to all components (displacement only).
+  * `"roller"` applies to the normal component of each face: x on `x_min`/`x_max`, y on `y_min`/`y_max`, z on `z_min`/`z_max` (displacement only, faces only). Faces are named by their dominant normal, so a roller is exact on axis-aligned faces.
 
 **Label Specification (Optional):**
 Flow boundary condition groups can optionally be marked with a `label: "groupname"` entry. If they are marked with a label, the group pressure, flow, and temperatures will be output to *outflow.log* in the output directory. Outputs from each group are summarized as:
@@ -392,6 +422,7 @@ physics:
 * **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
+* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`. Currently it requires `flow` and `heat` off and no fractures; poroelastic coupling and fracture contact are in development.
 
 An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
 
@@ -417,6 +448,8 @@ Physical controls
 * **`rate_order`** *(integer, default: `1`)*: The approximation order of rate of change. Accepts `1` for a 1st order backwards Euler approximation, or `2` for a 2nd order backwards Euler approximation.
 * **`gravity`** *(float, default: `0.0`)*: Set the magnitude of the acceleration due to gravity in $\text{m}/\text{s}^2$, typically `-9.81`. Gravity is assumed to act in the z-axis in 3D and the y-axis in 2D.
 * **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
+* **`mechanics_controls`** *(dictionary)*: Force balance settings.
+  * **`plane`** *(string, default: `"strain"`)*: 2D mechanics assumption, `"strain"` or `"stress"`. Ignored in 3D and axisymmetric analyses.
 
 Numerical solver controls
 * **`solver_type`** *(string, default: `"operator_split"`)*: Type of time integration solver. Options are `"operator_split"` or `"monolithic"`. The `monolithic` solver solves pressure and temperature together in a single coupled system for the current timestep. The `operator_split` solver uses an operator splitting scheme, extrapolating temperature to the current timestep, solving pressure with the extrapolated temperature, then updating temperature with the new pressure.  See [Time Discretization and Solution Scheme](theory.md#time-discretization-and-solution-scheme) for more details.

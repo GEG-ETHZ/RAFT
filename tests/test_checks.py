@@ -24,7 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from geg_raft.preprocessing import load_config
+from geg_raft.preprocessing import load_config, preprocessing
+from geg_raft.solidmechanics import insitu_stress, nodal_stress
 
 
 def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
@@ -1031,5 +1032,133 @@ def check_well_convection(
     err_ex = sum((T_exact - T[line_1]) ** 2) / sum(T_exact**2)
 
     test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def _elastic_moduli(config: dict[str, Any]) -> tuple[float, float]:
+    """Drained bulk and shear moduli from the config's solid properties."""
+    solid = config["material"]["solid"]
+    K_d = (1.0 - solid["biot_coeff"]) * solid["bulk_mod"]
+    nu = solid["poisson_ratio"]
+    return K_d, 3.0 * K_d * (1.0 - 2.0 * nu) / (2.0 * (1.0 + nu))
+
+
+def check_patch_test_elastic(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Check elastic patch test. Displacement should be exactly linear and stress constant."""
+    # Set tolerance
+    tol = 1.0e-9
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+
+    # exact field from the gradient BCs: u_i = c + m (s . X - min s . X)
+    u = results["u"][:, 0].reshape(-1, nsd)
+    u_exact = np.zeros_like(u)
+    grad_u = np.zeros((nsd, nsd))
+    for group in config["boundary_conditions"]:
+        spec = group["mechanics"]
+        i = "xyz".index(spec["components"][0])
+        direction, c, slope = spec["values"]
+        s = np.asarray(direction, dtype=float) / np.linalg.norm(direction)
+        u_exact[:, i] = c + slope * (nodes @ s - (nodes @ s).min())
+        grad_u[i] = slope * s
+
+    if plot_on:
+        plt.figure()
+        for i in range(nsd):
+            plt.plot(u_exact[:, i], u[:, i], "o", label="xyz"[i])
+        plt.xlabel("u exact (m)")
+        plt.ylabel("u (m)")
+        plt.title(test_name)
+        plt.legend()
+
+    # stress: sigma_0 + lambda tr(eps) I + 2 G eps, in Voigt order
+    K_d, G = _elastic_moduli(config)
+    eps = 0.5 * (grad_u + grad_u.T)
+    sig = (K_d - 2.0 * G / 3.0) * np.trace(eps) * np.eye(nsd) + 2.0 * G * eps
+    if nsd == 2:
+        voigt = [sig[0, 0], sig[1, 1], sig[0, 1]]
+    else:
+        voigt = [sig[0, 0], sig[1, 1], sig[2, 2], sig[0, 2], sig[1, 2], sig[0, 1]]
+    sigma_0 = insitu_stress(config["initial_conditions"]["stress"], nodes, nsd, False)
+    sigma_exact = sigma_0 + np.array(voigt)
+
+    # nodal stress; flow and heat off, so p and T stay at their reference values
+    cfg, _ = preprocessing(config_name, config_dir, verbose=False)
+    material = cfg["material"]
+    material["p_0"] = results["p"][:, 0]
+    material["T_0"] = results["T"][:, 0]
+    material["sigma_0"] = sigma_0
+    sigma = nodal_stress(mesh, material, cfg["simulation"], results)
+
+    # calculate error
+    err_u = np.sum((u - u_exact) ** 2) / np.sum(u_exact**2)
+    err_sigma = np.sum((sigma - sigma_exact) ** 2) / np.sum(sigma_exact**2)
+
+    test_pass = bool(err_u < tol**2 and err_sigma < tol**2)
+
+    return test_pass
+
+
+def check_lame_cylinder(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Axisymmetric thick-walled cylinder under internal pressure in plane strain (Lame).
+    Linear elements do not capture 1/r exactly, use high tolerance."""
+    # Set tolerance
+    tol = 5.0e-3
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+
+    p_in = _bc_value(config, "mechanics", "traction", 0)
+    K_d, G = _elastic_moduli(config)
+    nu = config["material"]["solid"]["poisson_ratio"]
+    E = 2.0 * G * (1.0 + nu)
+
+    r = mesh["nodes"][:, 0]
+    a, b = r.min(), r.max()
+
+    # define exact solution
+    def _u_exact(r: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        u_r: npt.NDArray[np.float64] = (
+            (1.0 + nu) * a**2 * p_in / (E * (b**2 - a**2)) * ((1.0 - 2.0 * nu) * r + b**2 / r)
+        )
+        return u_r
+
+    u = results["u"][:, 0].reshape(-1, 2)
+
+    if plot_on:
+        r_plot = np.linspace(a, b, 200)
+        plt.figure()
+        plt.plot(r_plot, _u_exact(r_plot), "r-", label="exact")
+        line_1 = np.nonzero(mesh["nodes"][:, 1] == min(mesh["nodes"][:, 1]))[0]
+        line_2 = np.nonzero(mesh["nodes"][:, 1] == max(mesh["nodes"][:, 1]))[0]
+        plt.plot(r[line_1], u[line_1, 0], "ko", label="RAFT, lower edge")
+        plt.plot(r[line_2], u[line_2, 0], "bo", mfc="none", label="RAFT, upper edge")
+        plt.xlabel("r (m)")
+        plt.ylabel("u_r (m)")
+        plt.title(test_name)
+        plt.legend()
+
+    # calculate error
+    err_ex = np.linalg.norm(u[:, 0] - _u_exact(r)) / np.linalg.norm(_u_exact(r))
+
+    test_pass = bool(err_ex < tol and np.max(np.abs(u[:, 1])) < 1e-12)
 
     return test_pass

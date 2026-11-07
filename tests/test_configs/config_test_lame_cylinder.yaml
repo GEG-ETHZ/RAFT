@@ -1,0 +1,55 @@
+mesh:
+  file: cylinder_axisym.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      viscosity: 1.0e-3       # Pa-s
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+
+boundary_conditions:
+  # internal pressure on the inner wall
+  - faces: [x_min]
+    mechanics:
+      type: traction
+      components: [x]
+      values: [1.0e+6]
+  # plane strain along the axis
+  - faces: [y_min, y_max]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+
+physics:
+  matrix:
+    flow: off
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  axisymmetric_on: 1

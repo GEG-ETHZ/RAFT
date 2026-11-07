@@ -407,5 +407,75 @@ def test_fracture_perpendicular_patch() -> None:
     assert test_pass
 
 
+def test_patch_elastic_2D_T3() -> None:
+    """Check exact linear displacement and constant stress in 2D with T3 elements."""
+    case_dir = _test_data_dir()
+    test_name = "Elastic Patch Test - 2D T3"
+    config_filename = "config_test_patch_elastic_2D_T3.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_patch_test_elastic(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_elastic_2D_Q4() -> None:
+    """Check exact linear displacement and constant stress in 2D with Q4 elements."""
+    case_dir = _test_data_dir()
+    test_name = "Elastic Patch Test - 2D Q4"
+    config_filename = "config_test_patch_elastic_2D_Q4.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_patch_test_elastic(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_elastic_T4() -> None:
+    """Check exact linear displacement and constant stress with T4 elements."""
+    case_dir = _test_data_dir()
+    test_name = "Elastic Patch Test - T4"
+    config_filename = "config_test_patch_elastic_T4.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_patch_test_elastic(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_patch_elastic() -> None:
+    """Check exact linear displacement and constant stress with B8 elements."""
+    case_dir = _test_data_dir()
+    test_name = "Elastic Patch Test - B8"
+    config_filename = "config_test_patch_elastic_B8.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_patch_test_elastic(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_lame_cylinder() -> None:
+    """Check the axisymmetric thick-walled cylinder against the Lame solution."""
+    case_dir = _test_data_dir()
+    test_name = "Thick-Walled Cylinder (Lame)"
+    config_filename = "config_test_lame_cylinder.yaml"
+    primary_variables, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_lame_cylinder(
+        config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))

@@ -101,6 +101,9 @@ DEFAULTS: dict[str, Any] = {
         "gravity": 0.0,
         "axisymmetric_on": 0,
         "rel_error_T": 1.0e-2,
+        "mechanics_controls": {
+            "plane": "strain",  # 2D mechanics: "strain" or "stress"
+        },
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
             "iter_max": 100,  # Maximum number of iterations
@@ -144,8 +147,6 @@ def _parse_mechanics_mode(value: Any) -> str:
     mode = "off" if value is False else value
     if mode not in MECHANICS_MODES:
         raise ValueError(f"physics.matrix.mechanics = {value!r}; expected one of {MECHANICS_MODES}")
-    if mode != "off":
-        raise NotImplementedError("physics.matrix.mechanics = 'quasi_static' is not implemented yet")
     return str(mode)
 
 
@@ -188,7 +189,11 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
             "physics.wells.flow = 'transient' has no effect; well flow is always quasi-steady.", stacklevel=2
         )
 
-    return Physics(**resolved)
+    physics = Physics(**resolved)
+    # Coupled and fractured mechanics are not implemented yet
+    if physics.solves("mechanics") and (physics.solves("flow") or physics.solves("heat")):
+        raise NotImplementedError("physics.matrix.mechanics with flow or heat on is not implemented yet")
+    return physics
 
 
 def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
@@ -239,6 +244,14 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Wells
     controls["wells_on"] = 1 if "wells" in config["mesh"] else 0
+
+    # Mechanics
+    if controls["physics"].solves("mechanics"):
+        if controls["fracture_on"]:
+            raise NotImplementedError("physics.matrix.mechanics with fractures is not implemented yet")
+        plane = controls["mechanics_controls"]["plane"]
+        if plane not in ("strain", "stress"):
+            raise ValueError(f"mechanics_controls.plane = {plane!r}; expected 'strain' or 'stress'")
 
     # CoolProp AbstractState, reused across all property lookups instead of
     # re-initializing it on every matprops call.
@@ -421,6 +434,29 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
             material["wells"]["radius"][r] = R
             material["wells"]["area"][r] = A
     return material
+
+
+def _calculate_mechanics_properties(mesh: dict[str, Any], material: dict[str, Any]) -> None:
+    """Validate the drained elastic inputs and derive the shear and Young's moduli per region."""
+    solid = material["solid"]
+    if "poisson_ratio" not in solid:
+        raise ValueError("material.solid.poisson_ratio is required when physics.matrix.mechanics is on")
+
+    num_regions = max(mesh["regions"]) + 1
+    solid["shear_mod"] = [0.0] * num_regions
+    solid["youngs_mod"] = [0.0] * num_regions
+    for r in range(num_regions):
+        nu = _get_region_value(solid["poisson_ratio"], r)
+        biot = _get_region_value(solid["biot_coeff"], r)
+        K_d = solid["drained_bulk_mod"][r]
+        # admissible drained constants
+        if not -1.0 < nu < 0.5:
+            raise ValueError(f"Region {r}: poisson_ratio = {nu} must lie in (-1, 0.5)")
+        if biot >= 1.0:
+            raise ValueError(f"Region {r}: biot_coeff = {biot} must be below 1 (nonzero drained stiffness)")
+        # isotropic moduli from the drained bulk modulus and Poisson ratio
+        solid["shear_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu) / (2.0 * (1.0 + nu))
+        solid["youngs_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu)
 
 
 def _resolve_group_geometry(
@@ -762,5 +798,7 @@ def preprocessing(
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])
+    if config["simulation"]["physics"].solves("mechanics"):
+        _calculate_mechanics_properties(mesh, config["material"])
 
     return config, mesh

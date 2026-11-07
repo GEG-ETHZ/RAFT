@@ -1,0 +1,58 @@
+mesh:
+  file: square2D_T3.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      viscosity: 1.0e-3       # Pa-s
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+  stress:
+    values:
+      Syy: -5.0e+6
+    gradient:
+      Syy: -2.0e+4
+
+# linear displacement field: each component varies along its own direction
+boundary_conditions:
+  - faces: [x_min, x_max, y_min, y_max]
+    mechanics:
+      type: displacement
+      components: [x]
+      function: gradient
+      values: [[1.5, 0.5], 1.0e-3, 1.0e-04]
+  - faces: [x_min, x_max, y_min, y_max]
+    mechanics:
+      type: displacement
+      components: [y]
+      function: gradient
+      values: [[0.5, 1.5], 1.0e-3, 2.0e-04]
+
+physics:
+  matrix:
+    flow: off
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off

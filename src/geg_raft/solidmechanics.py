@@ -1,0 +1,281 @@
+# Copyright 2026 The RAFT Community
+#
+# This file is part of RAFT.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Linear (thermo-poro)elastic force balance of the matrix.
+
+Voigt order: 2D [xx, yy, xy]; axisymmetric [rr, zz, rz, tt]; 3D [xx, yy, zz, xz, yz, xy].
+Shear strains are engineering strains; shear stresses are tensor components.
+"""
+
+import bisect
+from dataclasses import dataclass
+from typing import Any
+
+import numpy as np
+import numpy.typing as npt
+from scipy.sparse import csc_matrix
+
+from .dofmap import get_scatter
+from .matrixassembly import (
+    _assemble_global_matrices,
+    _get_quad_points_and_shape_functions,
+    _get_region_mesh_data,
+    _get_region_value,
+    _pad_sparse,
+)
+from .shapefunctions import getB
+
+# Stress component names in Voigt order, for output
+STRESS_NAMES = {
+    (2, False): ("xx", "yy", "xy"),
+    (2, True): ("rr", "zz", "rz", "tt"),
+    (3, False): ("xx", "yy", "zz", "xz", "yz", "xy"),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class MechanicsMatrices:
+    """Constant force-balance matrices, integrated once per run.
+
+    R_u = K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_ext.
+    """
+
+    K_uu: csc_matrix  # (nsd*nn, nsd*nn)
+    K_up: csc_matrix  # (nsd*nn, nn_total)
+    K_uT: csc_matrix  # (nsd*nn, nn_total)
+
+    @classmethod
+    def empty(cls) -> "MechanicsMatrices":
+        """Placeholder when mechanics is off."""
+        return cls(csc_matrix((0, 0)), csc_matrix((0, 0)), csc_matrix((0, 0)))
+
+
+def identity_voigt(nsd: int, axisymmetric: bool) -> npt.NDArray[np.float64]:
+    """Voigt form of the identity tensor: 1 on normal components, 0 on shear."""
+    if nsd == 3:
+        return np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+    if axisymmetric:
+        return np.array([1.0, 1.0, 0.0, 1.0])
+    return np.array([1.0, 1.0, 0.0])
+
+
+def elasticity_matrix(
+    E: float, nu: float, nsd: int, plane: str, axisymmetric: bool
+) -> npt.NDArray[np.float64]:
+    """Isotropic elasticity matrix D (Voigt form of the elasticity tensor C)."""
+    if nsd == 3:
+        # 3D matrix
+        lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        G = E / (2.0 * (1.0 + nu))
+        D = np.zeros((6, 6))
+        D[:3, :3] = lam
+        D[[0, 1, 2], [0, 1, 2]] = lam + 2.0 * G
+        D[[3, 4, 5], [3, 4, 5]] = G
+        return D
+    if axisymmetric:
+        # axisymmetric matrix with 4 stress components
+        c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+        return c * np.array(
+            [
+                [1.0 - nu, nu, 0.0, nu],
+                [nu, 1.0 - nu, 0.0, nu],
+                [0.0, 0.0, 0.5 - nu, 0.0],
+                [nu, nu, 0.0, 1.0 - nu],
+            ]
+        )
+    if plane == "stress":
+        # plane stress
+        c = E / (1.0 - nu**2)
+        return c * np.array([[1.0, nu, 0.0], [nu, 1.0, 0.0], [0.0, 0.0, 0.5 * (1.0 - nu)]])
+    # plane strain
+    c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    return c * np.array([[1.0 - nu, nu, 0.0], [nu, 1.0 - nu, 0.0], [0.0, 0.0, 0.5 - nu]])
+
+
+def strain_displacement(
+    GN_q: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],
+    xI: npt.NDArray[np.float64],
+    nsd: int,
+    axisymmetric: bool,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Strain-displacement matrix B_u at quadrature points and the integration weight factor det(J) (* r)."""
+    B_u, detJe_q = getB(GN_q, xI, nsd, nsd)
+    if not axisymmetric:
+        return B_u, detJe_q
+
+    # hoop strain u_r / r appended as the last Voigt row; radius weights the integral
+    N = N_q.reshape(N_q.shape[0], -1)
+    r = N @ xI[:, 0]
+    hoop = np.zeros((B_u.shape[0], 1, B_u.shape[2]))
+    hoop[:, 0, 0::nsd] = N / r[:, None]
+    return np.concatenate((B_u, hoop), axis=1), detJe_q * r
+
+
+def _region_elastic_data(material: dict[str, Any], r: int) -> tuple[float, float, float, float]:
+    """E, nu, Biot coefficient and drained thermal stress coefficient K_d * alpha_s of a region."""
+    solid = material["solid"]
+    E = solid["youngs_mod"][r]
+    nu = _get_region_value(solid["poisson_ratio"], r)
+    biot = _get_region_value(solid["biot_coeff"], r)
+    thermal = solid["drained_bulk_mod"][r] * _get_region_value(solid["therm_expansion"], r)
+    return E, nu, biot, thermal
+
+
+def integrate_mechanics_matrices(
+    mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any]
+) -> MechanicsMatrices:
+    """Integrate the constant force-balance matrices K_uu, K_up and K_uT over the matrix."""
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
+    nsd = mesh_data.nsd
+    axisymmetric = bool(controls["axisymmetric_on"])
+    plane = controls["mechanics_controls"]["plane"]
+    m = identity_voigt(nsd, axisymmetric)
+
+    # element matrices, raveled in element order
+    entries: dict[str, list[npt.NDArray[np.float64]]] = {"K_uu": [], "K_up": [], "K_uT": []}
+
+    for r in range(mesh_data.num_regions):
+        E, nu, biot, thermal = _region_elastic_data(material, r)
+        D = elasticity_matrix(E, nu, nsd, plane, axisymmetric)
+
+        elem_type_counter = -1  # force an update on the first element
+        for e in mesh_data.region_lists[r]:
+            # quadrature and shape functions per element type
+            new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    mesh_data.nq_list[new_type_idx], nsd, mesh_data.etype_list[new_type_idx]
+                )
+                elem_type_counter = new_type_idx
+
+            xI = mesh["nodes"][mesh_data.conn[e], :]
+            B_u, detJe_q = strain_displacement(GN_q, N_q, xI, nsd, axisymmetric)
+            wJ = W * detJe_q  # weight * det(J) (* r)
+
+            # K_uu = int B^T D B
+            BtD = np.einsum("qvi,vw->qiw", B_u, D)
+            entries["K_uu"].append(np.einsum("qiw,qwj,q->ij", BtD, B_u, wJ).ravel())
+            # K_up, K_uT = -int B^T m N (scaled by Biot and K_d alpha_s)
+            BtmN = np.einsum("qvi,v,qj,q->ij", B_u, m, N_q.reshape(nq, -1), wJ)
+            entries["K_up"].append((-biot * BtmN).ravel())
+            entries["K_uT"].append((-thermal * BtmN).ravel())
+
+    # assemble over node-interleaved displacement DoFs
+    elem_order = np.concatenate(mesh_data.region_lists).astype(np.int32)
+    args = (mesh_data.conn, mesh_data.nn, mesh_data.nne_list, mesh_data.elem_indx, elem_order)
+    K_uu = _assemble_global_matrices(
+        {"K_uu": np.concatenate(entries["K_uu"])}, *args, row_ndof=nsd, col_ndof=nsd
+    )["K_uu"]
+    coupling = _assemble_global_matrices(
+        {name: np.concatenate(entries[name]) for name in ("K_up", "K_uT")}, *args, row_ndof=nsd, col_ndof=1
+    )
+
+    # p and T live on all nodes; pad the coupling columns to nn_total
+    shape = (nsd * mesh_data.nn, mesh["nn_total"])
+    return MechanicsMatrices(K_uu, _pad_sparse(coupling["K_up"], shape), _pad_sparse(coupling["K_uT"], shape))
+
+
+def internal_force(
+    matrices: MechanicsMatrices, primary_variables: dict[str, Any], material: dict[str, Any]
+) -> npt.NDArray[np.float64]:
+    """Internal force K_uu u + K_up (p - p_0) + K_uT (T - T_0) of the current iterate, (nsd*nn, 1)."""
+    u = primary_variables["u"][:, 0:1]
+    dp = primary_variables["p"][:, 0:1] - material["p_0"].reshape(-1, 1)
+    dT = primary_variables["T"][:, 0:1] - material["T_0"].reshape(-1, 1)
+    force: npt.NDArray[np.float64] = matrices.K_uu @ u + matrices.K_up @ dp + matrices.K_uT @ dT
+    return force
+
+
+def insitu_stress(
+    config_stress: dict[str, Any], nodes: npt.NDArray[np.float64], nsd: int, axisymmetric: bool
+) -> npt.NDArray[np.float64]:
+    """Nodal in-situ total stress (nn, nv) in Voigt order; zero when not given.
+
+    Each component is `values` + `gradient` * distance along `grad_direction` from the shallowest node.
+    """
+    names = STRESS_NAMES[(nsd, axisymmetric and nsd == 2)]
+    # axisymmetric components map to the Cartesian input keys (r -> x, z -> y, t -> z)
+    keys = {"rr": "xx", "zz": "yy", "rz": "xy", "tt": "zz"} if axisymmetric and nsd == 2 else {}
+    values = config_stress.get("values", {})
+    gradient = config_stress.get("gradient", {})
+
+    # distance along the gradient direction, vertically downward by default
+    default_direction = [0.0, -1.0] if nsd == 2 else [0.0, 0.0, -1.0]
+    direction = np.asarray(config_stress.get("grad_direction", default_direction), dtype=float)[:nsd]
+    s = np.zeros(len(nodes))
+    if np.linalg.norm(direction) > 0:
+        s = nodes @ (direction / np.linalg.norm(direction))
+        s = s - s.min()
+
+    sigma_0 = np.zeros((len(nodes), len(names)))
+    for i, name in enumerate(names):
+        key = "S" + keys.get(name, name)
+        sigma_0[:, i] = values.get(key, 0.0) + gradient.get(key, 0.0) * s
+    return sigma_0
+
+
+def nodal_stress(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    controls: dict[str, Any],
+    primary_variables: dict[str, Any],
+) -> npt.NDArray[np.float64]:
+    """Nodal total stress (nn, nv): element-mean stress averaged over the elements at each node."""
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
+    nsd = mesh_data.nsd
+    axisymmetric = bool(controls["axisymmetric_on"])
+    plane = controls["mechanics_controls"]["plane"]
+    m = identity_voigt(nsd, axisymmetric)
+    nn = mesh_data.nn
+
+    # current iterate on matrix nodes
+    u = primary_variables["u"][:, 0]
+    dp = primary_variables["p"][:nn, 0] - material["p_0"][:nn]
+    dT = primary_variables["T"][:nn, 0] - material["T_0"][:nn]
+
+    stress_sum = np.zeros((nn, len(m)))
+    count = np.zeros(nn)
+    for r in range(mesh_data.num_regions):
+        E, nu, biot, thermal = _region_elastic_data(material, r)
+        D = elasticity_matrix(E, nu, nsd, plane, axisymmetric)
+
+        elem_type_counter = -1  # force an update on the first element
+        for e in mesh_data.region_lists[r]:
+            new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    mesh_data.nq_list[new_type_idx], nsd, mesh_data.etype_list[new_type_idx]
+                )
+                elem_type_counter = new_type_idx
+
+            enodes = mesh_data.conn[e]
+            B_u, _ = strain_displacement(GN_q, N_q, mesh["nodes"][enodes, :], nsd, axisymmetric)
+            N = N_q.reshape(nq, -1)
+
+            # stress change at quadrature points: D eps - Biot dp m - K_d alpha_s dT m
+            u_e = u[get_scatter(enodes, nsd)]
+            strain = B_u @ u_e
+            stress_q = strain @ D.T - np.outer(biot * (N @ dp[enodes]) + thermal * (N @ dT[enodes]), m)
+
+            # element mean, shared by its nodes
+            stress_sum[enodes] += stress_q.mean(axis=0)
+            count[enodes] += 1
+
+    # in-situ stress plus the averaged change
+    result: npt.NDArray[np.float64] = material["sigma_0"] + stress_sum / np.maximum(count, 1)[:, None]
+    return result

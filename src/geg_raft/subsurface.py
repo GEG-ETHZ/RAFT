@@ -39,6 +39,7 @@ from .matprops import get_EOS
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
+from .solidmechanics import MechanicsMatrices, insitu_stress, integrate_mechanics_matrices
 from .solvers import monolithic_time_integration, operator_split_time_integration
 
 
@@ -218,7 +219,7 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     unstrained relative to themselves. Wells are excluded from the assembly.
     """
     controls_SS = controls.copy()
-    controls_SS["physics"] = controls["physics"].as_steady()
+    controls_SS["physics"] = controls["physics"].as_steady().with_off("mechanics")
     controls_SS["wells_on"] = 0
     controls_SS["monolithic"] = False
     controls_SS["volumetric_strain_on"] = 0
@@ -525,6 +526,10 @@ def _assign_initial_conditions(
 
     material["p_0"] = primary_variables["p"][:, 0].copy()
     material["T_0"] = primary_variables["T"][:, 0].copy()
+    # In-situ total stress on matrix nodes, Voigt order
+    material["sigma_0"] = insitu_stress(
+        config_ini.get("stress", {}), mesh["nodes"], mesh["nsd"], bool(controls["axisymmetric_on"])
+    )
     return primary_variables, material
 
 
@@ -539,6 +544,7 @@ def _perform_time_integration(
     dt: list[float],
     n: int,  # noqa
     verbose: bool,
+    mechanics: MechanicsMatrices,
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Choose between time integration types."""
     solver_type = controls["solver_type"]
@@ -558,6 +564,7 @@ def _perform_time_integration(
             dt,
             n,
             verbose,
+            mechanics=mechanics,
         )
     elif solver_type == "monolithic":
         controls["monolithic"] = True
@@ -571,6 +578,7 @@ def _perform_time_integration(
             dt,
             n,
             verbose,
+            mechanics=mechanics,
         )
     else:
         raise ValueError(
@@ -795,6 +803,7 @@ class SimSetup:
     controls: dict[str, Any]
     BC_config: list[dict[str, Any]]
     critical_times: npt.NDArray[np.float64]
+    mechanics: MechanicsMatrices  # constant force-balance matrices; empty when mechanics is off
 
 
 @dataclass(slots=True)
@@ -865,6 +874,7 @@ def advance(  # noqa
                 dt,
                 n_step,
                 verbose,
+                setup.mechanics,
             )
 
             # Check BC constraints satisfied
@@ -981,7 +991,14 @@ def initialize_simulation(
         print("Export initial condition")
     postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
 
-    setup = SimSetup(mesh, material, controls, BC_config, critical_times)
+    # Constant force-balance matrices, integrated once
+    mechanics = MechanicsMatrices.empty()
+    if controls["physics"].solves("mechanics"):
+        if verbose:
+            print("     Integrating force-balance matrices...")
+        mechanics = integrate_mechanics_matrices(mesh, material, controls)
+
+    setup = SimSetup(mesh, material, controls, BC_config, critical_times, mechanics)
     state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, {})
     return setup, state
 

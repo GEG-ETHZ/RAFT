@@ -27,7 +27,9 @@ import numpy as np
 import numpy.typing as npt
 
 from .matprops import get_EOS, get_porosity, get_viscosity
+from .matrixassembly import _get_region_value
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
+from .solidmechanics import STRESS_NAMES, nodal_stress
 from .solvers import rate_coefficients
 from .writevtk import write_mesh2vtk
 
@@ -555,6 +557,19 @@ def _build_initial_cell_data(
     # Extract and handle potential isotropic vs anisotropic permeability tensor
     perm_x, perm_y, perm_z = _extract_cartesian_properties(material["solid"]["permeability_eff"], indx, nsd)
     cond_x, cond_y, cond_z = _extract_cartesian_properties(material["solid"]["therm_cond_eff"], indx, nsd)
+    solid = material["solid"]
+
+    # drained elastic moduli; G, E and nu only exist with mechanics on
+    K_d = np.asarray(solid["drained_bulk_mod"], dtype=float)
+    elastic = [{"name": "drained_bulk_modulus", "data": K_d[indx]}]
+    if "shear_mod" in solid:
+        num_regions = len(solid["shear_mod"])
+        nu = [_get_region_value(solid["poisson_ratio"], r) for r in range(num_regions)]
+        elastic += [
+            {"name": "shear_modulus", "data": np.asarray(solid["shear_mod"], dtype=float)[indx]},
+            {"name": "youngs_modulus", "data": np.asarray(solid["youngs_mod"], dtype=float)[indx]},
+            {"name": "poisson_ratio", "data": np.asarray(nu, dtype=float)[indx]},
+        ]
 
     return [
         {"name": "region", "data": mesh["regions"].copy()},
@@ -581,7 +596,7 @@ def _build_initial_cell_data(
         {"name": "effective_conductivity_x", "data": cond_x},
         {"name": "effective_conductivity_y", "data": cond_y},
         {"name": "effective_conductivity_z", "data": cond_z},
-    ]
+    ] + elastic
 
 
 def _build_fracture_cell_data(
@@ -833,6 +848,16 @@ def _write_matrix_output(
     scalardata_point = _build_point_scalars(controls, mesh, material, p, T)
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
+
+    # Displacement and total stress when mechanics is solved
+    if controls["physics"].solves("mechanics"):
+        nsd = mesh["nsd"]
+        u = primary_variables["u"][:, 0].reshape(-1, nsd)
+        vectordata_point.append({"name": "displacement", "data": _sanitize(u.copy())})
+        stress = nodal_stress(mesh, material, controls, primary_variables)
+        names = STRESS_NAMES[(nsd, bool(controls["axisymmetric_on"]) and nsd == 2)]
+        for i, name in enumerate(names):
+            scalardata_point.append({"name": f"stress_{name}", "data": _sanitize(stress[:, i].copy())})
 
     scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T)
 

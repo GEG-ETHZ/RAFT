@@ -33,6 +33,7 @@ from .matrixassembly import (
     warn_nonmonotone_pressure_diffusion,
 )
 from .physics import Physics
+from .solidmechanics import MechanicsMatrices, internal_force
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -124,6 +125,9 @@ def compute_residuals(
 ) -> dict[str, npt.NDArray[np.float64]]:
     """Assemble integrated residuals alongside external force vectors for the solved `keys`."""
     R = {}
+    if "u" in keys:
+        R["u"] = F_vec["F_u_internal"] - F_ext["u"]
+
     if "p" in keys:
         R["p"] = F_vec["F_Pstorage"] - F_vec["F_Pdiffusion"] - F_ext["p"]
 
@@ -307,6 +311,9 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+# Placeholder when mechanics is off
+_NO_MECHANICS = MechanicsMatrices.empty()
+
 # Primary-variable keys and the physics field that solves them, in block order
 _FIELD_KEYS = (("u", "mechanics"), ("p", "flow"), ("T", "heat"))
 
@@ -339,6 +346,7 @@ def _newton_raphson_loop(  # noqa
     *,
     physics: Physics,
     T_flow_lagged: bool,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> tuple[dict[str, Any], bool, float]:
     """Perform non-linear Newton-Raphson iterations for the fields `physics` solves.
 
@@ -346,7 +354,7 @@ def _newton_raphson_loop(  # noqa
     be the SAME array object as `primary_variables["T"]` so it tracks the in-loop updates below.
     """
     keys = [key for key, field in _FIELD_KEYS if physics.solves(field)]
-    solve_p, solve_T = "p" in keys, "T" in keys
+    solve_u, solve_p, solve_T = "u" in keys, "p" in keys, "T" in keys
     # Newton-Raphson controls
     iter_max = controls["iterative_controls"]["iter_max"]
     NR_tol = controls["iterative_controls"]["NR_tol"]
@@ -399,6 +407,8 @@ def _newton_raphson_loop(  # noqa
     # Run-type labels
     if len(keys) > 1:
         label = "MONOLITHIC"
+    elif solve_u:
+        label = "ITERATIVE DISPLACEMENT"
     elif solve_p:
         label = "ITERATIVE PRESSURE"
     else:
@@ -411,16 +421,21 @@ def _newton_raphson_loop(  # noqa
             print(f"\r     {label} NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
         # Integrate residual vectors
-        F_vec = integrate_residuals(
-            mesh,
-            material,
-            primary_variables,
-            controls,
-            cv,
-            T_flow,
-            physics=physics,
-            T_flow_lagged=T_flow_lagged,
-        )
+        F_vec: dict[str, Any] = {}
+        if solve_p or solve_T:
+            F_vec = integrate_residuals(
+                mesh,
+                material,
+                primary_variables,
+                controls,
+                cv,
+                T_flow,
+                physics=physics,
+                T_flow_lagged=T_flow_lagged,
+            )
+        # Force balance from the stored linear matrices
+        if solve_u:
+            F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material)
 
         # Update reaction flow rates in-loop when coupled, for the enthalpy boundary flux
         if solve_p and solve_T:
@@ -447,23 +462,30 @@ def _newton_raphson_loop(  # noqa
             break
         else:  # Update iteration
             # Integrate Jacobian
-            jacobian = integrate_tangent_matrices(
-                mesh,
-                material,
-                primary_variables,
-                controls,
-                cv,
-                T_flow,
-                physics=physics,
-                T_flow_lagged=T_flow_lagged,
-            )
+            jacobian: dict[str, Any] = {}
+            if solve_p or solve_T:
+                jacobian = integrate_tangent_matrices(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    cv,
+                    T_flow,
+                    physics=physics,
+                    T_flow_lagged=T_flow_lagged,
+                )
 
             # Warnings for poor conditioning
             if iteration == 0 and solve_p:
                 warn_nonmonotone_pressure_diffusion(jacobian["Kpp"])
 
-            # Assemble Jacobian - different by case; mechanics cases are added explicitly in A1
-            if solve_p and solve_T:
+            # Assemble Jacobian - different by case
+            if solve_u and not (solve_p or solve_T):
+                # Mechanics only
+                A = mechanics.K_uu
+                b = R["u"]
+
+            elif solve_p and solve_T:
                 # Monolithic
                 K_enth_bnd = integrate_enthlpy_bndry_tangent(
                     mesh,
@@ -588,6 +610,8 @@ def operator_split_time_integration(  # noqa
     dt: list[float],
     n: int,
     verbose: bool,
+    *,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Assemble FEM matrices and vectors and solve for solution at next timestep.
 
@@ -622,8 +646,8 @@ def operator_split_time_integration(  # noqa
     # 1-3 are the real time history, needed as-is by the mass-storage rate terms.
     T_flow = T.copy()
 
-    # Update pressure with extrapolated temperature
-    if physics.solves("flow"):
+    # Update displacement and pressure with extrapolated temperature
+    if physics.solves("flow") or physics.solves("mechanics"):
         primary_variables, p_converged, _ = _newton_raphson_loop(
             controls,
             material,
@@ -639,6 +663,7 @@ def operator_split_time_integration(  # noqa
             debug_pressure_plot_on,
             physics=physics.with_off("heat"),
             T_flow_lagged=False,
+            mechanics=mechanics,
         )
     else:
         p_converged = True  # pressure is off everywhere: nothing to solve
@@ -662,7 +687,7 @@ def operator_split_time_integration(  # noqa
             F_ext,
             verbose,
             debug_temperature_plot_on,
-            physics=physics.with_off("flow"),
+            physics=physics.with_off("flow").with_off("mechanics"),
             T_flow_lagged=True,
         )
     else:
@@ -692,6 +717,8 @@ def monolithic_time_integration(  # noqa
     dt: list[float],
     n: int,  # noqa
     verbose: bool,
+    *,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> tuple[dict[str, Any], list[float], bool, float]:
     """Assemble FEM matrices and vectors and solve for solution at next timestep.
 
@@ -709,7 +736,7 @@ def monolithic_time_integration(  # noqa
     fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
         boundary_conditions, primary_variables, mesh, physics
     )
-    if not (physics.solves("flow") or physics.solves("heat")):
+    if not (physics.solves("flow") or physics.solves("heat") or physics.solves("mechanics")):
         return primary_variables, dt, True, 0.0
 
     primary_variables, converged, iteration_error = _newton_raphson_loop(
@@ -727,6 +754,7 @@ def monolithic_time_integration(  # noqa
         debug_plot_on,
         physics=physics,
         T_flow_lagged=False,
+        mechanics=mechanics,
     )
 
     return primary_variables, dt, converged, iteration_error

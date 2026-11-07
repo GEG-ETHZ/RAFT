@@ -6,6 +6,17 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ## [In Development]
 
+### Added
+
+- **Linear elastic force balance** — `physics.matrix.mechanics: quasi_static`
+  solves the matrix displacement in 2D (plane strain or plane stress),
+  axisymmetric and 3D, from the in-situ stress state
+  (`initial_conditions.stress`) and a drained `poisson_ratio`. Mechanics
+  boundary conditions (`mechanics` blocks) prescribe displacement (component
+  lists, `fixed`, `roller`) or traction increments. `Matrix.vtk` gains
+  displacement and stress. Coupling to flow and heat, and fractures, are not
+  yet supported with mechanics on.
+
 ### Fixed
 
 - **Multi-face flux boundary conditions** — a `flux` group spanning several

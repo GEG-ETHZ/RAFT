@@ -11,6 +11,7 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Non-linear Viscosity](#non-linear-viscosity)
 - [Buoyancy](#buoyancy)
 - [Wellbore Heat Exchange](#wellbore-heat-exchange)
+- [Thick-Walled Cylinder (Lamé)](#thick-walled-cylinder-lamé)
 
 ## Heterogeneous Conduction and Flow
 
@@ -202,3 +203,24 @@ _Wellbore Heat Exchange: fluid temperature along the well_
 **Error metric.** Relative sum of squared nodal temperature errors at the well nodes:
 
 $$e = \frac{\sum_i (T_i^{ex}-T_i)^2}{\sum_i (T_i^{ex})^2} < 10^{-5}$$
+
+## Thick-Walled Cylinder (Lamé)
+
+**Test:** `test_lame_cylinder`
+
+**Setup.** An axisymmetric section $a \le r \le b$ ($a = 3$, $b = 54$) of a long cylinder, graded toward the inner wall (`cylinder_axisym.msh`), with internal pressure $p_i$ on $r = a$, a free outer wall, and rollers on the top and bottom ($u_z = 0$).
+
+**Assumptions.** Linear elasticity, small strain, plane strain along the axis.
+
+**Analytical solution.**
+
+$$u_r(r) = \frac{(1+\nu)\,a^2 p_i}{E\,(b^2-a^2)}\left[(1-2\nu)\,r + \frac{b^2}{r}\right]$$
+
+**Comparison.** Analytical and finite element (RAFT) nodal solutions.
+
+![Thick-Walled Cylinder (Lamé) — Radial displacement](figures/verification/lame_cylinder_u.png)
+_Thick-Walled Cylinder (Lamé): radial displacement_
+
+**Error metric.** Relative $L_2$ error of the nodal radial displacement (about $10^{-3}$ on this mesh, converging at second order under refinement), with $u_z = 0$:
+
+$$e = \frac{\lVert u_r^{ex}-u_r \rVert_2}{\lVert u_r^{ex} \rVert_2} < 5\times10^{-3}$$
