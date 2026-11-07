@@ -6,6 +6,12 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ## [In Development]
 
+### Fixed
+
+- **Multi-face flux boundary conditions** — a `flux` group spanning several
+  faces or lines counted nodes shared between them twice, overestimating the
+  applied flux near shared corners and edges.
+
 ---
 
 ## [0.2.1] — 2026-10-23

@@ -458,6 +458,8 @@ def _resolve_group_geometry(
             )
         else:
             raise NotImplementedError("Invalid BC geometry specification")
+        # Faces/lines sharing a node list it once; a repeat would count its flux column twice
+        group["nodes"] = list(dict.fromkeys(group["nodes"]))
 
     nodes = group["nodes"]
     if need_flux_integral and nodes and "_conn" in group:
