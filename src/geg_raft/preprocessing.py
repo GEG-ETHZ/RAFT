@@ -103,6 +103,7 @@ DEFAULTS: dict[str, Any] = {
         "rel_error_T": 1.0e-2,
         "mechanics_controls": {
             "plane": "strain",  # 2D mechanics: "strain" or "stress"
+            "stress_recovery": "element",  # stress output: "element" (cells), "average" or "L2" (nodes)
         },
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
@@ -189,11 +190,7 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
             "physics.wells.flow = 'transient' has no effect; well flow is always quasi-steady.", stacklevel=2
         )
 
-    physics = Physics(**resolved)
-    # Thermal stress is not implemented yet
-    if physics.solves("mechanics") and physics.solves("heat"):
-        raise NotImplementedError("physics.matrix.mechanics with heat on is not implemented yet")
-    return physics
+    return Physics(**resolved)
 
 
 def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) -> dict[str, Any]:  # noqa
@@ -252,6 +249,11 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
         plane = controls["mechanics_controls"]["plane"]
         if plane not in ("strain", "stress"):
             raise ValueError(f"mechanics_controls.plane = {plane!r}; expected 'strain' or 'stress'")
+        recovery = controls["mechanics_controls"]["stress_recovery"]
+        if recovery not in ("element", "average", "L2"):
+            raise ValueError(
+                f"mechanics_controls.stress_recovery = {recovery!r}; expected 'element', 'average' or 'L2'"
+            )
 
     # CoolProp AbstractState, reused across all property lookups instead of
     # re-initializing it on every matprops call.

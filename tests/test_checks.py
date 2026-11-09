@@ -26,8 +26,8 @@ import numpy.typing as npt
 from scipy.optimize import brentq
 
 from geg_raft.preprocessing import load_config, preprocessing
-from geg_raft.solidmechanics import insitu_stress, nodal_stress
-from geg_raft.subsurface import advance, initialize_simulation
+from geg_raft.solidmechanics import element_stress, insitu_stress, nodal_stress
+from geg_raft.subsurface import _rollover, advance, initialize_simulation, load_state, snapshot_state
 
 
 def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
@@ -37,6 +37,121 @@ def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> f
         group[field]["values"] for group in groups if field in group and group[field]["type"] == bc_type
     ]
     return float(matches[index][0])
+
+
+# ---- Exact solutions
+def _linear_profile(y0: float, slope: float, x: Any) -> Any:
+    """Linear profile y0 + slope * x."""
+    return y0 + slope * x
+
+
+def _radial_log_profile(
+    r: npt.NDArray[np.float64], y0: float, q: float, k: float, Ri: float, Ro: float
+) -> npt.NDArray[np.float64]:
+    """Steady radial profile from a flux q at the inner radius Ri, fixed to y0 at the outer radius Ro."""
+    y: npt.NDArray[np.float64] = y0 - q / k * Ri * np.log(r / Ro)
+    return y
+
+
+def _buoyancy_pressure(
+    x: npt.NDArray[np.float64], p0: float, p1: float, A: float, B: float
+) -> npt.NDArray[np.float64]:
+    """Hydrostatic pressure in a linear temperature profile, x = z / L, A = alpha_f dT, B = rho_0 g L."""
+    C = (p1 - p0) / B - (A / 2 - 1)
+    p: npt.NDArray[np.float64] = p0 + B * (C * np.log(1 - A * x) / np.log(1 - A) + (A * x / 2 - 1) * x)
+    return p
+
+
+def _polygon_area(coords: npt.NDArray[np.float64]) -> float:
+    """Area of a polygon from its ordered vertices (shoelace formula)."""
+    x, y = coords[:, 0], coords[:, 1]
+    return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _lame_displacement(
+    r: npt.NDArray[np.float64], a: float, b: float, p_in: float, E: float, nu: float
+) -> npt.NDArray[np.float64]:
+    """Radial displacement of a plane-strain thick-walled cylinder under internal pressure."""
+    u_r: npt.NDArray[np.float64] = (
+        (1.0 + nu) * a**2 * p_in / (E * (b**2 - a**2)) * ((1.0 - 2.0 * nu) * r + b**2 / r)
+    )
+    return u_r
+
+
+def _terzaghi_exact(
+    y: npt.NDArray[np.float64],
+    t: float,
+    H: float,
+    c: float,
+    P: float,
+    p_undrained: float,
+    biot: float,
+    K_v: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Excess pressure and displacement of a column drained at y = H under a step load P."""
+    m = 2.0 * np.arange(200) + 1.0
+    modes = 4.0 / (m * np.pi) * np.exp(-(m**2) * np.pi**2 * c * t / (4.0 * H**2))
+    phase = np.outer(H - y, m) * np.pi / (2.0 * H)
+    p: npt.NDArray[np.float64] = p_undrained * (np.sin(phase) @ modes)
+    # uniaxial strain (-P + biot p) / K_v, integrated from the fixed base
+    p_integral = p_undrained * (np.cos(phase) @ (modes * 2.0 * H / (m * np.pi)))
+    u: npt.NDArray[np.float64] = (-P * y + biot * p_integral) / K_v
+    return p, u
+
+
+def _thermal_consolidation_exact(
+    y: npt.NDArray[np.float64], t: float, coefficients: dict[str, Any]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Temperature change, excess pressure and displacement of a column under a surface temperature step.
+
+    `coefficients`: H, kappa, c, dT_top, P, p_undrained, rate (pressure per temperature rate),
+    biot, K_d_alpha (K_d alpha_s), K_v, and drained.
+    """
+    k = coefficients
+    m = 2.0 * np.arange(200) + 1.0
+    A = 4.0 / (m * np.pi)
+    wavenumber = m * np.pi / (2.0 * k["H"])
+    decay_T = np.exp(-k["kappa"] * wavenumber**2 * t)
+    phase = np.outer(k["H"] - y, wavenumber)
+
+    dT: npt.NDArray[np.float64] = k["dT_top"] * (1.0 - np.sin(phase) @ (A * decay_T))
+    # uniaxial strain (-P + biot p + K_d alpha_s dT) / K_v, integrated from the fixed base
+    integral = np.cos(phase) / wavenumber
+    T_integral = k["dT_top"] * (y - integral @ (A * decay_T))
+    p = np.zeros_like(y)
+    p_integral = np.zeros_like(y)
+    if k["drained"]:
+        decay_p = np.exp(-k["c"] * wavenumber**2 * t)
+        thermal = k["rate"] * k["dT_top"] * k["kappa"] / (k["c"] - k["kappa"])
+        pressure_modes = A * (k["p_undrained"] * decay_p + thermal * (decay_T - decay_p))
+        p = np.sin(phase) @ pressure_modes
+        p_integral = integral @ pressure_modes
+    u: npt.NDArray[np.float64] = (-k["P"] * y + k["biot"] * p_integral + k["K_d_alpha"] * T_integral) / k[
+        "K_v"
+    ]
+    return dT, p, u
+
+
+def _mandel_root_equation(alpha: float, C: float) -> float:
+    """tan(alpha) - C alpha, whose roots give Mandel's modes."""
+    return float(np.tan(alpha) - C * alpha)
+
+
+def _mandel_pressure(
+    x: npt.NDArray[np.float64],
+    t: float,
+    a: float,
+    c: float,
+    p_undrained: float,
+    alpha: npt.NDArray[np.float64],
+    A: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Excess pressure across Mandel's strip of half-width a."""
+    modes = A * np.exp(-(alpha**2) * c * t / a**2)
+    p: npt.NDArray[np.float64] = (
+        2.0 * p_undrained * ((np.cos(np.outer(x, alpha) / a) - np.cos(alpha)) @ modes)
+    )
+    return p
 
 
 def check_patch_test(
@@ -116,16 +231,12 @@ def check_patch_test(
         plt.ylabel("T")
         plt.title(test_name)
 
-    # define exact solution - linear
-    def _lin_exact(y0: float, y1: float, x: float, X: float) -> float:
-        y = y0 + (y1 - y0) * x / X
-        return y
-
-    # calculate error
-    err_ex = sum((_lin_exact(T0, T1, d_1, L) - T[line_1]) ** 2)
-    err_ex += sum((_lin_exact(T0, T1, d_2, L) - T[line_2]) ** 2)
-    err_ex += sum((_lin_exact(T0, T1, d_3, L) - T[line_3]) ** 2)
-    err_ex += sum((_lin_exact(T0, T1, d_4, L) - T[line_4]) ** 2)
+    # calculate error against the linear exact solution
+    slope = (T1 - T0) / L
+    err_ex = sum((_linear_profile(T0, slope, d_1) - T[line_1]) ** 2)
+    err_ex += sum((_linear_profile(T0, slope, d_2) - T[line_2]) ** 2)
+    err_ex += sum((_linear_profile(T0, slope, d_3) - T[line_3]) ** 2)
+    err_ex += sum((_linear_profile(T0, slope, d_4) - T[line_4]) ** 2)
 
     # check pressure
     p0 = _bc_value(config, "hydraulics", "pressure", 0)
@@ -144,10 +255,11 @@ def check_patch_test(
         plt.ylabel("p")
         plt.title(test_name)
 
-    err_ex += sum((_lin_exact(p0, p1, d_1, L) - p[line_1]) ** 2)
-    err_ex += sum((_lin_exact(p0, p1, d_2, L) - p[line_2]) ** 2)
-    err_ex += sum((_lin_exact(p0, p1, d_3, L) - p[line_3]) ** 2)
-    err_ex += sum((_lin_exact(p0, p1, d_4, L) - p[line_4]) ** 2)
+    slope = (p1 - p0) / L
+    err_ex += sum((_linear_profile(p0, slope, d_1) - p[line_1]) ** 2)
+    err_ex += sum((_linear_profile(p0, slope, d_2) - p[line_2]) ** 2)
+    err_ex += sum((_linear_profile(p0, slope, d_3) - p[line_3]) ** 2)
+    err_ex += sum((_linear_profile(p0, slope, d_4) - p[line_4]) ** 2)
 
     test_pass = bool(err_ex < tol)
 
@@ -206,14 +318,10 @@ def check_patch_test_flux(
     q = _bc_value(config, "thermal", "flux", 0)
     k = config["material"]["solid"]["therm_cond"]
 
-    # define exact solution - linear
-    def _lin_exact(y0: float, m: float, x: float) -> float:
-        y = y0 + m * x
-        return y
-
+    # linear exact solution
     m = q / k
 
-    T1 = _lin_exact(T0, m, L)
+    T1 = _linear_profile(T0, m, L)
 
     T = results["T"][:, 0]
 
@@ -228,8 +336,8 @@ def check_patch_test_flux(
 
     # calculate error
     mean_val = 0.5 * (T0 + T1)
-    err_ex = sum((_lin_exact(T0, m, d_1) - T[line_1]) ** 2) / mean_val
-    err_ex += sum((_lin_exact(T0, m, d_2) - T[line_2]) ** 2) / mean_val
+    err_ex = sum((_linear_profile(T0, m, d_1) - T[line_1]) ** 2) / mean_val
+    err_ex += sum((_linear_profile(T0, m, d_2) - T[line_2]) ** 2) / mean_val
 
     # check pressure
     p1 = _bc_value(config, "hydraulics", "pressure", 0)
@@ -237,14 +345,9 @@ def check_patch_test_flux(
     k = config["material"]["solid"]["permeability"]
     mu = config["material"]["fluid"]["viscosity"]
 
-    # define exact solution - linear
-    # pressure is defined in the opposite direction
-    def _lin_exact_p(y0: float, m: float, x: float, L: float) -> float:
-        y = y0 + m * (L - x)
-        return y
-
+    # linear exact solution; pressure is defined in the opposite direction
     m = mu * q / k
-    p0 = _lin_exact_p(p1, m, 0, L)
+    p0 = _linear_profile(p1, m, L)
 
     p = results["p"][:, 0]
 
@@ -258,8 +361,8 @@ def check_patch_test_flux(
         plt.title(test_name)
 
     mean_val = 0.5 * (p0 + p1)
-    err_ex = sum((_lin_exact_p(p1, m, d_1, L) - p[line_1]) ** 2) / mean_val
-    err_ex += sum((_lin_exact_p(p1, m, d_2, L) - p[line_2]) ** 2) / mean_val
+    err_ex = sum((_linear_profile(p1, m, L - d_1) - p[line_1]) ** 2) / mean_val
+    err_ex += sum((_linear_profile(p1, m, L - d_2) - p[line_2]) ** 2) / mean_val
 
     test_pass = bool(err_ex < tol)
 
@@ -382,12 +485,7 @@ def check_buoyancy(
     A = alpha_f * dT
     B = rho0 * g * L
 
-    def _p_exact(x: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        C = (p1 - p0) / B - (A / 2 - 1)
-        p: npt.NDArray[np.float64] = p0 + B * (C * np.log(1 - A * x) / np.log(1 - A) + (A * x / 2 - 1) * x)
-        return p
-
-    p_exact = _p_exact(x)
+    p_exact = _buoyancy_pressure(x, p0, p1, A, B)
 
     # extract T and normalize
     p = results["p"][:, 0]
@@ -417,7 +515,7 @@ def check_buoyancy(
 
     # calculate error
     x = d_1 / L
-    p_exact = _p_exact(x)
+    p_exact = _buoyancy_pressure(x, p0, p1, A, B)
     err_ex = sum((p_exact - p[line_1]) ** 2) / sum(p_exact**2)
     # The error here is calculated based on the nodal solutions.
 
@@ -675,14 +773,8 @@ def check_axisymmetry(
     k = config["material"]["solid"]["therm_cond"]
 
     # define exact solution
-    def _y_exact(
-        r: npt.NDArray[np.float64], y0: float, q: float, k: float, Ri: float, Ro: float
-    ) -> npt.NDArray[np.float64]:
-        y = y0 - q / k * Ri * np.log(r / Ro)
-        return y
-
     r = np.linspace(Ri, Ro, 50)
-    T_exact = _y_exact(r, T0, q, k, Ri, Ro)
+    T_exact = _radial_log_profile(r, T0, q, k, Ri, Ro)
 
     T = results["T"][:, 0]
 
@@ -698,8 +790,8 @@ def check_axisymmetry(
 
     # calculate error
     mean_val = np.mean(T_exact)
-    err_ex = sum((_y_exact(d_1, T0, q, k, Ri, Ro) - T[line_1]) ** 2) / mean_val**2
-    err_ex += sum((_y_exact(d_2, T0, q, k, Ri, Ro) - T[line_2]) ** 2) / mean_val**2
+    err_ex = sum((_radial_log_profile(d_1, T0, q, k, Ri, Ro) - T[line_1]) ** 2) / mean_val**2
+    err_ex += sum((_radial_log_profile(d_2, T0, q, k, Ri, Ro) - T[line_2]) ** 2) / mean_val**2
 
     # check pressure
     p0 = _bc_value(config, "hydraulics", "pressure", 0)
@@ -707,7 +799,7 @@ def check_axisymmetry(
     k = config["material"]["solid"]["permeability"] / config["material"]["fluid"]["viscosity"]
 
     # define exact solution
-    p_exact = _y_exact(r, p0, q, k, Ri, Ro)
+    p_exact = _radial_log_profile(r, p0, q, k, Ri, Ro)
 
     p = results["p"][:, 0]
 
@@ -722,8 +814,8 @@ def check_axisymmetry(
         plt.legend()
 
     denom = p_exact[0]
-    err_ex += sum((_y_exact(d_1, p0, q, k, Ri, Ro) - p[line_1]) ** 2) / denom**2
-    err_ex += sum((_y_exact(d_2, p0, q, k, Ri, Ro) - p[line_2]) ** 2) / denom**2
+    err_ex += sum((_radial_log_profile(d_1, p0, q, k, Ri, Ro) - p[line_1]) ** 2) / denom**2
+    err_ex += sum((_radial_log_profile(d_2, p0, q, k, Ri, Ro) - p[line_2]) ** 2) / denom**2
 
     test_pass = bool(err_ex < tol)
 
@@ -771,15 +863,11 @@ def check_fracture_single(config_name: str, config_dir: Path, mesh: dict[str, An
     correct_conn_count = len(matrix_conn) == mesh["fracture_mesh"]["ne"]
 
     # Cutting the mesh should not change the total matrix area (no gaps/overlaps).
-    def _poly_area(coords: npt.NDArray[np.float64]) -> float:
-        x, y = coords[:, 0], coords[:, 1]
-        return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
-
     nodes = mesh["nodes"]
     domain_area = (mesh["nodes"][:, 0].max() - mesh["nodes"][:, 0].min()) * (
         mesh["nodes"][:, 1].max() - mesh["nodes"][:, 1].min()
     )
-    cut_area = sum(_poly_area(nodes[np.asarray(elem)]) for elem in mesh["conn"])
+    cut_area = sum(_polygon_area(nodes[np.asarray(elem)]) for elem in mesh["conn"])
     area_conserved = bool(np.isclose(cut_area, domain_area, rtol=1e-8))
 
     test_pass = (
@@ -1101,11 +1189,15 @@ def check_patch_test_elastic(
     material["p_0"] = results["p"][:, 0]
     material["T_0"] = results["T"][:, 0]
     material["sigma_0"] = sigma_0
-    sigma = nodal_stress(mesh, material, cfg["simulation"], results)
 
-    # calculate error
+    # calculate error; every stress recovery reproduces a constant stress exactly
     err_u = np.sum((u - u_exact) ** 2) / np.sum(u_exact**2)
-    err_sigma = np.sum((sigma - sigma_exact) ** 2) / np.sum(sigma_exact**2)
+    sigma_cells = element_stress(mesh, material, cfg["simulation"], results)
+    sigma_cells_exact = np.array([sigma_exact[enodes].mean(axis=0) for enodes in mesh["conn"]])
+    err_sigma = np.sum((sigma_cells - sigma_cells_exact) ** 2) / np.sum(sigma_cells_exact**2)
+    for method in ("average", "L2"):
+        sigma = nodal_stress(mesh, material, cfg["simulation"], results, method)
+        err_sigma = max(err_sigma, np.sum((sigma - sigma_exact) ** 2) / np.sum(sigma_exact**2))
 
     test_pass = bool(err_u < tol**2 and err_sigma < tol**2)
 
@@ -1136,19 +1228,12 @@ def check_lame_cylinder(
     r = mesh["nodes"][:, 0]
     a, b = r.min(), r.max()
 
-    # define exact solution
-    def _u_exact(r: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        u_r: npt.NDArray[np.float64] = (
-            (1.0 + nu) * a**2 * p_in / (E * (b**2 - a**2)) * ((1.0 - 2.0 * nu) * r + b**2 / r)
-        )
-        return u_r
-
     u = results["u"][:, 0].reshape(-1, 2)
 
     if plot_on:
         r_plot = np.linspace(a, b, 200)
         plt.figure()
-        plt.plot(r_plot, _u_exact(r_plot), "r-", label="exact")
+        plt.plot(r_plot, _lame_displacement(r_plot, a, b, p_in, E, nu), "r-", label="exact")
         line_1 = np.nonzero(mesh["nodes"][:, 1] == min(mesh["nodes"][:, 1]))[0]
         line_2 = np.nonzero(mesh["nodes"][:, 1] == max(mesh["nodes"][:, 1]))[0]
         plt.plot(r[line_1], u[line_1, 0], "ko", label="RAFT, lower edge")
@@ -1159,7 +1244,8 @@ def check_lame_cylinder(
         plt.legend()
 
     # calculate error
-    err_ex = np.linalg.norm(u[:, 0] - _u_exact(r)) / np.linalg.norm(_u_exact(r))
+    u_exact = _lame_displacement(r, a, b, p_in, E, nu)
+    err_ex = np.linalg.norm(u[:, 0] - u_exact) / np.linalg.norm(u_exact)
 
     test_pass = bool(err_ex < tol and np.max(np.abs(u[:, 1])) < 1e-12)
 
@@ -1169,6 +1255,8 @@ def check_lame_cylinder(
 # Output times of the consolidation checks
 TERZAGHI_TIMES = [0.5, 2.0, 8.0, 20.0]
 MANDEL_TIMES = [0.05, 0.5, 2.0, 8.0, 20.0]
+THERMAL_CONSOLIDATION_TIMES = [1.0e6, 3.0e6, 6.0e6]
+THERMAL_CONSOLIDATION_SPLIT_TIMES = [3.0e6, 6.0e6]
 
 
 def run_at_times(
@@ -1181,7 +1269,19 @@ def run_at_times(
     results = []
     for t in times:
         state, _ = advance(setup, state, t, False)
-        results.append({key: state.primary_variables[key].copy() for key in ("u", "p")})
+        results.append({key: state.primary_variables[key].copy() for key in ("u", "p", "T")})
+        # accept the step as the next call's history, as the coupling API does
+        primary_variables = load_state(state, setup.BC_config)
+        _rollover(primary_variables, setup.BC_config, setup.controls["wellbore_check"])
+        state = snapshot_state(
+            state.t,
+            state.n_step,
+            state.n_out,
+            state.dt_hist,
+            primary_variables,
+            setup.BC_config,
+            state.ext_values,
+        )
     return results, mesh
 
 
@@ -1234,20 +1334,7 @@ def check_terzaghi(
     p_bc = _bc_value(config, "hydraulics", "pressure", 0)
     p_undrained = biot / (K_v * constants["S"]) * P
 
-    # define exact solution
-    m = 2.0 * np.arange(200) + 1.0
-
-    def _p_exact(y: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
-        modes = 4.0 / (m * np.pi) * np.exp(-(m**2) * np.pi**2 * c * t / (4.0 * H**2))
-        p_e: npt.NDArray[np.float64] = p_undrained * (np.sin(np.outer(H - y, m) * np.pi / (2.0 * H)) @ modes)
-        return p_e
-
-    def _u_exact(y: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
-        # uniaxial strain (-P + biot p) / K_v, integrated from the fixed base
-        modes = 4.0 / (m * np.pi) * np.exp(-(m**2) * np.pi**2 * c * t / (4.0 * H**2)) * 2.0 * H / (m * np.pi)
-        p_integral = p_undrained * (np.cos(np.outer(H - y, m) * np.pi / (2.0 * H)) @ modes)
-        u_e: npt.NDArray[np.float64] = (-P * y + biot * p_integral) / K_v
-        return u_e
+    exact = (H, c, P, p_undrained, biot, K_v)
 
     if plot_on:
         fig_p, ax_p = plt.subplots()
@@ -1261,15 +1348,17 @@ def check_terzaghi(
         u = result["u"][:, 0].reshape(-1, nsd)[:, dimension]
 
         # calculate error
-        err_p = np.linalg.norm(p - _p_exact(y, t)) / np.linalg.norm(_p_exact(y, t))
-        err_u = np.linalg.norm(u - _u_exact(y, t)) / np.linalg.norm(_u_exact(y, t))
+        p_e, u_e = _terzaghi_exact(y, t, *exact)
+        err_p = np.linalg.norm(p - p_e) / np.linalg.norm(p_e)
+        err_u = np.linalg.norm(u - u_e) / np.linalg.norm(u_e)
         err_ex = max(err_ex, float(err_p), float(err_u))
 
         if plot_on:
             label = f"t = {t:g} s"
-            line = ax_p.plot(_p_exact(y_plot, t) / P, y_plot / H, "-", label=label)[0]
+            p_plot, u_plot = _terzaghi_exact(y_plot, t, *exact)
+            line = ax_p.plot(p_plot / P, y_plot / H, "-", label=label)[0]
             ax_p.plot(p[order] / P, y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
-            line = ax_u.plot(_u_exact(y_plot, t) * K_v / (P * H), y_plot / H, "-", label=label)[0]
+            line = ax_u.plot(u_plot * K_v / (P * H), y_plot / H, "-", label=label)[0]
             ax_u.plot(u[order] * K_v / (P * H), y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
 
     if plot_on:
@@ -1281,6 +1370,122 @@ def check_terzaghi(
         ax_u.set_ylabel("y / H")
         ax_u.set_title(test_name)
         ax_u.legend()
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_thermal_consolidation(
+    config_name: str,
+    config_dir: Path,
+    results: list[dict[str, Any]],
+    mesh: dict[str, Any],
+    times: list[float],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """One-dimensional conduction from a temperature step: T, u and stress, and p and the load if drained."""
+    # Set tolerance
+    tol = 3.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    constants = _poroelastic_constants(config)
+    biot, K_v, G, c = constants["biot"], constants["K_v"], constants["G"], constants["c"]
+    K_d, _ = _elastic_moduli(config)
+    solid, fluid = config["material"]["solid"], config["material"]["fluid"]
+    phi, alpha_s, alpha_f = solid["porosity"], solid["therm_expansion"], fluid["therm_expansion"]
+    drained = any("hydraulics" in group for group in config["boundary_conditions"])
+
+    # thermal diffusivity
+    conductivity = phi * fluid["therm_cond"] + (1.0 - phi) * solid["therm_cond"]
+    capacity = (1.0 - phi) * solid["density"] * solid["specific_heat"]
+    capacity += phi * fluid["density"] * fluid["specific_heat"]
+    kappa = conductivity / capacity
+
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+    y = nodes[:, 1]
+    H = y.max()
+    T_ini = config["initial_conditions"]["T_ini"]
+    p_ini = config["initial_conditions"]["p_ini"]
+    dT_top = _bc_value(config, "thermal", "temperature", 0) - T_ini
+    P = -_bc_value(config, "mechanics", "traction", 0) if drained else 0.0
+
+    # undrained response to the load, and the pressure rate per unit temperature rate
+    p_undrained = biot / (K_v * constants["S"]) * P
+    rate = ((biot - phi) * alpha_s + phi * alpha_f - biot * K_d * alpha_s / K_v) / constants["S"]
+
+    coefficients = {
+        "H": H,
+        "kappa": kappa,
+        "c": c,
+        "dT_top": dT_top,
+        "P": P,
+        "p_undrained": p_undrained,
+        "rate": rate,
+        "biot": biot,
+        "K_d_alpha": K_d * alpha_s,
+        "K_v": K_v,
+        "drained": drained,
+    }
+
+    # nodal stress against the lateral stress, the vertical stress balancing the load
+    cfg, _ = preprocessing(config_name, config_dir, verbose=False)
+    material = cfg["material"]
+    material["p_0"] = np.full(mesh["nn"], float(p_ini))
+    material["T_0"] = np.full(mesh["nn"], float(T_ini))
+    material["sigma_0"] = np.zeros((mesh["nn"], 3))
+
+    if plot_on:
+        fig_T, ax_T = plt.subplots()
+        fig_p, ax_p = plt.subplots()
+        fig_u, ax_u = plt.subplots()
+
+    err_ex = 0.0
+    y_plot = np.linspace(0.0, H, 200)
+    order = np.argsort(y)
+    for t, result in zip(times, results, strict=True):
+        dT = result["T"][:, 0] - T_ini
+        p = result["p"][:, 0] - p_ini
+        u = result["u"][:, 0].reshape(-1, nsd)[:, 1]
+        dT_e, p_e, u_e = _thermal_consolidation_exact(y, t, coefficients)
+
+        strain_e = (-P + biot * p_e + K_d * alpha_s * dT_e) / K_v
+        sxx_e = (K_d - 2.0 * G / 3.0) * strain_e - biot * p_e - K_d * alpha_s * dT_e
+        sigma = nodal_stress(mesh, material, cfg["simulation"], result)
+        # below the top metre, where nodal averaging smooths the temperature step
+        interior = np.abs(y - H) > 1.0
+        err_sxx = np.linalg.norm((sigma[:, 0] - sxx_e)[interior]) / np.linalg.norm(sxx_e[interior])
+        err_syy = np.linalg.norm((sigma[:, 1] + P)[interior]) / np.linalg.norm(sxx_e[interior])
+
+        # calculate error
+        err_T = np.linalg.norm(dT - dT_e) / np.linalg.norm(dT_e)
+        err_p = np.linalg.norm(p - p_e) / np.linalg.norm(p_e) if drained else 0.0
+        err_u = np.linalg.norm(u - u_e) / np.linalg.norm(u_e)
+        err_ex = max(err_ex, float(err_T), float(err_p), float(err_u), float(err_sxx), float(err_syy))
+
+        if plot_on:
+            label = f"t = {t:g} s"
+            dT_plot, p_plot, u_plot = _thermal_consolidation_exact(y_plot, t, coefficients)
+            line = ax_T.plot(dT_plot / dT_top, y_plot / H, "-", label=label)[0]
+            ax_T.plot(dT[order] / dT_top, y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
+            line = ax_p.plot(p_plot / 1.0e6, y_plot / H, "-", label=label)[0]
+            ax_p.plot(p[order] / 1.0e6, y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
+            line = ax_u.plot(u_plot * 1.0e3, y_plot / H, "-", label=label)[0]
+            ax_u.plot(u[order] * 1.0e3, y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
+
+    if plot_on:
+        for ax, xlabel, corner in (
+            (ax_T, "(T - T_0) / (T_b - T_0)", "lower right"),
+            (ax_p, "p - p_b (MPa)", "upper right"),
+            (ax_u, "u (mm)", "lower right"),
+        ):
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel("y / H")
+            ax.set_title(test_name)
+            ax.legend(loc=corner)
 
     test_pass = bool(err_ex < tol)
 
@@ -1314,22 +1519,16 @@ def check_mandel(
     # roots of tan(alpha) = (1 - nu) / (nu_u - nu) alpha
     C = (1.0 - nu) / (nu_u - nu)
 
-    def _root_equation(alpha: float) -> float:
-        return float(np.tan(alpha) - C * alpha)
-
     alpha = np.array(
-        [brentq(_root_equation, 1.0e-9, np.pi / 2.0 - 1.0e-12)]
-        + [brentq(_root_equation, n * np.pi + 1.0e-9, (n + 0.5) * np.pi - 1.0e-12) for n in range(1, 300)]
+        [brentq(_mandel_root_equation, 1.0e-9, np.pi / 2.0 - 1.0e-12, args=(C,))]
+        + [
+            brentq(_mandel_root_equation, n * np.pi + 1.0e-9, (n + 0.5) * np.pi - 1.0e-12, args=(C,))
+            for n in range(1, 300)
+        ]
     )
     A = np.sin(alpha) / (alpha - np.sin(alpha) * np.cos(alpha))
 
-    # define exact solution
-    def _p_exact(x: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
-        modes = A * np.exp(-(alpha**2) * c * t / a**2)
-        p_e: npt.NDArray[np.float64] = (
-            2.0 * p_undrained * ((np.cos(np.outer(x, alpha) / a) - np.cos(alpha)) @ modes)
-        )
-        return p_e
+    exact = (a, c, p_undrained, alpha, A)
 
     if plot_on:
         plt.figure()
@@ -1345,7 +1544,8 @@ def check_mandel(
         p = result["p"][:, 0] - p_bc
 
         # calculate error
-        err_ex = max(err_ex, float(np.linalg.norm(p - _p_exact(x, t)) / np.linalg.norm(_p_exact(x, t))))
+        p_e = _mandel_pressure(x, t, *exact)
+        err_ex = max(err_ex, float(np.linalg.norm(p - p_e) / np.linalg.norm(p_e)))
         p_centre.append(np.mean(p[centre]) / p_undrained)
 
         # no oscillation: the pressure falls steadily from its peak to the drained edge
@@ -1353,7 +1553,8 @@ def check_mandel(
         monotone = monotone and bool(np.all(np.diff(p[base][peak:]) <= 0.0))
 
         if plot_on:
-            line = plt.plot(x_plot / a, _p_exact(x_plot, t) / p_undrained, "-", label=f"t = {t:g} s")[0]
+            p_plot = _mandel_pressure(x_plot, t, *exact)
+            line = plt.plot(x_plot / a, p_plot / p_undrained, "-", label=f"t = {t:g} s")[0]
             plt.plot(x / a, p / p_undrained, "o", color=line.get_color(), mfc="none", ms=3)
 
     if plot_on:

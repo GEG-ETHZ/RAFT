@@ -2184,6 +2184,7 @@ def _evaluate_advection_terms(
     dqD_dp: npt.NDArray[np.float64] = _EMPTY,  # mass flux pressure partial derivative
     want_tangent_dT: bool = False,
     want_tangent_dp: bool = False,
+    want_tangent_dphi: bool = False,
 ) -> tuple[
     npt.NDArray[np.float64],  # integrand_advection (F_Tadvection)
     npt.NDArray[np.float64],  # integrand_SUPG (F_Tstab)
@@ -2191,6 +2192,7 @@ def _evaluate_advection_terms(
     npt.NDArray[np.float64],  # integrand_SUPG_dT (KTT), `_EMPTY` unless want_tangent_dT
     npt.NDArray[np.float64],  # integrand_advection_dp (KTp), `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # integrand_SUPG_dphi (KTu), `_EMPTY` unless want_tangent_dphi
 ]:
     """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
     rho_s, cp_s = solid.rho_s, solid.cp_s
@@ -2281,6 +2283,11 @@ def _evaluate_advection_terms(
         integrand_advection_dp = hf_q.dp * q_D * N_q + hf_q.value * dqD_dp_direct
         integrand_SUPG_dp = tau * hf_q.cp * dR_dp * q_D + tau * hf_q.cp * RTh * dqD_dp_direct
 
+    integrand_SUPG_dphi = _EMPTY
+    if want_tangent_dphi:
+        dR_dphi = (1 - steady_temp) * cv[0] * internal_energy_term * N_q
+        integrand_SUPG_dphi = tau * hf_q.cp * dR_dphi * q_D
+
     return (
         integrand_advection,
         integrand_SUPG,
@@ -2288,6 +2295,7 @@ def _evaluate_advection_terms(
         integrand_SUPG_dT,
         integrand_advection_dp,
         integrand_SUPG_dp,
+        integrand_SUPG_dphi,
     )
 
 
@@ -2786,7 +2794,7 @@ def integrate_residuals(  # noqa
     thermal_coupling = solve_T or physics.matrix.solve_heat
     coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
-    mechanics_on = physics.matrix.solve_mechanics and not on_submesh  # solved strain, matrix pass only
+    mechanics_on = bool(mechanics.nodal_strain) and not on_submesh  # solved strain, matrix pass only
     steady_pres = float(domain.steady_flow)
     steady_temp = float(domain.steady_heat)
 
@@ -2982,7 +2990,7 @@ def integrate_residuals(  # noqa
 
                 # Advection and SUPG stabilization
                 if advection_on:
-                    integrand_advection, integrand_SUPG, _, _, _, _ = _evaluate_advection_terms(
+                    integrand_advection, integrand_SUPG, _, _, _, _, _ = _evaluate_advection_terms(
                         N_q,
                         B_q,
                         mesh_data.nsd,
@@ -3197,7 +3205,9 @@ def integrate_tangent_matrices(  # noqa
     list_of_matrices = ["Kpp"]
     if physics.solves("heat"):
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
-    mechanics_on = physics.matrix.solve_mechanics and not on_submesh  # solved strain, matrix pass only
+    mechanics_on = bool(mechanics.nodal_strain) and not on_submesh  # solved strain, matrix pass only
+    solve_u = mechanics_on and physics.matrix.solve_mechanics
+    solve_Tu = solve_u and solve_T  # energy balance wrt displacement
     # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
     mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture, is_well=is_well)
 
@@ -3316,6 +3326,8 @@ def integrate_tangent_matrices(  # noqa
         want_energy=thermal_coupling,
     )
 
+    KTu = csc_matrix((mesh_data.nn, mesh_data.nsd * mesh_data.nn))
+
     # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
     active = solve_p or solve_T or on_submesh
     for r in range(mesh_data.num_regions if active else 0):
@@ -3328,6 +3340,7 @@ def integrate_tangent_matrices(  # noqa
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
         strain = mechanics.nodal_strain[r] @ primary_variables["u"][:, 0:1] if mechanics_on else _EMPTY
+        dFT_dphi_entries: list[npt.NDArray[np.float64]] = []
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -3523,6 +3536,7 @@ def integrate_tangent_matrices(  # noqa
                         integrand_SUPG_dT,
                         integrand_advection_dp,
                         integrand_SUPG_dp,
+                        integrand_SUPG_dphi,
                     ) = _evaluate_advection_terms(
                         N_q,
                         B_q,
@@ -3545,11 +3559,23 @@ def integrate_tangent_matrices(  # noqa
                         dqD_dp=dqD_dp,
                         want_tangent_dT=True,
                         want_tangent_dp=coupled,
+                        want_tangent_dphi=solve_Tu,
                     )
                     element_matrices["KTT"] -= _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection_dT, wJe_q, False
                     )
                     element_matrices["KTT"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dT, wJe_q, False)
+
+                # Energy balance wrt the nodal porosity, for the displacement coupling
+                if solve_Tu:
+                    stored_energy = (
+                        rho_f.e.value[:, 0] * u_f.e.value[:, 0] - solid.rho_s * solid.cp_s * kin_n.Te[:, 0]
+                    )
+                    dFT_dphi = _diag_matrix(m_lump * (1 - steady_temp) * cv[0] * stored_energy)
+                    dFT_dphi += _vctrzd_qp_vctr_integrate(B_q, dlambda_dphi_gradT * N_q, wJe_q, False)
+                    if advection_on:
+                        dFT_dphi += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dphi, wJe_q, False)
+                    dFT_dphi_entries.append(dFT_dphi.ravel())
 
             # Monolithic - off diagonal matrices
             if coupled:
@@ -3669,6 +3695,18 @@ def integrate_tangent_matrices(  # noqa
             _store_vctrzd_element_matrix(vec, element_matrices, vec_counter, stop)
             vec_counter = stop
 
+        # Chain rule through this region's nodal porosity: dphi_L/du = biot * nodal_strain
+        if solve_Tu:
+            dFT_dphi_global = _assemble_global_matrices(
+                {"G": np.concatenate(dFT_dphi_entries)},
+                mesh_data.conn,
+                mesh_data.nn,
+                mesh_data.nne_list,
+                mesh_data.elem_indx,
+                np.asarray(mesh_data.region_lists[r], dtype=np.int32),
+            )["G"]
+            KTu = KTu + solid.biot * dFT_dphi_global @ mechanics.nodal_strain[r]
+
     # ----- Return and convert to sparse matrix
     integrated_matrices = _assemble_global_matrices(
         vec,
@@ -3742,13 +3780,14 @@ def integrate_tangent_matrices(  # noqa
             integrated_matrices, integrated_well_matrices, mesh_data.nn, nn_f, mesh["well_mesh"]["nn"]
         )
 
-    # Mass balance wrt displacement: p rows on all nodes, u columns on matrix nodes
-    if mechanics_on and solve_p:
+    # Balances wrt displacement: rows on all nodes, u columns on matrix nodes
+    coupling_shape = (mesh["nn_total"], mesh_data.nsd * mesh_data.nn)
+    if solve_u and solve_p:
         rho_nodes = nodal_fluid.rho_f.value[:, 0]
         Kpu = -(1 - steady_pres) * cv[0] * diags(rho_nodes) @ mechanics.K_up.T[: mesh_data.nn, :]
-        integrated_matrices["Kpu"] = _pad_sparse(
-            csc_matrix(Kpu), (mesh["nn_total"], mesh_data.nsd * mesh_data.nn)
-        )
+        integrated_matrices["Kpu"] = _pad_sparse(csc_matrix(Kpu), coupling_shape)
+    if solve_Tu:
+        integrated_matrices["KTu"] = _pad_sparse(KTu, coupling_shape)
 
     return integrated_matrices
 
@@ -3817,6 +3856,7 @@ def integrate_enthlpy_bndry_tangent(
     T_flow_lagged: bool = False,
     Kpp: csc_matrix[Any] = csc_matrix((0, 0)),
     KpT: csc_matrix[Any] = csc_matrix((0, 0)),
+    Kpu: csc_matrix[Any] = csc_matrix((0, 0)),
 ) -> dict[str, Any]:
     """Integrate the advective enthalpy flux boundary tangent.
 
@@ -3824,16 +3864,18 @@ def integrate_enthlpy_bndry_tangent(
     d(F_enth_bnd)/dT is q*dhf_dT (diagonal) plus hf_i*dq/dT;
 
     the latter is nonzero only for a Dirichlet-pressure node under
-    `monolithic`, via the Kpp/KpT cross-terms.
+    `monolithic`, via the Kpp/KpT/Kpu cross-terms.
     """
     advection_nodes = controls["physics"].advection_node_mask(mesh)
     nn_total = mesh["nn_total"]
+    K_enth_bnd_Tu = csc_matrix((nn_total, Kpu.shape[1]), dtype=float)
 
     if not advection_nodes.any():
         if monolithic:
             return {
                 "K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float),
                 "K_enth_bnd_Tp": csc_matrix((nn_total, nn_total), dtype=float),
+                "K_enth_bnd_Tu": K_enth_bnd_Tu,
             }
         else:
             return {"K_enth_bnd": csc_matrix((nn_total, nn_total), dtype=float)}
@@ -3876,13 +3918,19 @@ def integrate_enthlpy_bndry_tangent(
                     (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
                     shape=(nn_total, nn_total),
                 )
+                if Kpu.shape[1]:
+                    rows = Kpu[nodes_i, :].tocoo()
+                    K_enth_bnd_Tu = K_enth_bnd_Tu + csc_matrix(
+                        (rows.data * hf_i[rows.row], (nodes_i[rows.row], rows.col)),
+                        shape=K_enth_bnd_Tu.shape,
+                    )
 
     if node_diag_value:
         node_ids = np.fromiter(node_diag_value.keys(), dtype=np.int32)
         diag_vals = np.fromiter(node_diag_value.values(), dtype=np.float64)
         K_enth_bnd = K_enth_bnd + csc_matrix((diag_vals, (node_ids, node_ids)), shape=(nn_total, nn_total))
 
-    return {"K_enth_bnd": K_enth_bnd, "K_enth_bnd_Tp": K_enth_bnd_Tp}
+    return {"K_enth_bnd": K_enth_bnd, "K_enth_bnd_Tp": K_enth_bnd_Tp, "K_enth_bnd_Tu": K_enth_bnd_Tu}
 
 
 def integrate_boundary_flux_matrices(

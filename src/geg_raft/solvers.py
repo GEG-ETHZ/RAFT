@@ -487,6 +487,62 @@ def _newton_raphson_loop(  # noqa
                 A = mechanics.K_uu
                 b = R["u"]
 
+            elif solve_u and solve_p and solve_T:
+                # Monolithic displacement, pressure and temperature
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    T_flow,
+                    BC_config,
+                    monolithic=True,
+                    Kpp=jacobian["Kpp"],
+                    KpT=jacobian["KpT"],
+                    Kpu=jacobian["Kpu"],
+                )
+                A = cast(
+                    sp.csc_matrix[Any],
+                    sp.bmat(
+                        [
+                            [mechanics.K_uu, mechanics.K_up, mechanics.K_uT],
+                            [jacobian["Kpu"], jacobian["Kpp"], jacobian["KpT"]],
+                            [
+                                jacobian["KTu"] - K_enth_bnd["K_enth_bnd_Tu"],
+                                jacobian["KTp"] - K_enth_bnd["K_enth_bnd_Tp"],
+                                jacobian["KTT"] - K_enth_bnd["K_enth_bnd"],
+                            ],
+                        ],
+                        format="csc",
+                    ),
+                )
+
+                b = np.vstack((R["u"], R["p"], R["T"]))
+
+            elif solve_u and solve_T:
+                # Monolithic displacement and temperature
+                K_enth_bnd = integrate_enthlpy_bndry_tangent(
+                    mesh,
+                    material,
+                    primary_variables,
+                    controls,
+                    T_flow,
+                    BC_config,
+                    T_flow_lagged=T_flow_lagged,
+                )
+                A = cast(
+                    sp.csc_matrix[Any],
+                    sp.bmat(
+                        [
+                            [mechanics.K_uu, mechanics.K_uT],
+                            [jacobian["KTu"], jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]],
+                        ],
+                        format="csc",
+                    ),
+                )
+
+                b = np.vstack((R["u"], R["T"]))
+
             elif solve_u and solve_p:
                 # Monolithic displacement and pressure
                 A = cast(
@@ -708,6 +764,7 @@ def operator_split_time_integration(  # noqa
             debug_temperature_plot_on,
             physics=physics.with_off("flow").with_off("mechanics"),
             T_flow_lagged=True,
+            mechanics=mechanics,
         )
     else:
         T_converged = True  # temperature is off everywhere: nothing to solve

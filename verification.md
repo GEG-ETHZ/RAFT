@@ -14,6 +14,7 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Thick-Walled Cylinder (Lamé)](#thick-walled-cylinder-lamé)
 - [Terzaghi Consolidation](#terzaghi-consolidation)
 - [Mandel's Problem](#mandels-problem)
+- [Thermo-poroelastic Consolidation](#thermo-poroelastic-consolidation)
 
 ## Heterogeneous Conduction and Flow
 
@@ -273,3 +274,44 @@ _Mandel's Problem: excess pressure_
 **Error metric.** Relative $L_2$ error of the nodal pressure at each time, the centre pressure exceeding $p_u$, and the pressure falling monotonically from its peak to the drained edge (no oscillation at early time):
 
 $$e = \frac{\lVert p^{ex}-p \rVert_2}{\lVert p^{ex} \rVert_2} < 3\times10^{-2}$$
+
+## Thermo-poroelastic Consolidation
+
+**Test:** `test_thermal_consolidation`
+
+**Setup.** A laterally confined column $0 \le y \le H$ ($H = 10$ m) with a fixed base, no flow or heat flux on the other faces, and a top surface at $y = H$ carrying a load $P$, drained at $p_b$, and stepped from $T_0$ to $T_b$ at $t = 0$. Run with flow under the monolithic and operator-split solvers, and without flow or load (thermoelastic) under the monolithic solver. The operator-split case is compared from the second time on, since its extrapolated temperature lags the early thermal pressurization.
+
+**Assumptions.** Uniaxial strain, linear thermo-poroelasticity, small strain, conduction only, no gravity, and properties fixed at their initial values, which neglects the small changes in $\rho_f$, $\phi_L$ and $\lambda_e$.
+
+**Analytical solution.** With the constrained modulus $K_v = K_d + \tfrac{4}{3}G$, the uniaxial storage $S = \tfrac{1}{M} + \tfrac{\beta^2}{K_v}$, consolidation and thermal diffusivities $c$ and $\kappa$, and $\xi_n = \frac{(2n-1)\pi}{2H}$, $A_n = \frac{2}{\xi_n H}$, temperature decouples from the pressure and displacement:
+
+$$T(y,t) - T_0 = (T_b - T_0)\left[1 - \sum_{n=1}^{\infty} A_n \sin\left(\xi_n(H-y)\right)e^{-\kappa\xi_n^2t}\right]$$
+
+The pressure then follows a diffusion equation forced by the temperature rate:
+
+$$S\dot p - \frac{k}{\mu}\nabla^2 p = b\,\dot T, \qquad b = (\beta-\phi_0)\alpha_s + \phi_0\alpha_f - \frac{\beta K_d\alpha_s}{K_v}$$
+
+Its solution adds the thermal pressurization to the Terzaghi response, with $p_u = \frac{\beta P}{K_v S}$:
+
+$$p(y,t) - p_b = \sum_{n=1}^{\infty} A_n \sin\left(\xi_n(H-y)\right)\left[p_u e^{-c\xi_n^2t} + \frac{b}{S}(T_b-T_0)\frac{\kappa}{c-\kappa}\left(e^{-\kappa\xi_n^2t} - e^{-c\xi_n^2t}\right)\right]$$
+
+The displacement and lateral stress follow from the uniaxial strain $\varepsilon_{yy}$, integrated from the fixed base, while the vertical stress stays at $\sigma_{yy} = -P$:
+
+$$\varepsilon_{yy} = \frac{-P + \beta(p-p_b) + K_d\alpha_s(T-T_0)}{K_v}$$
+
+$$\sigma_{xx} = \left(K_d - \tfrac{2}{3}G\right)\varepsilon_{yy} - \beta(p-p_b) - K_d\alpha_s(T-T_0)$$
+
+**Comparison.** Analytical (lines) and finite element (RAFT, markers) nodal solutions at several times, for the monolithic solver with flow.
+
+![Thermo-poroelastic Consolidation — Temperature](figures/verification/thermoporoelastic_T.png)
+_Thermo-poroelastic consolidation: temperature_
+
+![Thermo-poroelastic Consolidation — Pressure](figures/verification/thermoporoelastic_p.png)
+_Thermo-poroelastic consolidation: excess pressure_
+
+![Thermo-poroelastic Consolidation — Displacement](figures/verification/thermoporoelastic_u.png)
+_Thermo-poroelastic consolidation: displacement_
+
+**Error metric.** Relative $L_2$ error of the nodal temperature, pressure and displacement at each time. The stress errors use the nodes below the top metre, both relative to $\lVert\sigma_{xx}^{ex}\rVert_2$:
+
+$$e = \frac{\lVert x^{ex}-x \rVert_2}{\lVert x^{ex} \rVert_2} < 3\times10^{-2}$$

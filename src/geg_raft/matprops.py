@@ -564,14 +564,16 @@ def get_porosity_lagrangian(
     Non-volumetric strain sources are neglected. `T_flow_lagged` zeroes dphi_L/dT when T is
     not the primary unknown. `volumetric_strain_on=False` forces zero strain.
 
-    With a solved `strain`, phi_L = phi_0 + biot * eps_v + (biot - phi_0) / K_s * (p - p_0).
+    With a solved `strain`,
+    phi_L = phi_0 + biot * eps_v + (biot - phi_0) * ((p - p_0) / K_s - alpha_s * (T - T_0)).
     """
     if strain.size:
         dphi_L_dp_biot = (biot - phi_0) * (1.0 - biot) / K_d  # K_s = K_d / (1 - biot)
+        dphi_L_dT_biot = -(biot - phi_0) * therm_expansion
         return PropertyResult(
-            phi_0 + biot * strain + dphi_L_dp_biot * (p - p_0),
+            phi_0 + biot * strain + dphi_L_dp_biot * (p - p_0) + dphi_L_dT_biot * (T - T_0),
             _const_array(dphi_L_dp_biot, p.shape),
-            _const_array(0.0, p.shape),
+            _const_array(0.0 if T_flow_lagged else dphi_L_dT_biot, p.shape),
         )
     phi_L, dphi_L_dp, dphi_L_dT = _porosity_lagrangian_values(
         p, p_0, T, T_0, phi_0, K_d, biot, therm_expansion, T_flow_lagged, volumetric_strain_on

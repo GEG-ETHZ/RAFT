@@ -29,7 +29,7 @@ import numpy.typing as npt
 from .matprops import get_EOS, get_porosity, get_porosity_lagrangian, get_viscosity
 from .matrixassembly import _get_region_value
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
-from .solidmechanics import STRESS_NAMES, element_volumetric_strain, nodal_stress
+from .solidmechanics import STRESS_NAMES, element_stress, element_volumetric_strain, nodal_stress
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
@@ -499,9 +499,11 @@ def _build_cell_scalars(
             if mechanics_on:
                 # Eulerian porosity phi = phi_L / (1 + eps_v)
                 biot = np.atleast_1d(solid["biot_coeff"])[region]
-                # temperature is not used with a solved strain
+                alpha_s = np.atleast_1d(solid["therm_expansion"])[region]
+                T_e = np.atleast_1d(np.mean(T[enodes]))
+                T0_e = np.atleast_1d(np.mean(material["T_0"][enodes]))
                 phi_L = get_porosity_lagrangian(
-                    p_e, p0_e, p_e, p0_e, phi_0, K_d, biot, 0.0, strain=strain[e : e + 1]
+                    p_e, p0_e, T_e, T0_e, phi_0, K_d, biot, alpha_s, strain=strain[e : e + 1]
                 )
                 porosity[e] = phi_L.value[0] / (1.0 + strain[e])
             else:
@@ -848,17 +850,25 @@ def _write_matrix_output(
 
     vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
 
+    scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T, primary_variables)
+
     # Displacement and total stress when mechanics is solved
     if controls["physics"].solves("mechanics"):
         nsd = mesh["nsd"]
         u = primary_variables["u"][:, 0].reshape(-1, nsd)
         vectordata_point.append({"name": "displacement", "data": _sanitize(u.copy())})
-        stress = nodal_stress(mesh, material, controls, primary_variables)
-        names = STRESS_NAMES[(nsd, bool(controls["axisymmetric_on"]) and nsd == 2)]
-        for i, name in enumerate(names):
-            scalardata_point.append({"name": f"stress_{name}", "data": _sanitize(stress[:, i].copy())})
 
-    scalardata_cell = _build_cell_scalars(controls, mesh, material, p, T, primary_variables)
+        # element-mean stress per cell, or recovered at the nodes
+        recovery = controls["mechanics_controls"]["stress_recovery"]
+        names = STRESS_NAMES[(nsd, bool(controls["axisymmetric_on"]) and nsd == 2)]
+        if recovery == "element":
+            stress = element_stress(mesh, material, controls, primary_variables)
+            target = scalardata_cell
+        else:
+            stress = nodal_stress(mesh, material, controls, primary_variables, recovery)
+            target = scalardata_point
+        for i, name in enumerate(names):
+            target.append({"name": f"stress_{name}", "data": _sanitize(stress[:, i].copy())})
 
     write_mesh2vtk(
         filename,

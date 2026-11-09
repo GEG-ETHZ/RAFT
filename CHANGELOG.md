@@ -14,10 +14,17 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   (`initial_conditions.stress`) and a drained `poisson_ratio`. Mechanics
   boundary conditions (`mechanics` blocks) prescribe displacement (component
   lists, `fixed`, `roller`) or traction increments. `Matrix.vtk` gains
-  displacement and stress. Fractures and heat are not yet supported with
-  mechanics on.
+  displacement and stress. Fractures are not yet supported with mechanics on.
 - **Poroelastic coupling** — with `flow` and `mechanics` on, displacement and
   pressure are solved monolithically with Biot's storage and strain coupling.
+- **Thermal stress** — `heat` can now run with `mechanics` on, adding thermal
+  stress to the force balance and thermal terms to the porosity. The monolithic
+  solver includes temperature in the displacement system; `operator_split`
+  uses the extrapolated temperature for it.
+- **Stress recovery option** — `mechanics_controls.stress_recovery` selects
+  the output stress: `element` (default), the element-mean stress written per
+  cell; `average`, the stress at each element's nodes averaged over the
+  elements sharing the node; or a consistent `L2` projection.
 
 ### Fixed
 

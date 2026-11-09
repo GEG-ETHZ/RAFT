@@ -84,6 +84,15 @@ def _consolidation_figures() -> None:
     )
     _save_open_figures("mandel", ["p"])
 
+    plt.close("all")
+    config = "config_test_thermoporoelastic.yaml"
+    times = test_checks.THERMAL_CONSOLIDATION_TIMES
+    results, mesh = test_checks.run_at_times(config, CASE_DIR, times)
+    test_checks.check_thermal_consolidation(
+        config, CASE_DIR, results, mesh, times, "Thermo-poroelastic Consolidation", True
+    )
+    _save_open_figures("thermoporoelastic", ["T", "p", "u"])
+
 
 def main_figures() -> None:
     """Run each case with plotting on and save its figures."""

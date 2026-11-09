@@ -1,0 +1,62 @@
+mesh:
+  file: column2D_Q4.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      therm_expansion: 3.0e-5   # 1/K
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 2.0e-4 # 1/K
+      viscosity: 1.0e-3       # Pa-s
+      reference_temperature: 300.0  # K
+      reference_pressure: 1.0e+6    # Pa
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+
+boundary_conditions:
+  # temperature step on the free surface
+  - faces: [y_max]
+    thermal:
+      type: temperature
+      values: [320.0]
+  # lateral and basal confinement; no heat flux by default
+  - faces: [x_min, x_max, y_min]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+
+physics:
+  matrix:
+    flow: off
+    heat: transient
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 6.0e+6
+  timestep: 2.0e+4
+  timestep_min: 2.0e+4
+  timestep_max: 2.0e+6
+  rate_order: 2
+  solver_type: monolithic
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

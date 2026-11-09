@@ -22,11 +22,13 @@ Shear strains are engineering strains; shear stresses are tensor components.
 """
 
 import bisect
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 from scipy.sparse import csc_matrix, diags
+from scipy.sparse.linalg import splu
 
 from .dofmap import get_scatter
 from .matrixassembly import (
@@ -40,7 +42,7 @@ from .matrixassembly import (
     _vctrzd_quad_point_integration,
 )
 from .mechanicsdata import MechanicsMatrices
-from .shapefunctions import getB
+from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 
 # Stress component names in Voigt order, for output
 STRESS_NAMES = {
@@ -110,6 +112,32 @@ def strain_displacement(
     hoop = np.zeros((B_u.shape[0], 1, B_u.shape[2]))
     hoop[:, 0, 0::nsd] = N / r[:, None]
     return np.concatenate((B_u, hoop), axis=1), detJe_q * r
+
+
+# Parent coordinates of the element nodes, in node order
+_ELEMENT_NODE_COORDS = {
+    "T3": [[0, 0], [1, 0], [0, 1]],
+    "Q4": [[-1, -1], [1, -1], [1, 1], [-1, 1]],
+    "T4": [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    "B8": [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [-1, 1, -1],
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [-1, 1, 1],
+    ],
+}
+
+
+def _element_node_shape_functions(etype: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Shape functions and parent gradients at the element nodes, shaped like quadrature-point arrays."""
+    coords = np.asarray(_ELEMENT_NODE_COORDS[etype], dtype=np.float64)
+    N = np.array([NMATRIX_FUNCS[etype](xi) for xi in coords])
+    GN = np.array([GNMATRIX_FUNCS[etype](xi) for xi in coords])
+    return N, GN
 
 
 def _region_elastic_data(material: dict[str, Any], r: int) -> tuple[float, float, float, float]:
@@ -269,13 +297,21 @@ def element_volumetric_strain(
     return strain
 
 
-def nodal_stress(
+def _element_stresses(
     mesh: dict[str, Any],
     material: dict[str, Any],
     controls: dict[str, Any],
     primary_variables: dict[str, Any],
-) -> npt.NDArray[np.float64]:
-    """Nodal total stress (nn, nv): element-mean stress averaged over the elements at each node."""
+    *,
+    at_nodes: bool,
+) -> Iterator[
+    tuple[int, list[int], npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]
+]:
+    """Stress change of each matrix element at its quadrature points, or at its nodes when `at_nodes`.
+
+    Yields (element, element nodes, N, stress (npts, nv), weight * det(J) (* r)); the weights are
+    those of the quadrature rule and are only meaningful at quadrature points.
+    """
     mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
     nsd = mesh_data.nsd
     axisymmetric = bool(controls["axisymmetric_on"])
@@ -288,8 +324,6 @@ def nodal_stress(
     dp = primary_variables["p"][:nn, 0] - material["p_0"][:nn]
     dT = primary_variables["T"][:nn, 0] - material["T_0"][:nn]
 
-    stress_sum = np.zeros((nn, len(m)))
-    count = np.zeros(nn)
     for r in range(mesh_data.num_regions):
         E, nu, biot, thermal = _region_elastic_data(material, r)
         D = elasticity_matrix(E, nu, nsd, plane, axisymmetric)
@@ -298,24 +332,90 @@ def nodal_stress(
         for e in mesh_data.region_lists[r]:
             new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
             if new_type_idx != elem_type_counter:
-                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
-                    mesh_data.nq_list[new_type_idx], nsd, mesh_data.etype_list[new_type_idx]
-                )
+                etype = mesh_data.etype_list[new_type_idx]
+                if at_nodes:
+                    N_q, GN_q = _element_node_shape_functions(etype)
+                    W = np.zeros(len(N_q))
+                else:
+                    W, _, N_q, GN_q = _get_quad_points_and_shape_functions(
+                        mesh_data.nq_list[new_type_idx], nsd, etype
+                    )
+                N = N_q.reshape(len(N_q), -1)
                 elem_type_counter = new_type_idx
 
             enodes = mesh_data.conn[e]
-            B_u, _ = strain_displacement(GN_q, N_q, mesh["nodes"][enodes, :], nsd, axisymmetric)
-            N = N_q.reshape(nq, -1)
+            xI = mesh["nodes"][enodes, :]
+            with np.errstate(divide="ignore", invalid="ignore"):  # hoop strain at nodes on the axis
+                B_u, detJe = strain_displacement(GN_q, N_q, xI, nsd, axisymmetric)
+                strain = B_u @ u[get_scatter(enodes, nsd)]
+            if axisymmetric and at_nodes:
+                # on the axis the hoop strain u_r / r tends to the radial strain
+                on_axis = np.abs(xI[:, 0]) < 1e-12
+                strain[on_axis, -1] = strain[on_axis, 0]
 
-            # stress change at quadrature points: D eps - Biot dp m - K_d alpha_s dT m
-            u_e = u[get_scatter(enodes, nsd)]
-            strain = B_u @ u_e
-            stress_q = strain @ D.T - np.outer(biot * (N @ dp[enodes]) + thermal * (N @ dT[enodes]), m)
+            # D eps - Biot dp m - K_d alpha_s dT m
+            stress = strain @ D.T - np.outer(biot * (N @ dp[enodes]) + thermal * (N @ dT[enodes]), m)
+            yield e, enodes, N, stress, W * detJe
 
-            # element mean, shared by its nodes
-            stress_sum[enodes] += stress_q.mean(axis=0)
+
+def element_stress(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    controls: dict[str, Any],
+    primary_variables: dict[str, Any],
+) -> npt.NDArray[np.float64]:
+    """Element total stress (ne, nv): the mean of the quadrature-point stresses, plus the in-situ stress."""
+    sigma_0 = material["sigma_0"]
+    stress = np.zeros((mesh["ne"], sigma_0.shape[1]))
+    for e, enodes, _, stress_q, _ in _element_stresses(
+        mesh, material, controls, primary_variables, at_nodes=False
+    ):
+        stress[e] = sigma_0[enodes].mean(axis=0) + stress_q.mean(axis=0)
+    return stress
+
+
+def nodal_stress(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    controls: dict[str, Any],
+    primary_variables: dict[str, Any],
+    method: str = "average",
+) -> npt.NDArray[np.float64]:
+    """Nodal total stress (nn, nv).
+
+    `method` "average": stress evaluated at each element's nodes, averaged over the elements
+    sharing each node. "L2": consistent L2 projection of the quadrature-point stress,
+    M s = int N^T sigma with M = int N^T N.
+    """
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
+    nn = mesh_data.nn
+    projection = method == "L2"
+    stresses = _element_stresses(mesh, material, controls, primary_variables, at_nodes=not projection)
+
+    stress_sum = np.zeros((nn, material["sigma_0"].shape[1]))  # sum of nodal stresses, or int N^T sigma
+    if projection:
+        mass_entries = []
+        for _, enodes, N, stress, wJ in stresses:
+            stress_sum[enodes] += N.T @ (stress * wJ[:, None])
+            N_q = N[:, None, :]
+            mass_entries.append(_vctrzd_quad_point_integration(N_q, 1.0, N_q, wJ, True).ravel())
+        elem_order = np.concatenate(mesh_data.region_lists).astype(np.int32)
+        mass = _assemble_global_matrices(
+            {"M": np.concatenate(mass_entries)},
+            mesh_data.conn,
+            nn,
+            mesh_data.nne_list,
+            mesh_data.elem_indx,
+            elem_order,
+        )["M"]
+        change = splu(csc_matrix(mass)).solve(stress_sum)
+    else:
+        count = np.zeros(nn)
+        for _, enodes, _, stress, _ in stresses:
+            stress_sum[enodes] += stress
             count[enodes] += 1
+        change = stress_sum / np.maximum(count, 1)[:, None]
 
-    # in-situ stress plus the averaged change
-    result: npt.NDArray[np.float64] = material["sigma_0"] + stress_sum / np.maximum(count, 1)[:, None]
+    # in-situ stress plus the recovered change
+    result: npt.NDArray[np.float64] = material["sigma_0"] + change
     return result

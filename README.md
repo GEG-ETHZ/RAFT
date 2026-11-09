@@ -104,7 +104,7 @@ The run exits with status 0 when it completes, and status 1 if a timestep fails 
 ### Outputs
 Results are written to `outputs/<config name>/`, or to `<output_directory>/<config name>/` if [`output_directory`](#simulation) is set:
 * `domain.vtk` (and `domain_wells.vtk` with wells): material properties and boundary condition nodes, written once at the start. Material properties include the drained bulk modulus and, with mechanics on, the shear modulus, Young's modulus and Poisson ratio.
-* `Matrix.vtk.<n>`, plus `Fracture.vtk.<n>` and `Well.vtk.<n>` when fractures or wells exist: solution fields at output step `n`, if `output_vtk` is on. With mechanics on, `Matrix.vtk.<n>` also holds the `displacement` vector and the total stress components (`stress_xx`, `stress_yy`, ...; `stress_rr`, `stress_zz`, `stress_rz`, `stress_tt` axisymmetric), averaged to nodes. View them in [Paraview](https://www.paraview.org/).
+* `Matrix.vtk.<n>`, plus `Fracture.vtk.<n>` and `Well.vtk.<n>` when fractures or wells exist: solution fields at output step `n`, if `output_vtk` is on. With mechanics on, `Matrix.vtk.<n>` also holds the `displacement` vector and the total stress components (`stress_xx`, `stress_yy`, ...; `stress_rr`, `stress_zz`, `stress_rz`, `stress_tt` axisymmetric), per element or at the nodes as set by `mechanics_controls.stress_recovery`. View them in [Paraview](https://www.paraview.org/).
 * `outflow.log`: time, pressure, flow rate and temperature of each [labeled boundary condition group](#boundary_conditions), at every output step.
 * `run.log`: the console output, if `output_log` is on. It is written at the chosen verbosity.
 
@@ -422,7 +422,7 @@ physics:
 * **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
-* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`. With `flow` on, displacement and pressure are solved monolithically in one Newton system under either `solver_type`. Currently it requires `heat` off and no fractures; thermal stress and fracture contact are in development.
+* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`. With `flow` on, displacement and pressure are solved monolithically in one Newton system under either `solver_type`. With `heat` on, `monolithic` adds temperature to that system, while `operator_split` uses the extrapolated temperature in it and then solves temperature separately. Currently it requires no fractures; fracture contact is in development.
 
 An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
 
@@ -450,6 +450,7 @@ Physical controls
 * **`axisymmetric_on`** *(integer/boolean, default: `0`)*: Set to `1` to solve the axisymmetric case. Only valid in 2D analysis.
 * **`mechanics_controls`** *(dictionary)*: Force balance settings.
   * **`plane`** *(string, default: `"strain"`)*: 2D mechanics assumption, `"strain"` or `"stress"`. Ignored in 3D and axisymmetric analyses.
+  * **`stress_recovery`** *(string, default: `"element"`)*: How the output stress is computed. `"element"` writes the mean of each element's quadrature-point stresses as cell data, showing the stress discontinuities between elements. `"average"` evaluates the stress at each element's nodes and averages it over the elements sharing each node; `"L2"` is a consistent $L^2$ projection of the quadrature-point stress over the matrix. Both nodal options are written as point data; the projection can overshoot where the stress changes sharply within an element.
 
 Numerical solver controls
 * **`solver_type`** *(string, default: `"operator_split"`)*: Type of time integration solver. Options are `"operator_split"` or `"monolithic"`. The `monolithic` solver solves pressure and temperature together in a single coupled system for the current timestep. The `operator_split` solver uses an operator splitting scheme, extrapolating temperature to the current timestep, solving pressure with the extrapolated temperature, then updating temperature with the new pressure.  See [Time Discretization and Solution Scheme](theory.md#time-discretization-and-solution-scheme) for more details.

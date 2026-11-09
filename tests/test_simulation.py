@@ -522,5 +522,27 @@ def test_mandel() -> None:
     assert test_pass
 
 
+@pytest.mark.parametrize(
+    ("config_filename", "times"),
+    [
+        ("config_test_thermoelastic.yaml", test_checks.THERMAL_CONSOLIDATION_TIMES),
+        ("config_test_thermoporoelastic.yaml", test_checks.THERMAL_CONSOLIDATION_TIMES),
+        # the extrapolated temperature lags the early thermal pressurization, so start later
+        ("config_test_thermoporoelastic_split.yaml", test_checks.THERMAL_CONSOLIDATION_SPLIT_TIMES),
+    ],
+)
+def test_thermal_consolidation(config_filename: str, times: list[float]) -> None:
+    """Check thermal stress and pressurization in a column, without and with flow, under both solvers."""
+    case_dir = _test_data_dir()
+    test_name = "Thermo-poroelastic Consolidation"
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, times)
+
+    plot_on = False
+    test_pass = test_checks.check_thermal_consolidation(
+        config_filename, case_dir, results, mesh, times, test_name, plot_on
+    )
+    assert test_pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))
