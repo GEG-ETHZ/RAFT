@@ -217,7 +217,7 @@ $$e = \frac{\sum_i (T_i^{ex}-T_i)^2}{\sum_i (T_i^{ex})^2} < 10^{-5}$$
 
 **Analytical solution.**
 
-$$u_r(r) = \frac{(1+\nu)\,a^2 p_i}{E\,(b^2-a^2)}\left[(1-2\nu)\,r + \frac{b^2}{r}\right]$$
+$$u_r(r) = \frac{(1+\nu) p_i}{E} \frac{a^2}{(b^2-a^2)}\left[(1-2\nu)r + \frac{b^2}{r}\right]$$
 
 **Comparison.** Analytical and finite element (RAFT) nodal solutions.
 
@@ -238,7 +238,8 @@ $$e = \frac{\lVert u_r^{ex}-u_r \rVert_2}{\lVert u_r^{ex} \rVert_2} < 5\times10^
 
 **Analytical solution.** With the constrained modulus $K_v = K_d + \tfrac{4}{3}G$, storage $S = \tfrac{1}{M} + \tfrac{\beta^2}{K_v}$ and consolidation coefficient $c = \tfrac{k}{\mu S}$, the load is first carried by the undrained pressure $p_u = \tfrac{\beta}{K_v S}P$, which then dissipates. With $z = H - y$ and $m = 2n + 1$,
 
-$$p(z,t) - p_b = p_u\sum_{n=0}^{\infty}\frac{4}{m\pi}\sin\frac{m\pi z}{2H}\,e^{-m^2\pi^2ct/4H^2}, \qquad u_y(y,t) = \frac{1}{K_v}\int_0^y\left(-P + \beta(p-p_b)\right)dy'$$
+$$p(z,t) - p_b = p_u\sum_{n=0}^{\infty}\frac{4}{m\pi}\sin\frac{m\pi z}{2H}\,e^{-m^2\pi^2ct/4H^2} \\
+ u_y(y,t) = \frac{1}{K_v}\int_0^y\left(-P + \beta(p-p_b)\right)dy'$$
 
 **Comparison.** Analytical (lines) and finite element (RAFT, markers) nodal solutions at several times. The 2D and 3D columns give the same errors.
 
