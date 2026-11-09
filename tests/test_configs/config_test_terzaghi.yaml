@@ -1,0 +1,63 @@
+mesh:
+  file: column2D_Q4.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      permeability: 1.0e-13     # m^2
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 0.0    # 1/K
+      viscosity: 1.0e-3       # Pa-s
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+
+boundary_conditions:
+  # load on the drained surface
+  - faces: [y_max]
+    mechanics:
+      type: traction
+      components: [y]
+      values: [-1.0e+6]
+    hydraulics:
+      type: pressure
+      values: [1.0e+6]
+  # lateral and basal confinement; no flow by default
+  - faces: [x_min, x_max, y_min]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+
+physics:
+  matrix:
+    flow: transient
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 20.0
+  timestep: 0.05
+  timestep_min: 0.05
+  timestep_max: 0.1
+  solver_type: operator_split
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

@@ -14,8 +14,10 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   (`initial_conditions.stress`) and a drained `poisson_ratio`. Mechanics
   boundary conditions (`mechanics` blocks) prescribe displacement (component
   lists, `fixed`, `roller`) or traction increments. `Matrix.vtk` gains
-  displacement and stress. Coupling to flow and heat, and fractures, are not
-  yet supported with mechanics on.
+  displacement and stress. Fractures and heat are not yet supported with
+  mechanics on.
+- **Poroelastic coupling** — with `flow` and `mechanics` on, displacement and
+  pressure are solved monolithically with Biot's storage and strain coupling.
 
 ### Fixed
 

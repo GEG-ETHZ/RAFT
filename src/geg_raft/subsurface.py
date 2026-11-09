@@ -36,10 +36,11 @@ from .dofmap import field_layouts
 from .history import History
 from .logging_utils import RunLogger
 from .matprops import get_EOS
+from .mechanicsdata import MechanicsMatrices
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
-from .solidmechanics import MechanicsMatrices, insitu_stress, integrate_mechanics_matrices
+from .solidmechanics import insitu_stress, integrate_mechanics_matrices
 from .solvers import monolithic_time_integration, operator_split_time_integration
 
 
@@ -902,9 +903,7 @@ def advance(  # noqa
         if write_steps:
             if verbose:
                 print("     Postprocessing...")
-            postprocessing(
-                n_step, mesh, controls, material, BC_config, primary_variables, t_solved, dt_step, verbose
-            )
+            postprocessing(n_step, mesh, controls, material, BC_config, primary_variables, t_solved, verbose)
 
         if t_solved >= t_target:
             dt_hist = [dt[0], *dt_step]  # dt[0] is the unclamped proposal
@@ -986,10 +985,12 @@ def initialize_simulation(
         verbose,
     )
 
+    primary_variables["T_flow"] = primary_variables["T"][:, 0].copy()
+
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, dt, verbose)
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
 
     # Constant force-balance matrices, integrated once
     mechanics = MechanicsMatrices.empty()

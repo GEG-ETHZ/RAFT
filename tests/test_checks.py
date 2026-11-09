@@ -23,9 +23,11 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import brentq
 
 from geg_raft.preprocessing import load_config, preprocessing
 from geg_raft.solidmechanics import insitu_stress, nodal_stress
+from geg_raft.subsurface import advance, initialize_simulation
 
 
 def _bc_value(config: dict[str, Any], field: str, bc_type: str, index: int) -> float:
@@ -1160,5 +1162,207 @@ def check_lame_cylinder(
     err_ex = np.linalg.norm(u[:, 0] - _u_exact(r)) / np.linalg.norm(_u_exact(r))
 
     test_pass = bool(err_ex < tol and np.max(np.abs(u[:, 1])) < 1e-12)
+
+    return test_pass
+
+
+# Output times of the consolidation checks
+TERZAGHI_TIMES = [0.5, 2.0, 8.0, 20.0]
+MANDEL_TIMES = [0.05, 0.5, 2.0, 8.0, 20.0]
+
+
+def run_at_times(
+    config_name: str, config_dir: Path, times: list[float]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run a config, returning the primary variables at each of `times` and the mesh."""
+    config, mesh = preprocessing(config_name, config_dir, verbose=False)
+    config["simulation"].update(config_name=config["config_name"], config_dir=config["config_dir"])
+    setup, state = initialize_simulation(config, mesh, config["simulation"]["t_start"], False)
+    results = []
+    for t in times:
+        state, _ = advance(setup, state, t, False)
+        results.append({key: state.primary_variables[key].copy() for key in ("u", "p")})
+    return results, mesh
+
+
+def _poroelastic_constants(config: dict[str, Any]) -> dict[str, float]:
+    """Biot constants of a homogeneous config."""
+    solid = config["material"]["solid"]
+    fluid = config["material"]["fluid"]
+    K_d, G = _elastic_moduli(config)
+    biot = solid["biot_coeff"]
+    nu = solid["poisson_ratio"]
+    M = 1.0 / (solid["porosity"] / fluid["bulk_mod"] + (biot - solid["porosity"]) / solid["bulk_mod"])
+    K_v = K_d + 4.0 * G / 3.0  # constrained modulus
+    K_u = K_d + biot**2 * M  # undrained bulk modulus
+    return {
+        "biot": biot,
+        "G": G,
+        "nu": nu,
+        "nu_u": (3.0 * K_u - 2.0 * G) / (2.0 * (3.0 * K_u + G)),
+        "K_v": K_v,
+        "B": biot * M / K_u,  # Skempton coefficient
+        "S": 1.0 / M + biot**2 / K_v,  # uniaxial storage
+        "c": solid["permeability"] / fluid["viscosity"] / (1.0 / M + biot**2 / K_v),  # consolidation
+    }
+
+
+def check_terzaghi(
+    config_name: str,
+    config_dir: Path,
+    results: list[dict[str, Any]],
+    mesh: dict[str, Any],
+    times: list[float],
+    dimension: int,
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """One-dimensional consolidation under a step load: excess pressure and displacement profiles."""
+    # Set tolerance
+    tol = 2.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    constants = _poroelastic_constants(config)
+    biot, K_v, c = constants["biot"], constants["K_v"], constants["c"]
+
+    nodes = mesh["nodes"]
+    nsd = mesh["nsd"]
+    y = nodes[:, dimension]
+    H = y.max()
+    P = -_bc_value(config, "mechanics", "traction", 0)
+    p_bc = _bc_value(config, "hydraulics", "pressure", 0)
+    p_undrained = biot / (K_v * constants["S"]) * P
+
+    # define exact solution
+    m = 2.0 * np.arange(200) + 1.0
+
+    def _p_exact(y: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
+        modes = 4.0 / (m * np.pi) * np.exp(-(m**2) * np.pi**2 * c * t / (4.0 * H**2))
+        p_e: npt.NDArray[np.float64] = p_undrained * (np.sin(np.outer(H - y, m) * np.pi / (2.0 * H)) @ modes)
+        return p_e
+
+    def _u_exact(y: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
+        # uniaxial strain (-P + biot p) / K_v, integrated from the fixed base
+        modes = 4.0 / (m * np.pi) * np.exp(-(m**2) * np.pi**2 * c * t / (4.0 * H**2)) * 2.0 * H / (m * np.pi)
+        p_integral = p_undrained * (np.cos(np.outer(H - y, m) * np.pi / (2.0 * H)) @ modes)
+        u_e: npt.NDArray[np.float64] = (-P * y + biot * p_integral) / K_v
+        return u_e
+
+    if plot_on:
+        fig_p, ax_p = plt.subplots()
+        fig_u, ax_u = plt.subplots()
+
+    err_ex = 0.0
+    y_plot = np.linspace(0.0, H, 200)
+    order = np.argsort(y)
+    for t, result in zip(times, results, strict=True):
+        p = result["p"][:, 0] - p_bc
+        u = result["u"][:, 0].reshape(-1, nsd)[:, dimension]
+
+        # calculate error
+        err_p = np.linalg.norm(p - _p_exact(y, t)) / np.linalg.norm(_p_exact(y, t))
+        err_u = np.linalg.norm(u - _u_exact(y, t)) / np.linalg.norm(_u_exact(y, t))
+        err_ex = max(err_ex, float(err_p), float(err_u))
+
+        if plot_on:
+            label = f"t = {t:g} s"
+            line = ax_p.plot(_p_exact(y_plot, t) / P, y_plot / H, "-", label=label)[0]
+            ax_p.plot(p[order] / P, y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
+            line = ax_u.plot(_u_exact(y_plot, t) * K_v / (P * H), y_plot / H, "-", label=label)[0]
+            ax_u.plot(u[order] * K_v / (P * H), y[order] / H, "o", color=line.get_color(), mfc="none", ms=3)
+
+    if plot_on:
+        ax_p.set_xlabel("(p - p_b) / P")
+        ax_p.set_ylabel("y / H")
+        ax_p.set_title(test_name)
+        ax_p.legend()
+        ax_u.set_xlabel("u K_v / (P H)")
+        ax_u.set_ylabel("y / H")
+        ax_u.set_title(test_name)
+        ax_u.legend()
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_mandel(
+    config_name: str,
+    config_dir: Path,
+    results: list[dict[str, Any]],
+    mesh: dict[str, Any],
+    times: list[float],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Mandel's problem: pressure across the strip, with the Mandel-Cryer rise at the centre."""
+    # Set tolerance
+    tol = 3.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    constants = _poroelastic_constants(config)
+    nu, nu_u, c = constants["nu"], constants["nu_u"], constants["c"]
+
+    x = mesh["nodes"][:, 0]
+    a = x.max()
+    p_bc = _bc_value(config, "hydraulics", "pressure", 0)
+    q = 1.0e6  # mean plate load behind the displacement table in the config
+    p_undrained = constants["B"] * (1.0 + nu_u) * q / 3.0
+
+    # roots of tan(alpha) = (1 - nu) / (nu_u - nu) alpha
+    C = (1.0 - nu) / (nu_u - nu)
+
+    def _root_equation(alpha: float) -> float:
+        return float(np.tan(alpha) - C * alpha)
+
+    alpha = np.array(
+        [brentq(_root_equation, 1.0e-9, np.pi / 2.0 - 1.0e-12)]
+        + [brentq(_root_equation, n * np.pi + 1.0e-9, (n + 0.5) * np.pi - 1.0e-12) for n in range(1, 300)]
+    )
+    A = np.sin(alpha) / (alpha - np.sin(alpha) * np.cos(alpha))
+
+    # define exact solution
+    def _p_exact(x: npt.NDArray[np.float64], t: float) -> npt.NDArray[np.float64]:
+        modes = A * np.exp(-(alpha**2) * c * t / a**2)
+        p_e: npt.NDArray[np.float64] = (
+            2.0 * p_undrained * ((np.cos(np.outer(x, alpha) / a) - np.cos(alpha)) @ modes)
+        )
+        return p_e
+
+    if plot_on:
+        plt.figure()
+
+    err_ex = 0.0
+    x_plot = np.linspace(0.0, a, 200)
+    centre = np.nonzero(x == 0.0)[0]
+    p_centre = []
+    monotone = True
+    base = np.nonzero(mesh["nodes"][:, 1] == 0.0)[0]
+    base = base[np.argsort(x[base])]
+    for t, result in zip(times, results, strict=True):
+        p = result["p"][:, 0] - p_bc
+
+        # calculate error
+        err_ex = max(err_ex, float(np.linalg.norm(p - _p_exact(x, t)) / np.linalg.norm(_p_exact(x, t))))
+        p_centre.append(np.mean(p[centre]) / p_undrained)
+
+        # no oscillation: the pressure falls steadily from its peak to the drained edge
+        peak = int(np.argmax(p[base]))
+        monotone = monotone and bool(np.all(np.diff(p[base][peak:]) <= 0.0))
+
+        if plot_on:
+            line = plt.plot(x_plot / a, _p_exact(x_plot, t) / p_undrained, "-", label=f"t = {t:g} s")[0]
+            plt.plot(x / a, p / p_undrained, "o", color=line.get_color(), mfc="none", ms=3)
+
+    if plot_on:
+        plt.xlabel("x / a")
+        plt.ylabel("(p - p_b) / p_undrained")
+        plt.title(test_name)
+        plt.legend()
+
+    # Mandel-Cryer effect: the centre pressure first rises above its undrained value
+    test_pass = bool(err_ex < tol and max(p_centre) > 1.0 and monotone)
 
     return test_pass

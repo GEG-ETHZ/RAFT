@@ -477,5 +477,50 @@ def test_lame_cylinder() -> None:
     assert test_pass
 
 
+def test_terzaghi() -> None:
+    """Check one-dimensional consolidation in 2D with Q4 elements, split solver."""
+    case_dir = _test_data_dir()
+    test_name = "Terzaghi Consolidation"
+    config_filename = "config_test_terzaghi.yaml"
+    times = test_checks.TERZAGHI_TIMES
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, times)
+
+    dimension = 1
+    plot_on = False
+    test_pass = test_checks.check_terzaghi(
+        config_filename, case_dir, results, mesh, times, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_terzaghi_3D() -> None:
+    """Check one-dimensional consolidation of a 3D column with B8 elements."""
+    case_dir = _test_data_dir()
+    test_name = "Terzaghi Consolidation - 3D"
+    config_filename = "config_test_terzaghi_3D.yaml"
+    times = test_checks.TERZAGHI_TIMES
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, times)
+
+    dimension = 2
+    plot_on = False
+    test_pass = test_checks.check_terzaghi(
+        config_filename, case_dir, results, mesh, times, dimension, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_mandel() -> None:
+    """Check Mandel's problem with the monolithic solver: Mandel-Cryer effect and no oscillation."""
+    case_dir = _test_data_dir()
+    test_name = "Mandel's Problem"
+    config_filename = "config_test_mandel.yaml"
+    times = test_checks.MANDEL_TIMES
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, times)
+
+    plot_on = False
+    test_pass = test_checks.check_mandel(config_filename, case_dir, results, mesh, times, test_name, plot_on)
+    assert test_pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))

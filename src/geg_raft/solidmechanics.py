@@ -22,21 +22,24 @@ Shear strains are engineering strains; shear stresses are tensor components.
 """
 
 import bisect
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from scipy.sparse import csc_matrix
+from scipy.sparse import csc_matrix, diags
 
 from .dofmap import get_scatter
 from .matrixassembly import (
+    RegionMeshData,
     _assemble_global_matrices,
     _get_quad_points_and_shape_functions,
     _get_region_mesh_data,
     _get_region_value,
+    _lumped_mass,
     _pad_sparse,
+    _vctrzd_quad_point_integration,
 )
+from .mechanicsdata import MechanicsMatrices
 from .shapefunctions import getB
 
 # Stress component names in Voigt order, for output
@@ -45,23 +48,6 @@ STRESS_NAMES = {
     (2, True): ("rr", "zz", "rz", "tt"),
     (3, False): ("xx", "yy", "zz", "xz", "yz", "xy"),
 }
-
-
-@dataclass(frozen=True, slots=True)
-class MechanicsMatrices:
-    """Constant force-balance matrices, integrated once per run.
-
-    R_u = K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_ext.
-    """
-
-    K_uu: csc_matrix  # (nsd*nn, nsd*nn)
-    K_up: csc_matrix  # (nsd*nn, nn_total)
-    K_uT: csc_matrix  # (nsd*nn, nn_total)
-
-    @classmethod
-    def empty(cls) -> "MechanicsMatrices":
-        """Placeholder when mechanics is off."""
-        return cls(csc_matrix((0, 0)), csc_matrix((0, 0)), csc_matrix((0, 0)))
 
 
 def identity_voigt(nsd: int, axisymmetric: bool) -> npt.NDArray[np.float64]:
@@ -136,10 +122,31 @@ def _region_elastic_data(material: dict[str, Any], r: int) -> tuple[float, float
     return E, nu, biot, thermal
 
 
+def _nodal_strain_operator(
+    mesh_data: RegionMeshData,
+    r: int,
+    strain_entries: list[npt.NDArray[np.float64]],
+    lumped_mass: npt.NDArray[np.float64],
+) -> csc_matrix:
+    """Lumped L2 projection of the volumetric strain in one region: M_lump^-1 int N m^T B, (nn, nsd*nn)."""
+    integral = _assemble_global_matrices(
+        {"G": np.concatenate(strain_entries)},
+        mesh_data.conn,
+        mesh_data.nn,
+        mesh_data.nne_list,
+        mesh_data.elem_indx,
+        np.asarray(mesh_data.region_lists[r], dtype=np.int32),
+        col_ndof=mesh_data.nsd,
+    )["G"]
+    # nodes outside the region have no mass and no strain
+    inverse_mass = np.divide(1.0, lumped_mass, out=np.zeros_like(lumped_mass), where=lumped_mass > 0.0)
+    return csc_matrix(diags(inverse_mass) @ integral)
+
+
 def integrate_mechanics_matrices(
     mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any]
 ) -> MechanicsMatrices:
-    """Integrate the constant force-balance matrices K_uu, K_up and K_uT over the matrix."""
+    """Integrate the constant force-balance matrices and the nodal strain operators over the matrix."""
     mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
     nsd = mesh_data.nsd
     axisymmetric = bool(controls["axisymmetric_on"])
@@ -148,17 +155,20 @@ def integrate_mechanics_matrices(
 
     # element matrices, raveled in element order
     entries: dict[str, list[npt.NDArray[np.float64]]] = {"K_uu": [], "K_up": [], "K_uT": []}
+    nodal_strain: list[csc_matrix] = []
 
     for r in range(mesh_data.num_regions):
         E, nu, biot, thermal = _region_elastic_data(material, r)
         D = elasticity_matrix(E, nu, nsd, plane, axisymmetric)
+        strain_entries: list[npt.NDArray[np.float64]] = []
+        lumped_mass = np.zeros(mesh_data.nn)
 
         elem_type_counter = -1  # force an update on the first element
         for e in mesh_data.region_lists[r]:
             # quadrature and shape functions per element type
             new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
             if new_type_idx != elem_type_counter:
-                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                W, _, N_q, GN_q = _get_quad_points_and_shape_functions(
                     mesh_data.nq_list[new_type_idx], nsd, mesh_data.etype_list[new_type_idx]
                 )
                 elem_type_counter = new_type_idx
@@ -168,12 +178,16 @@ def integrate_mechanics_matrices(
             wJ = W * detJe_q  # weight * det(J) (* r)
 
             # K_uu = int B^T D B
-            BtD = np.einsum("qvi,vw->qiw", B_u, D)
-            entries["K_uu"].append(np.einsum("qiw,qwj,q->ij", BtD, B_u, wJ).ravel())
+            entries["K_uu"].append(_vctrzd_quad_point_integration(B_u, D, B_u, wJ, False).ravel())
             # K_up, K_uT = -int B^T m N (scaled by Biot and K_d alpha_s)
-            BtmN = np.einsum("qvi,v,qj,q->ij", B_u, m, N_q.reshape(nq, -1), wJ)
+            BtmN = _vctrzd_quad_point_integration(B_u, m.reshape(-1, 1), N_q, wJ, False)
             entries["K_up"].append((-biot * BtmN).ravel())
             entries["K_uT"].append((-thermal * BtmN).ravel())
+            # int N m^T B and int N, for the region's nodal strain
+            strain_entries.append(BtmN.T.ravel())
+            np.add.at(lumped_mass, mesh_data.conn[e], _lumped_mass(N_q, wJ))
+
+        nodal_strain.append(_nodal_strain_operator(mesh_data, r, strain_entries, lumped_mass))
 
     # assemble over node-interleaved displacement DoFs
     elem_order = np.concatenate(mesh_data.region_lists).astype(np.int32)
@@ -187,7 +201,9 @@ def integrate_mechanics_matrices(
 
     # p and T live on all nodes; pad the coupling columns to nn_total
     shape = (nsd * mesh_data.nn, mesh["nn_total"])
-    return MechanicsMatrices(K_uu, _pad_sparse(coupling["K_up"], shape), _pad_sparse(coupling["K_uT"], shape))
+    return MechanicsMatrices(
+        K_uu, _pad_sparse(coupling["K_up"], shape), _pad_sparse(coupling["K_uT"], shape), tuple(nodal_strain)
+    )
 
 
 def internal_force(
@@ -227,6 +243,30 @@ def insitu_stress(
         key = "S" + keys.get(name, name)
         sigma_0[:, i] = values.get(key, 0.0) + gradient.get(key, 0.0) * s
     return sigma_0
+
+
+def element_volumetric_strain(
+    mesh: dict[str, Any], controls: dict[str, Any], primary_variables: dict[str, Any]
+) -> npt.NDArray[np.float64]:
+    """Element-mean volumetric strain (ne,) of the current iterate."""
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
+    nsd = mesh_data.nsd
+    axisymmetric = bool(controls["axisymmetric_on"])
+    m = identity_voigt(nsd, axisymmetric)
+    u = primary_variables["u"][:, 0]
+
+    strain = np.zeros(mesh["ne"])
+    elem_type_counter = -1  # force an update on the first element
+    for e, enodes in enumerate(mesh_data.conn):
+        new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
+        if new_type_idx != elem_type_counter:
+            _, _, N_q, GN_q = _get_quad_points_and_shape_functions(
+                mesh_data.nq_list[new_type_idx], nsd, mesh_data.etype_list[new_type_idx]
+            )
+            elem_type_counter = new_type_idx
+        B_u, _ = strain_displacement(GN_q, N_q, mesh["nodes"][enodes, :], nsd, axisymmetric)
+        strain[e] = np.mean((B_u @ u[get_scatter(enodes, nsd)]) @ m)
+    return strain
 
 
 def nodal_stress(

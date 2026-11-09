@@ -12,6 +12,8 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Buoyancy](#buoyancy)
 - [Wellbore Heat Exchange](#wellbore-heat-exchange)
 - [Thick-Walled Cylinder (Lamé)](#thick-walled-cylinder-lamé)
+- [Terzaghi Consolidation](#terzaghi-consolidation)
+- [Mandel's Problem](#mandels-problem)
 
 ## Heterogeneous Conduction and Flow
 
@@ -224,3 +226,50 @@ _Thick-Walled Cylinder (Lamé): radial displacement_
 **Error metric.** Relative $L_2$ error of the nodal radial displacement (about $10^{-3}$ on this mesh, converging at second order under refinement), with $u_z = 0$:
 
 $$e = \frac{\lVert u_r^{ex}-u_r \rVert_2}{\lVert u_r^{ex} \rVert_2} < 5\times10^{-3}$$
+
+## Terzaghi Consolidation
+
+**Test:** `test_terzaghi` (2D Q4), `test_terzaghi_3D` (3D B8)
+
+**Setup.** A column of height $H = 10$ m with a step load $P$ on its drained top surface at $t = 0$. The base and sides are impermeable rollers.
+
+**Assumptions.** Uniaxial strain and flow, linear poroelasticity, small strain, no gravity.
+
+**Analytical solution.** With the constrained modulus $K_v = K_d + \tfrac{4}{3}G$, storage $S = \tfrac{1}{M} + \tfrac{\beta^2}{K_v}$ and consolidation coefficient $c = \tfrac{k}{\mu S}$, the load is first carried by the undrained pressure $p_u = \tfrac{\beta}{K_v S}P$, which then dissipates. With $z = H - y$ and $m = 2n + 1$,
+
+$$p(z,t) - p_b = p_u\sum_{n=0}^{\infty}\frac{4}{m\pi}\sin\frac{m\pi z}{2H}\,e^{-m^2\pi^2ct/4H^2}, \qquad u_y(y,t) = \frac{1}{K_v}\int_0^y\left(-P + \beta(p-p_b)\right)dy'$$
+
+**Comparison.** Analytical (lines) and finite element (RAFT, markers) nodal solutions at several times. The 2D and 3D columns give the same errors.
+
+![Terzaghi Consolidation — Pressure](figures/verification/terzaghi_p.png)
+_Terzaghi Consolidation: excess pressure_
+
+![Terzaghi Consolidation — Displacement](figures/verification/terzaghi_u.png)
+_Terzaghi Consolidation: displacement_
+
+**Error metric.** Relative $L_2$ error of the nodal pressure and displacement at each time:
+
+$$e = \frac{\lVert x^{ex}-x \rVert_2}{\lVert x^{ex} \rVert_2} < 2\times10^{-2}$$
+
+## Mandel's Problem
+
+**Test:** `test_mandel`
+
+**Setup.** A strip $0 \le x \le a$, $0 \le y \le b$ ($a = 10$ m, $b = 2$ m), with symmetry on $x = 0$ and $y = 0$, a drained free edge at $x = a$, and a smooth, rigid, impermeable plate on $y = b$ carrying a mean load $q$. RAFT has no rigid constraint, so the plate is imposed through its analytical displacement over time, leaving the pressure and lateral displacement free.
+
+**Assumptions.** Plane strain, linear poroelasticity, small strain, no gravity.
+
+**Analytical solution.** With $\alpha_n$ the roots of $\tan\alpha = \frac{1-\nu}{\nu_u-\nu}\alpha$, undrained Poisson ratio $\nu_u$, Skempton coefficient $B$ and $p_u = \tfrac{1}{3}B(1+\nu_u)q$,
+
+$$p(x,t) - p_b = 2p_u\sum_{n=1}^{\infty}\frac{\sin\alpha_n}{\alpha_n-\sin\alpha_n\cos\alpha_n}\left(\cos\frac{\alpha_n x}{a}-\cos\alpha_n\right)e^{-\alpha_n^2ct/a^2}$$
+
+The centre pressure first rises above $p_u$ (the Mandel–Cryer effect), which an uncoupled diffusion equation cannot reproduce.
+
+**Comparison.** Analytical (lines) and finite element (RAFT, markers) nodal solutions at several times.
+
+![Mandel's Problem — Pressure](figures/verification/mandel_p.png)
+_Mandel's Problem: excess pressure_
+
+**Error metric.** Relative $L_2$ error of the nodal pressure at each time, the centre pressure exceeding $p_u$, and the pressure falling monotonically from its peak to the drained edge (no oscillation at early time):
+
+$$e = \frac{\lVert p^{ex}-p \rVert_2}{\lVert p^{ex} \rVert_2} < 3\times10^{-2}$$

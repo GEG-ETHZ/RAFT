@@ -57,6 +57,34 @@ CASES = [
 ]  # fmt: skip
 
 
+def _save_open_figures(prefix: str, suffixes: list[str]) -> None:
+    """Save the open figures, one per suffix."""
+    for num, suffix in zip(plt.get_fignums(), suffixes, strict=True):
+        fig = plt.figure(num)
+        fig.set_size_inches(5.0, 3.75)
+        fig.tight_layout()
+        fig.savefig(OUT_DIR / f"{prefix}_{suffix}.png", dpi=150)
+
+
+def _consolidation_figures() -> None:
+    """Consolidation cases, compared at several times."""
+    plt.close("all")
+    config = "config_test_terzaghi.yaml"
+    results, mesh = test_checks.run_at_times(config, CASE_DIR, test_checks.TERZAGHI_TIMES)
+    test_checks.check_terzaghi(
+        config, CASE_DIR, results, mesh, test_checks.TERZAGHI_TIMES, 1, "Terzaghi Consolidation", True
+    )
+    _save_open_figures("terzaghi", ["p", "u"])
+
+    plt.close("all")
+    config = "config_test_mandel.yaml"
+    results, mesh = test_checks.run_at_times(config, CASE_DIR, test_checks.MANDEL_TIMES)
+    test_checks.check_mandel(
+        config, CASE_DIR, results, mesh, test_checks.MANDEL_TIMES, "Mandel's Problem", True
+    )
+    _save_open_figures("mandel", ["p"])
+
+
 def main_figures() -> None:
     """Run each case with plotting on and save its figures."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,11 +92,8 @@ def main_figures() -> None:
         plt.close("all")
         results, mesh = main(config_name=config, config_dir=CASE_DIR, verbosity="quiet")
         check(config, CASE_DIR, results, mesh, test_name, True)
-        for num, suffix in zip(plt.get_fignums(), suffixes, strict=True):
-            fig = plt.figure(num)
-            fig.set_size_inches(5.0, 3.75)
-            fig.tight_layout()
-            fig.savefig(OUT_DIR / f"{prefix}_{suffix}.png", dpi=150)
+        _save_open_figures(prefix, suffixes)
+    _consolidation_figures()
 
 
 if __name__ == "__main__":

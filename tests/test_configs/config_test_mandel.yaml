@@ -1,0 +1,68 @@
+mesh:
+  file: mandel2D_Q4.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      permeability: 1.0e-13     # m^2
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 0.0    # 1/K
+      viscosity: 1.0e-3       # Pa-s
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+
+boundary_conditions:
+  # symmetry planes
+  - faces: [x_min, y_min]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+  # drained free edge
+  - faces: [x_max]
+    hydraulics:
+      type: pressure
+      values: [1.0e+6]
+  # smooth rigid plate under a 1 MPa mean load: the analytical plate displacement over time
+  - faces: [y_max]
+    mechanics:
+      type: displacement
+      components: [y]
+      function: table
+      values:
+        - [0, 0.05, 0.0599685, 0.0719245, 0.0862641, 0.103463, 0.12409, 0.14883, 0.178502, 0.21409, 0.256774, 0.307967, 0.369366, 0.443007, 0.5, 0.531329, 0.637261, 0.764312, 0.916693, 1.09945, 1.31865, 1.58155, 1.89687, 2, 2.27505, 2.72863, 3.27263, 3.9251, 4.70765, 5.64622, 6.77191, 8, 8.12202, 9.74132, 11.6834, 14.0128, 16.8065, 20, 20.1572, 24.176, 28.996, 34.7769, 41.7104, 50.0262, 60]
+        - [-1.07754867e-04, -1.08325698e-04, -1.08380361e-04, -1.08440275e-04, -1.08505950e-04, -1.08577946e-04, -1.08656879e-04, -1.08743426e-04, -1.08838333e-04, -1.08942421e-04, -1.09056592e-04, -1.09181843e-04, -1.09319272e-04, -1.09470090e-04, -1.09578566e-04, -1.09635633e-04, -1.09817380e-04, -1.10016963e-04, -1.10236190e-04, -1.10477065e-04, -1.10741807e-04, -1.11032882e-04, -1.11353030e-04, -1.11452159e-04, -1.11705302e-04, -1.12093097e-04, -1.12520211e-04, -1.12990885e-04, -1.13509841e-04, -1.14082243e-04, -1.14713438e-04, -1.15347880e-04, -1.15408256e-04, -1.16169718e-04, -1.16997229e-04, -1.17884624e-04, -1.18818602e-04, -1.19736510e-04, -1.19778001e-04, -1.20734226e-04, -1.21653043e-04, -1.22497929e-04, -1.23234942e-04, -1.23838537e-04, -1.24296903e-04]
+
+physics:
+  matrix:
+    flow: transient
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 20.0
+  timestep: 0.05
+  timestep_min: 0.05
+  timestep_max: 0.2
+  solver_type: monolithic
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

@@ -422,7 +422,7 @@ physics:
 * **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
-* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`. Currently it requires `flow` and `heat` off and no fractures; poroelastic coupling and fracture contact are in development.
+* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`. With `flow` on, displacement and pressure are solved monolithically in one Newton system under either `solver_type`. Currently it requires `heat` off and no fractures; thermal stress and fracture contact are in development.
 
 An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
 

@@ -174,7 +174,6 @@ class RaftModel:
                 setup.BC_config,
                 primary_variables,
                 trial.t,
-                trial.dt_hist[1:4],
                 self.verbose,
             )
 
@@ -198,9 +197,7 @@ class RaftModel:
             raise ValueError("This model has no wells.")
         state = self._trial if self._trial_pending else self._accepted
         setup = self._setup
-        return well_profiles(
-            setup.mesh, setup.controls, setup.material, state.primary_variables, state.dt_hist[1:4]
-        )
+        return well_profiles(setup.mesh, setup.controls, setup.material, state.primary_variables)
 
     def _resume_log(self, run_logger: RunLogger) -> None:
         """Append this call's output to run.log, when logging is on."""

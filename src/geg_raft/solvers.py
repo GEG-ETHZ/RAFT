@@ -32,8 +32,9 @@ from .matrixassembly import (
     integrate_tangent_matrices,
     warn_nonmonotone_pressure_diffusion,
 )
+from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
-from .solidmechanics import MechanicsMatrices, internal_force
+from .solidmechanics import internal_force
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -108,7 +109,7 @@ def _apply_boundary_conditions(
     for key in ("u", "p", "T"):
         # Dirichlet DoFs and values
         fix = boundary_conditions[key + "_dirichlet"][:, 0].astype(int)
-        primary_variables[key][fix, :] = boundary_conditions[key + "_dirichlet"][:, 1:2]
+        primary_variables[key][fix, 0] = boundary_conditions[key + "_dirichlet"][:, 1]
         fixed_dofs[key] = np.union1d(fix, off[key])
         # Dirichlet DoFs with an assembled residual, for reaction fluxes and convergence scaling
         dirichlet_dofs[key] = np.setdiff1d(fix, off[key])
@@ -312,7 +313,6 @@ def _aitken_relax(
 
 
 # Placeholder when mechanics is off
-_NO_MECHANICS = MechanicsMatrices.empty()
 
 # Primary-variable keys and the physics field that solves them, in block order
 _FIELD_KEYS = (("u", "mechanics"), ("p", "flow"), ("T", "heat"))
@@ -432,6 +432,7 @@ def _newton_raphson_loop(  # noqa
                 T_flow,
                 physics=physics,
                 T_flow_lagged=T_flow_lagged,
+                mechanics=mechanics,
             )
         # Force balance from the stored linear matrices
         if solve_u:
@@ -473,6 +474,7 @@ def _newton_raphson_loop(  # noqa
                     T_flow,
                     physics=physics,
                     T_flow_lagged=T_flow_lagged,
+                    mechanics=mechanics,
                 )
 
             # Warnings for poor conditioning
@@ -484,6 +486,21 @@ def _newton_raphson_loop(  # noqa
                 # Mechanics only
                 A = mechanics.K_uu
                 b = R["u"]
+
+            elif solve_u and solve_p:
+                # Monolithic displacement and pressure
+                A = cast(
+                    sp.csc_matrix[Any],
+                    sp.bmat(
+                        [
+                            [mechanics.K_uu, mechanics.K_up],
+                            [jacobian["Kpu"], jacobian["Kpp"]],
+                        ],
+                        format="csc",
+                    ),
+                )
+
+                b = np.vstack((R["u"], R["p"]))
 
             elif solve_p and solve_T:
                 # Monolithic
@@ -622,9 +639,9 @@ def operator_split_time_integration(  # noqa
     debug_temperature_plot_on = False
     # extract vectors of nodal dofs
     T = primary_variables["T"]
+    u_orig = primary_variables["u"].copy()
     p_orig = primary_variables["p"].copy()
     T_orig = primary_variables["T"].copy()
-    T_dofs = primary_variables["T_dofs"]
     rate_order = controls["rate_order"]
     physics = controls["physics"]
 
@@ -635,16 +652,18 @@ def operator_split_time_integration(  # noqa
     fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
         boundary_conditions, primary_variables, mesh, physics
     )
-    nF_T = np.setdiff1d(T_dofs, fixed_dofs["T"]).astype(int)  # free temperature DoFs
 
-    # Extrapolate temperature for free Dofs
+    # Extrapolate temperature for free DoFs
     T_extrap = cx[0] * T[:, 1] + cx[1] * T[:, 2] + cx[2] * T[:, 3]
-    T[nF_T, 0] = T_extrap[nF_T]
+    T_fix = fixed_dofs["T"].astype(int)
+    T_extrap[T_fix] = T[T_fix, 0]
+    T[:, 0] = T_extrap
 
     # Frozen snapshot for flow-property evaluations: column 0 is the extrapolated/fixed
     # guess (kept constant through the temperature Newton loop, unlike T itself), columns
     # 1-3 are the real time history, needed as-is by the mass-storage rate terms.
     T_flow = T.copy()
+    primary_variables["T_flow"] = T_flow[:, 0].copy()  # for output
 
     # Update displacement and pressure with extrapolated temperature
     if physics.solves("flow") or physics.solves("mechanics"):
@@ -698,6 +717,7 @@ def operator_split_time_integration(  # noqa
         # Check for extrapolation timestep error
         converged, timestep_error = _check_convergence_extrap(primary_variables["T"], T_extrap, controls, n)
     else:
+        primary_variables["u"] = u_orig.copy()
         primary_variables["p"] = p_orig.copy()
         primary_variables["T"] = T_orig.copy()
         converged = False

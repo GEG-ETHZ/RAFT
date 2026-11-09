@@ -190,9 +190,9 @@ def _parse_physics(config: dict[str, Any], verbose: bool) -> Physics:
         )
 
     physics = Physics(**resolved)
-    # Coupled and fractured mechanics are not implemented yet
-    if physics.solves("mechanics") and (physics.solves("flow") or physics.solves("heat")):
-        raise NotImplementedError("physics.matrix.mechanics with flow or heat on is not implemented yet")
+    # Thermal stress is not implemented yet
+    if physics.solves("mechanics") and physics.solves("heat"):
+        raise NotImplementedError("physics.matrix.mechanics with heat on is not implemented yet")
     return physics
 
 

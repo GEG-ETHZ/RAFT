@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 from numba import njit  # type: ignore[import-untyped]
-from scipy.sparse import csc_matrix, hstack, vstack
+from scipy.sparse import csc_matrix, diags, hstack, vstack
 
 from .matprops import (
     EnthalpyResult,
@@ -40,6 +40,7 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
+from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
 from .shapefunctions import (
     GNMATRIX_FUNCS,
@@ -1513,10 +1514,12 @@ def _evaluate_nodal_porosity(
     no_solid: bool,
     T_flow_lagged: bool = False,
     volumetric_strain_on: bool = True,
+    strain: npt.NDArray[np.float64] = _EMPTY,
 ) -> PropertyResult:
     """Evaluate one region's Lagrangian porosity once per node.
 
-    For fractures/wells, "porosity" is the fracture aperture or well area.
+    For fractures/wells, "porosity" is the fracture aperture or well area. `strain` is the nodal
+    strain from the solved displacement, empty when mechanics is off.
     """
     if no_solid:
         # Fracture/well case: phi is replaced by aperture/area, a fixed property pending geomechanics.
@@ -1532,6 +1535,7 @@ def _evaluate_nodal_porosity(
         solid.alpha_s,
         T_flow_lagged,
         volumetric_strain_on,
+        strain,
     )
 
 
@@ -2760,6 +2764,7 @@ def integrate_residuals(  # noqa
     is_well: bool = False,
     physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
     p = primary_variables["p"]
@@ -2781,6 +2786,7 @@ def integrate_residuals(  # noqa
     thermal_coupling = solve_T or physics.matrix.solve_heat
     coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
+    mechanics_on = physics.matrix.solve_mechanics and not on_submesh  # solved strain, matrix pass only
     steady_pres = float(domain.steady_flow)
     steady_temp = float(domain.steady_heat)
 
@@ -2846,6 +2852,7 @@ def integrate_residuals(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        strain = mechanics.nodal_strain[r] @ primary_variables["u"] if mechanics_on else _EMPTY
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -2857,6 +2864,7 @@ def integrate_residuals(  # noqa
             no_solid=on_submesh,
             T_flow_lagged=T_flow_lagged,
             volumetric_strain_on=volumetric_strain_on,
+            strain=strain,
         )
         nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
@@ -3151,6 +3159,7 @@ def integrate_tangent_matrices(  # noqa
     is_well: bool = False,
     physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> dict[str, Any]:
     """Integrate tangent matrices.
 
@@ -3188,6 +3197,7 @@ def integrate_tangent_matrices(  # noqa
     list_of_matrices = ["Kpp"]
     if physics.solves("heat"):
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
+    mechanics_on = physics.matrix.solve_mechanics and not on_submesh  # solved strain, matrix pass only
     # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
     mesh_data = _get_region_mesh_data(mesh, is_fracture=is_fracture, is_well=is_well)
 
@@ -3317,6 +3327,7 @@ def integrate_tangent_matrices(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
+        strain = mechanics.nodal_strain[r] @ primary_variables["u"][:, 0:1] if mechanics_on else _EMPTY
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -3328,6 +3339,7 @@ def integrate_tangent_matrices(  # noqa
             no_solid=on_submesh,
             T_flow_lagged=T_flow_lagged,
             volumetric_strain_on=volumetric_strain_on,
+            strain=strain,
         )
         nodal_state = _stack_nodal_state(nodal_phi_L, nodal_fluid)
 
@@ -3728,6 +3740,14 @@ def integrate_tangent_matrices(  # noqa
         nn_f = mesh["fracture_mesh"]["nn"] if fracture_on else 0
         integrated_matrices = _stack_well_matrices(
             integrated_matrices, integrated_well_matrices, mesh_data.nn, nn_f, mesh["well_mesh"]["nn"]
+        )
+
+    # Mass balance wrt displacement: p rows on all nodes, u columns on matrix nodes
+    if mechanics_on and solve_p:
+        rho_nodes = nodal_fluid.rho_f.value[:, 0]
+        Kpu = -(1 - steady_pres) * cv[0] * diags(rho_nodes) @ mechanics.K_up.T[: mesh_data.nn, :]
+        integrated_matrices["Kpu"] = _pad_sparse(
+            csc_matrix(Kpu), (mesh["nn_total"], mesh_data.nsd * mesh_data.nn)
         )
 
     return integrated_matrices
