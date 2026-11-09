@@ -2830,12 +2830,13 @@ def integrate_residuals(  # noqa
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
             "stress_init": _get_region_value(material["solid"]["stress_init"], r),
         }
-        aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
-        if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:
-            raise ValueError("Both material.solid.a_BB and material.solid.b_BB must be configured together")
-        if aperture_keys:
+        if "b_BB" in material["solid"] and "stress_init" not in material["solid"]:
+            raise ValueError(
+                "Both material.solid.stress_init and material.solid.b_BB must be configured together"
+            )
+        if "b_BB" in material["solid"]:
             solid_r.update(
-                a_BB=_get_region_value(material["solid"]["a_BB"], r),
+                stress_init=_get_region_value(material["solid"]["stress_init"], r),
                 b_BB=_get_region_value(material["solid"]["b_BB"], r),
             )
 
@@ -3318,12 +3319,13 @@ def integrate_tangent_matrices(  # noqa
             "therm_expansion": _get_region_value(material["solid"]["therm_expansion"], r),
             "stress_init": _get_region_value(material["solid"]["stress_init"], r),
         }
-        aperture_keys = {"a_BB", "b_BB"} & material["solid"].keys()
-        if aperture_keys and aperture_keys != {"a_BB", "b_BB"}:
-            raise ValueError("Both material.solid.a_BB and material.solid.b_BB must be configured together")
-        if aperture_keys:
+        if "b_BB" in material["solid"] and "stress_init" not in material["solid"]:
+            raise ValueError(
+                "Both material.solid.stress_init and material.solid.b_BB must be configured together"
+            )
+        if "b_BB" in material["solid"]:
             solid_r.update(
-                a_BB=_get_region_value(material["solid"]["a_BB"], r),
+                stress_init=_get_region_value(material["solid"]["stress_init"], r),
                 b_BB=_get_region_value(material["solid"]["b_BB"], r),
             )
         # Porosity depends on region solid properties, so nodes shared across regions differ

@@ -4,6 +4,7 @@ mesh:
   domain:  # outer boundary, used by scripts/raft_to_geo.py
         shape: "box"
         values: [[-51, -50], [102, 75]]
+  # removing discrete fractures to better see re-alignment of flow field
   sizing:  # element sizes, used by scripts/raft_to_geo.py
       outer: 20
       frac: [[1, 1, 2], [1, 5, 20]]
@@ -19,6 +20,7 @@ mesh:
       - shape: "polyhedron"
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 2
+  # removing discrete fractures to better see re-alignment of flow field
   fractures:
          - values: [[27, 53], [20], [20]]
          - values: [[45.5, 41], [22], [130]]
@@ -39,7 +41,6 @@ material:
       rotation_x: [0.0, 40.0, 0.0]  # rotation of local coordinates around x-axis (degrees)
       rotation_y: [30.0, 0.0, 0.0] # rotation of local coordinates around y-axis (degrees)
       rotation_z: [0.0, 0.0, 0.0]  # rotation of local coordinates around z-axis (degrees)
-      a_BB: [3.7e-11, 3.7e-11, 3.7e-11]  # m/Pa
       b_BB: [3.16e-7, 3.16e-7, 3.16e-7]  # 1/Pa
       stress_init: [32.0e+6, 32.0e+6, 32.0e+6]  # Pa
 
@@ -55,9 +56,9 @@ material:
       therm_cond: 0.6         # W/mK
       viscosity: -1           # Pa-s - Options: >0 -> constant value; = 0 -> pressure and temperature dependent fluid_type lookup; = -1 -> temperature dependent only (calibrated for water only)
 
+  # removing discrete fractures to better see re-alignment of flow field
   # Fracture parameters
   fracture:
-    # aperture: [1.0e-4, 1.0e-4, 1.1e-4]
     aperture: [1.0e-6, 1.0e-6, 1.1e-6]
     heat_transfer_factor: [1, 1, 1]
 

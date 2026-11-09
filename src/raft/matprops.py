@@ -627,6 +627,19 @@ def get_enthalpy(
     return EnthalpyResult(hf, dhf_dp, dhf_dT, cp)
 
 
+def _reference_permeability(kf_0: npt.NDArray[np.float64]) -> float | npt.NDArray[np.float64]:
+    """Return the scalar cubic-law reference for isotropic or anisotropic permeability."""
+    if kf_0.ndim == 0:
+        reference = kf_0
+    elif kf_0.ndim == 1:
+        reference = np.exp(np.mean(np.log(kf_0)))
+    else:
+        reference = np.linalg.det(kf_0) ** (1.0 / kf_0.shape[-1])
+    if not np.isfinite(reference) or reference <= 0.0:
+        raise FloatingPointError("Reference permeability must be finite and positive")
+    return reference
+
+
 def get_effective_permeability(
     kf: npt.NDArray[np.float64] | float,
     T: npt.NDArray[np.float64],
@@ -639,18 +652,16 @@ def get_effective_permeability(
     """Get pressure- and temperature-dependent effective permeability."""
     kf_0 = np.asarray(kf, dtype=np.float64)
 
-    has_a_BB = "a_BB" in solid
     has_b_BB = "b_BB" in solid
-    if not has_a_BB and not has_b_BB:
+    if not has_b_BB:
         return PropertyResult(kf_0, _const_array(0.0, T.shape), _const_array(0.0, T.shape))
-    if has_a_BB != has_b_BB:
-        raise ValueError("Both solid.a_BB and solid.b_BB must be configured together")
+    if "stress_init" not in solid:
+        raise ValueError("Both solid.stress_init and solid.b_BB must be configured together")
 
     stress_init = solid["stress_init"]
     biot_coeff = solid["biot_coeff"]
     drained_bulk_mod = (1 - biot_coeff) * solid["bulk_mod"]
     vol_therm_expansion = solid["therm_expansion"]
-    A = solid["a_BB"]
     B = solid["b_BB"]
 
     # effective stress and aperture calculations
@@ -667,24 +678,33 @@ def get_effective_permeability(
             f"minimum effective stress={np.min(stress_eff):.6e} Pa"
         )
 
-    aperture = A / (B * denominator)
+    # Use one scalar reference permeability for the cubic-law aperture. For
+    # anisotropic tensors, preserve directional ratios separately below.
+    reference_permeability = _reference_permeability(kf_0)
 
-    denominator_init = 1.0 + B * stress_init
-    aperture_init = A / (B * denominator_init)
+    aperture_init = np.sqrt(12.0 * reference_permeability)
+    aperture = aperture_init * (1.0 + B * stress_init) / denominator
 
-    # Preserve the directional ratios of the configured permeability
-    reference_permeability = aperture_init**2 / 12.0
+    # Preserve the directional ratios of the configured permeability.
     anisotropy = kf_0 / reference_permeability
 
     # Scalar cubic-law permeability and derivatives.
     permeability = aperture**2 / 12.0
 
-    dk_dp = A * aperture * biot_coeff / (6.0 * denominator**2)
+    dk_dp = B * aperture * biot_coeff * aperture_init * (1.0 + B * stress_init) / (6.0 * denominator**2)
 
     if T_flow_lagged:
         dk_dT = _const_array(0.0, T.shape)
     else:
-        dk_dT = -A * aperture * drained_bulk_mod * vol_therm_expansion / (6 * denominator**2)
+        dk_dT = (
+            -B
+            * aperture
+            * drained_bulk_mod
+            * vol_therm_expansion
+            * aperture_init
+            * (1.0 + B * stress_init)
+            / (6.0 * denominator**2)
+        )
 
     if kf_0.ndim == 0:
         # Isotropic scalar permeability.

@@ -143,8 +143,8 @@ def _cell_fields(
     thermal_expansion: npt.NDArray[np.float64],
     biot_coefficient: npt.NDArray[np.float64],
     stress_init: npt.NDArray[np.float64],
-    a_bb: npt.NDArray[np.float64],
     b_bb: npt.NDArray[np.float64],
+    reference_permeability: npt.NDArray[np.float64],
     permeability_ratios: npt.NDArray[np.float64],
 ) -> tuple[
     npt.NDArray[np.float64],
@@ -165,7 +165,11 @@ def _cell_fields(
         - biot_coefficient[region] * (cell_pressure - cell_pressure_0)
     )
     denominator = 1.0 + b_bb[region] * stress
-    aperture = a_bb[region] / (b_bb[region] * denominator)
+    aperture = (
+        np.sqrt(12.0 * reference_permeability[region])
+        * (1.0 + b_bb[region] * stress_init[region])
+        / denominator
+    )
     permeability = aperture**2 / 12.0
     ratios = permeability_ratios[region]
     return stress, aperture, permeability, permeability[:, np.newaxis] * ratios
@@ -248,15 +252,19 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
     drained_bulk_modulus = (1.0 - biot) * bulk_modulus
     thermal_expansion = _as_region_array(solid["therm_expansion"], max_region, "therm_expansion")
     stress_init = _as_region_array(solid["stress_init"], max_region, "stress_init")
-    a_bb = _as_region_array(solid["a_BB"], max_region, "a_BB")
     b_bb = _as_region_array(solid["b_BB"], max_region, "b_BB")
-    reference_aperture = a_bb / (b_bb * (1.0 + b_bb * stress_init))
-    reference_permeability = reference_aperture**2 / 12.0
     configured_permeability = solid["permeability"]
     permeability_values = [np.atleast_1d(np.asarray(value, dtype=float)) for value in configured_permeability]
+    reference_permeability = np.full(max_region, np.nan)
+    for region, value in enumerate(permeability_values[:max_region]):
+        if np.any(value <= 0.0):
+            raise ValueError("Configured permeability must be positive")
+        reference_permeability[region] = float(np.exp(np.mean(np.log(value))))
+    if np.any(~np.isfinite(reference_permeability)):
+        raise ValueError("Configured permeability is missing a material region")
     max_dimensions = max(value.size for value in permeability_values)
     permeability_ratios = np.ones((max_region, max_dimensions))
-    for region, value in enumerate(permeability_values):
+    for region, value in enumerate(permeability_values[:max_region]):
         permeability_ratios[region, : value.size] = value / reference_permeability[region]
     p_initial = float(initial["p_ini"])
     T_initial = float(initial["T_ini"])
@@ -303,8 +311,8 @@ def analyze(config_path: Path, output_dir: Path, analysis_dir: Path) -> None:  #
             thermal_expansion,
             biot,
             stress_init,
-            a_bb,
             b_bb,
+            reference_permeability,
             permeability_ratios,
         )
         _write_analysis_vtk(
