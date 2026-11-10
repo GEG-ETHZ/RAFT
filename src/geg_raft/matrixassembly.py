@@ -1102,29 +1102,37 @@ def _evaluate_fracture_leakoff_flux(
     mu_q: PropertyResult,
     p_f_q: npt.NDArray[np.float64],
     p_m_q: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],  # fracture shape functions
     *,
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
     npt.NDArray[np.float64],  # flux_p_q
-    npt.NDArray[np.float64],  # dfluxp_dpf, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dpf, rows over the fracture nodes; `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # dfluxp_dpm, `_EMPTY` unless want_tangent_dp
-    npt.NDArray[np.float64],  # dfluxp_dTf, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxp_dTf, rows over the fracture nodes; `_EMPTY` unless want_tangent_dT
     npt.NDArray[np.float64],  # dfluxp_dTm, `_EMPTY` unless want_tangent_dT
 ]:
-    """Evaluate the fracture-matrix leak-off mass flux and optionally its pressure tangent."""
+    """Evaluate the fracture-matrix leak-off mass flux and optionally its tangents.
+
+    Fracture-side derivatives carry the fracture node shape functions, since the viscosity
+    derivative is nodal; matrix-side derivatives are quadrature-point coefficients.
+    """
     flux_coeff = rhof_q.value * kf_perp.value / mu_q.value  # leak-off conductance
-    flux_p_q = flux_coeff * (p_f_q - p_m_q)  # leak-ff mass flux
+    dp_fm = p_f_q - p_m_q
+    flux_p_q = flux_coeff * dp_fm  # leak-ff mass flux
 
     dfluxp_dpf = dfluxp_dpm = dfluxp_dTf = dfluxp_dTm = _EMPTY
     if want_tangent_dp:
-        dcoeff_dp = rhof_q.dp * kf_perp.value + rhof_q.value * kf_perp.dp - flux_coeff * mu_q.dp
-        dfluxp_dpf = flux_coeff + dcoeff_dp / mu_q.value * (p_f_q - p_m_q)
+        dcoeff_dp = rhof_q.dp * kf_perp.value + rhof_q.value * kf_perp.dp
+        dfluxp_dpf = (
+            flux_coeff + dcoeff_dp / mu_q.value * dp_fm
+        ) * N_q - flux_coeff / mu_q.value * dp_fm * mu_q.dp
         dfluxp_dpm = -flux_coeff
     if want_tangent_dT:
-        dcoeff_dT = rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT - flux_coeff * mu_q.dT
-        dfluxp_dTf = dcoeff_dT / mu_q.value * (p_f_q - p_m_q)
-        dfluxp_dTm = np.zeros_like(dfluxp_dTf)  # Flux properties are evaluated with fracture state
+        dcoeff_dT = rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT
+        dfluxp_dTf = dcoeff_dT / mu_q.value * dp_fm * N_q - flux_coeff / mu_q.value * dp_fm * mu_q.dT
+        dfluxp_dTm = np.zeros_like(flux_p_q)  # Flux properties are evaluated with fracture state
 
     return flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm
 
@@ -1185,14 +1193,13 @@ def _evaluate_fracture_advection_flux(
     T_m_q: npt.NDArray[np.float64],
     T_flow_fq: npt.NDArray[np.float64],
     T_flow_mq: npt.NDArray[np.float64],
-    flux_p_q: npt.NDArray[np.float64],  # MAss flux
+    flux_p_q: npt.NDArray[np.float64],  # Mass flux
     fluid: dict[str, Any],
-    kf_perp: PropertyResult,
-    mu_q: PropertyResult,
-    rhof_q: PropertyResult,
+    N_q: npt.NDArray[np.float64],  # fracture shape functions
     *,
     dfluxp_dpf: npt.NDArray[np.float64] = _EMPTY,
     dfluxp_dpm: npt.NDArray[np.float64] = _EMPTY,
+    dfluxp_dTf: npt.NDArray[np.float64] = _EMPTY,
     want_tangent: bool = False,
     T_flow_lagged: bool = False,
 ) -> tuple[
@@ -1204,7 +1211,8 @@ def _evaluate_fracture_advection_flux(
 ]:
     """Evaluate the fracture-matrix advective enthalpy flux and optionally its temperature/pressure tangents.
 
-    Upwind direction is picked from the lagged pressures `p_f_q_lag`/`p_m_q_lag`.
+    Upwind direction is picked from the lagged pressures `p_f_q_lag`/`p_m_q_lag`. Fracture-side
+    derivatives are rows over the fracture nodes, like the leak-off `dfluxp_dpf`/`dfluxp_dTf`.
     """
     fracture_upwind = np.mean(p_f_q_lag) > np.mean(p_m_q_lag)
     if fracture_upwind:
@@ -1228,15 +1236,13 @@ def _evaluate_fracture_advection_flux(
 
     dqadv_dTf = dqadv_dTm = dqadv_dpf = dqadv_dpm = _EMPTY
     if want_tangent:
-        flux_coeff = rhof_q.value * kf_perp.value / mu_q.value
-        dcoeff_dT = rhof_q.dT * kf_perp.value + rhof_q.value * kf_perp.dT - flux_coeff * mu_q.dT
         if fracture_upwind:
-            dqadv_dTf = hf_q.dT * flux_p_q + hf_q.value * dcoeff_dT / mu_q.value * (p_f_q - p_m_q)
-            dqadv_dTm = np.zeros_like(dqadv_dTf)
-            dqadv_dpf = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpf
+            dqadv_dTf = hf_q.dT * flux_p_q * N_q + hf_q.value * dfluxp_dTf
+            dqadv_dTm = np.zeros_like(flux_p_q)
+            dqadv_dpf = hf_q.dp * flux_p_q * N_q + hf_q.value * dfluxp_dpf
             dqadv_dpm = hf_q.value * dfluxp_dpm
         else:
-            dqadv_dTf = hf_q.value * dcoeff_dT / mu_q.value * (p_f_q - p_m_q)
+            dqadv_dTf = hf_q.value * dfluxp_dTf
             dqadv_dTm = hf_q.dT * flux_p_q
             dqadv_dpf = hf_q.value * dfluxp_dpf
             dqadv_dpm = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpm
@@ -1251,33 +1257,38 @@ def _evaluate_well_leakoff_flux(
     mu_q: PropertyResult,
     p_w_q: npt.NDArray[np.float64],
     p_m_q: npt.NDArray[np.float64],
+    N_q: npt.NDArray[np.float64],  # well shape functions
     *,
     want_tangent_dp: bool = False,
     want_tangent_dT: bool = False,
 ) -> tuple[
     npt.NDArray[np.float64],  # flux_p_q
-    npt.NDArray[np.float64],  # dfluxp_dpw, `_EMPTY` unless want_tangent_dp
+    npt.NDArray[np.float64],  # dfluxp_dpw, rows over the well nodes; `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # dfluxp_dpm, `_EMPTY` unless want_tangent_dp
-    npt.NDArray[np.float64],  # dfluxp_dTw, `_EMPTY` unless want_tangent_dT
+    npt.NDArray[np.float64],  # dfluxp_dTw, rows over the well nodes; `_EMPTY` unless want_tangent_dT
     npt.NDArray[np.float64],  # dfluxp_dTm, `_EMPTY` unless want_tangent_dT
 ]:
     """Evaluate the well-matrix leak-off mass flux per unit well length and optionally its tangents.
 
     Flux = P C rho / mu (p_w - p_m), with wetted perimeter P = 2 pi R and perforation conductance C.
+    Well-side derivatives carry the well node shape functions, since the viscosity derivative is nodal.
     """
     leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance  # per unit well length (m^2)
     flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
-    flux_p_q = flux_coeff * (p_w_q - p_m_q)  # leak-off mass flux
+    dp_wm = p_w_q - p_m_q
+    flux_p_q = flux_coeff * dp_wm  # leak-off mass flux
 
     dfluxp_dpw = dfluxp_dpm = dfluxp_dTw = dfluxp_dTm = _EMPTY
     if want_tangent_dp:
-        dcoeff_dp = rhof_q.dp * leakoff_conductance - flux_coeff * mu_q.dp
-        dfluxp_dpw = flux_coeff + dcoeff_dp / mu_q.value * (p_w_q - p_m_q)
+        dcoeff_dp = rhof_q.dp * leakoff_conductance
+        dfluxp_dpw = (
+            flux_coeff + dcoeff_dp / mu_q.value * dp_wm
+        ) * N_q - flux_coeff / mu_q.value * dp_wm * mu_q.dp
         dfluxp_dpm = -flux_coeff
     if want_tangent_dT:
-        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
-        dfluxp_dTw = dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
-        dfluxp_dTm = np.zeros_like(dfluxp_dTw)  # Flux properties are evaluated with well state
+        dcoeff_dT = rhof_q.dT * leakoff_conductance
+        dfluxp_dTw = dcoeff_dT / mu_q.value * dp_wm * N_q - flux_coeff / mu_q.value * dp_wm * mu_q.dT
+        dfluxp_dTm = np.zeros_like(flux_p_q)  # Flux properties are evaluated with well state
 
     return flux_p_q, dfluxp_dpw, dfluxp_dpm, dfluxp_dTw, dfluxp_dTm
 
@@ -1344,13 +1355,11 @@ def _evaluate_well_advection_flux(
     T_flow_mq: npt.NDArray[np.float64],
     flux_p_q: npt.NDArray[np.float64],  # Mass flux
     fluid: dict[str, Any],
-    perforation_conductance: float,  # matching the leak-off flux
-    radius: float,
-    mu_q: PropertyResult,
-    rhof_q: PropertyResult,
+    N_q: npt.NDArray[np.float64],  # well shape functions
     *,
     dfluxp_dpw: npt.NDArray[np.float64] = _EMPTY,
     dfluxp_dpm: npt.NDArray[np.float64] = _EMPTY,
+    dfluxp_dTw: npt.NDArray[np.float64] = _EMPTY,
     want_tangent: bool = False,
     T_flow_lagged: bool = False,
 ) -> tuple[
@@ -1362,7 +1371,8 @@ def _evaluate_well_advection_flux(
 ]:
     """Evaluate the well-matrix advective enthalpy flux and tangents, with the well leak-off conductance.
 
-    Upwind direction is picked from the lagged pressures `p_w_q_lag`/`p_m_q_lag`.
+    Upwind direction is picked from the lagged pressures `p_w_q_lag`/`p_m_q_lag`. Well-side
+    derivatives are rows over the well nodes, like the leak-off `dfluxp_dpw`/`dfluxp_dTw`.
     """
     well_upwind = np.mean(p_w_q_lag) > np.mean(p_m_q_lag)
     if well_upwind:
@@ -1386,16 +1396,13 @@ def _evaluate_well_advection_flux(
 
     dqadv_dTw = dqadv_dTm = dqadv_dpw = dqadv_dpm = _EMPTY
     if want_tangent:
-        leakoff_conductance = 2.0 * np.pi * radius * perforation_conductance
-        flux_coeff = rhof_q.value * leakoff_conductance / mu_q.value
-        dcoeff_dT = rhof_q.dT * leakoff_conductance - flux_coeff * mu_q.dT
         if well_upwind:
-            dqadv_dTw = hf_q.dT * flux_p_q + hf_q.value * dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
-            dqadv_dTm = np.zeros_like(dqadv_dTw)
-            dqadv_dpw = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpw
+            dqadv_dTw = hf_q.dT * flux_p_q * N_q + hf_q.value * dfluxp_dTw
+            dqadv_dTm = np.zeros_like(flux_p_q)
+            dqadv_dpw = hf_q.dp * flux_p_q * N_q + hf_q.value * dfluxp_dpw
             dqadv_dpm = hf_q.value * dfluxp_dpm
         else:
-            dqadv_dTw = hf_q.value * dcoeff_dT / mu_q.value * (p_w_q - p_m_q)
+            dqadv_dTw = hf_q.value * dfluxp_dTw
             dqadv_dTm = hf_q.dT * flux_p_q
             dqadv_dpw = hf_q.value * dfluxp_dpw
             dqadv_dpm = hf_q.dp * flux_p_q + hf_q.value * dfluxp_dpm
@@ -1467,6 +1474,7 @@ class NodalFluidState:
     rho_f: PropertyResult
     u_f: PropertyResult
     hf: EnthalpyResult
+    mu_f: PropertyResult  # empty when the pass needs no flow properties
 
 
 def _evaluate_nodal_fluid_state(
@@ -1480,12 +1488,14 @@ def _evaluate_nodal_fluid_state(
     solve_p: bool = True,
     solve_T: bool = True,
     want_energy: bool = True,
+    want_viscosity: bool = False,
 ) -> NodalFluidState:
-    """Evaluate density, internal energy, and enthalpy once per node.
+    """Evaluate density, internal energy, enthalpy, and viscosity once per node.
 
-    Density is evaluated with T_flow for consistency with the mass flow rates.
-    Internal energy is evaluated with T, the current temperature field.
-    Enthalpy uses a mixed formulation. It is reconstructed from the combination of u and rho.
+    Density and viscosity are evaluated with T_flow for consistency with the mass flow rates;
+    viscosity at the current iterate only. Internal energy is evaluated with T, the current
+    temperature field. Enthalpy uses a mixed formulation. It is reconstructed from the
+    combination of u and rho.
     """
     want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
     rho_f, u_f, hf = get_EOS(
@@ -1500,7 +1510,12 @@ def _evaluate_nodal_fluid_state(
         want_dp=want_dp,
         want_dT=want_dT or want_energy,
     )
-    return NodalFluidState(rho_f, u_f, hf)
+    mu_f = (
+        get_viscosity(T_flow[:, 0:1], p[:, 0:1], fluid, T_flow_lagged, want_dp, want_dT)
+        if want_viscosity
+        else _EMPTY_PROPERTY
+    )
+    return NodalFluidState(rho_f, u_f, hf, mu_f)
 
 
 def _evaluate_nodal_porosity(
@@ -1548,17 +1563,19 @@ class StackedNodalState:
     """
 
     stack: npt.NDArray[np.float64]
-    columns: tuple[slice | None, ...]  # phi_L (value, dp, dT), rho_f (3), u_f (3), hf (value, dp, dT, cp)
+    # phi_L (value, dp, dT), rho_f (3), u_f (3), hf (value, dp, dT, cp), mu_f (3)
+    columns: tuple[slice | None, ...]
 
 
 def _stack_nodal_state(phi_L: PropertyResult, nodal_fluid: NodalFluidState) -> StackedNodalState:
     """Stack one region's nodal porosity with the pass's nodal EOS fields."""
-    rho_f, u_f, hf = nodal_fluid.rho_f, nodal_fluid.u_f, nodal_fluid.hf
+    rho_f, u_f, hf, mu_f = nodal_fluid.rho_f, nodal_fluid.u_f, nodal_fluid.hf, nodal_fluid.mu_f
     fields = (
         phi_L.value, phi_L.dp, phi_L.dT,
         rho_f.value, rho_f.dp, rho_f.dT,
         u_f.value, u_f.dp, u_f.dT,
         hf.value, hf.dp, hf.dT, hf.cp,
+        mu_f.value, mu_f.dp, mu_f.dT,
     )  # fmt: skip
     columns: list[slice | None] = []
     start = 0
@@ -1573,8 +1590,8 @@ def _stack_nodal_state(phi_L: PropertyResult, nodal_fluid: NodalFluidState) -> S
 
 def _gather_nodal_state(
     state: StackedNodalState, idx: npt.NDArray[np.intp]
-) -> tuple[PropertyResult, PropertyResult, PropertyResult, EnthalpyResult]:
-    """Gather an element's nodal (phi_L, rho_f, u_f, hf) rows."""
+) -> tuple[PropertyResult, PropertyResult, PropertyResult, EnthalpyResult, PropertyResult]:
+    """Gather an element's nodal (phi_L, rho_f, u_f, hf, mu_f) rows."""
     rows = state.stack.take(idx, axis=0)
     f = [_EMPTY if s is None else rows[:, s] for s in state.columns]
     return (
@@ -1582,6 +1599,7 @@ def _gather_nodal_state(
         PropertyResult(f[3], f[4], f[5]),
         PropertyResult(f[6], f[7], f[8]),
         EnthalpyResult(f[9], f[10], f[11], f[12]),
+        PropertyResult(f[13], f[14], f[15]),
     )
 
 
@@ -1593,10 +1611,7 @@ def _evaluate_flow_and_storage_state(
     nodal_state: StackedNodalState,
     enodes: npt.NDArray[np.intp],
     *,
-    calc_derivatives: bool = False,
     T_flow_lagged: bool = False,
-    solve_p: bool = True,
-    solve_T: bool = True,
     want_energy: bool = True,
     want_flow: bool = True,
 ) -> tuple[
@@ -1607,20 +1622,19 @@ def _evaluate_flow_and_storage_state(
     NodalPropertyState,  # u_f
     NodalEnthalpyState,  # hf
 ]:
-    """Evaluate permeability and viscosity, and gather nodal porosity, density, and internal energy.
+    """Evaluate permeability, and gather nodal porosity, density, internal energy, and viscosity.
 
     `enodes` indexes this element's rows in `nodal_state`.
     """
-    want_dp, want_dT = _property_derivative_flags(calc_derivatives, solve_p, solve_T)
+    phi_L_e, rho_f_e, u_f_e, hf_e, mu_f_e = _gather_nodal_state(nodal_state, enodes)
 
-    # ---- Quadrature-point flow properties, only for Darcy flux and matrix coupling
+    # ---- Flow properties, only for Darcy flux and matrix coupling; viscosity interpolated from the nodes
     if want_flow:
         kf = get_effective_permeability(kf_0, kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged)
-        mu_q = get_viscosity(kin_n.T_flow_q, kin_n.p_q, fluid, T_flow_lagged, want_dp, want_dT)
+        # dmu_q/dpsi_j = N_j mu'_j: derivatives are rows over the element nodes, (nq, 1, nne)
+        mu_q = PropertyResult(N_q @ mu_f_e.value, N_q * mu_f_e.dp[:, 0], N_q * mu_f_e.dT[:, 0])
     else:
         kf = mu_q = _EMPTY_PROPERTY
-
-    phi_L_e, rho_f_e, u_f_e, hf_e = _gather_nodal_state(nodal_state, enodes)
 
     # ---- Porosity
     phi_L_q = PropertyResult(N_q @ phi_L_e.value, N_q @ phi_L_e.dp[:, 0:1], N_q @ phi_L_e.dT[:, 0:1])
@@ -1670,28 +1684,27 @@ def _evaluate_darcy_flux(
     q_D = rho_f_n.value * darcy_flux  # mass flux
 
     dqD_dp = _EMPTY
+    dqD_dT = _EMPTY
+    if want_tangent_dp or want_tangent_dT:
+        # viscosity derivatives are already rows over the element nodes (N_j mu'_j)
+        kf_gradP = kf.value * gradP_mod if isotropic_perm else kf.value @ gradP_mod
+        dqD_dmu = -rho_f_n.value / mu_q.value**2 * kf_gradP
+
     if want_tangent_dp:
-        term_2 = (
-            kfmu * rho_f_n.dp
-            + rho_f_n.value / mu_q.value * kf.dp
-            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dp
-        )
+        term_2 = kfmu * rho_f_n.dp + rho_f_n.value / mu_q.value * kf.dp
         if isotropic_perm:
             dqD_dp = rho_f_n.value * kfmu * (B_q + rho_f_n.dp * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
             dqD_dp = rho_f_n.value * kfmu @ (B_q + rho_f_n.dp * g_r * N_q) + term_2 @ gradP_mod * N_q
+        dqD_dp = dqD_dp + dqD_dmu * mu_q.dp
 
-    dqD_dT = _EMPTY
     if want_tangent_dT:
-        term_2 = (
-            kfmu * rho_f_n.dT
-            + rho_f_n.value / mu_q.value * kf.dT
-            - rho_f_n.value * kf.value / mu_q.value**2 * mu_q.dT
-        )
+        term_2 = kfmu * rho_f_n.dT + rho_f_n.value / mu_q.value * kf.dT
         if isotropic_perm:
             dqD_dT = -rho_f_n.value * kfmu * (rho_f_n.dT * g_r * N_q) + term_2 * gradP_mod * N_q
         else:
             dqD_dT = -rho_f_n.value * kfmu @ (rho_f_n.dT * g_r * N_q) + term_2 @ gradP_mod * N_q
+        dqD_dT = dqD_dT + dqD_dmu * mu_q.dT
 
     return darcy_flux, q_D, dqD_dp, dqD_dT
 
@@ -2352,7 +2365,7 @@ def _integrate_fracture_coupling_residual(  # noqa
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
             flux_p_q, _, _, _, _ = _evaluate_fracture_leakoff_flux(
-                rhof_q, kf_perp, mu_q, p_f_q, p_m_q
+                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, N_q
             )  # mass flux
 
         # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
@@ -2384,9 +2397,7 @@ def _integrate_fracture_coupling_residual(  # noqa
                     T_flow_mq,
                     flux_p_q,
                     fluid,
-                    kf_perp,
-                    mu_q,
-                    rhof_q,
+                    N_q,
                     T_flow_lagged=T_flow_lagged,
                 )
                 Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
@@ -2446,12 +2457,19 @@ def _integrate_fracture_coupling_tangent(
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
             flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm = _evaluate_fracture_leakoff_flux(
-                rhof_q, kf_perp, mu_q, p_f_q, p_m_q, want_tangent_dp=True, want_tangent_dT=thermal_coupling
-            )  # Mass flux
+                rhof_q,
+                kf_perp,
+                mu_q,
+                p_f_q,
+                p_m_q,
+                N_q,
+                want_tangent_dp=True,
+                want_tangent_dT=thermal_coupling,
+            )  # Mass flux; fracture-side tangents are rows over the fracture nodes
 
         if pressure_coupling:
-            ff_matrices["Kpp_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpf, N_q, wJe_q, True)
-            fm_matrices["Kpp_fm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpf, N_q, wJe_q, True)
+            ff_matrices["Kpp_ff"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dpf, wJe_q, False)
+            fm_matrices["Kpp_fm"] = _vctrzd_qp_vctr_integrate(N_qm, -dfluxp_dpf, wJe_q, False)
             mf_matrices["Kpp_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_qm, wJe_q, True)
             mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_qm, -dfluxp_dpm, N_qm, wJe_q, True)
 
@@ -2483,33 +2501,30 @@ def _integrate_fracture_coupling_tangent(
                     T_flow_mq,
                     flux_p_q,
                     fluid,
-                    kf_perp,
-                    mu_q,
-                    rhof_q,
+                    N_q,
                     dfluxp_dpf=dfluxp_dpf,
                     dfluxp_dpm=dfluxp_dpm,
+                    dfluxp_dTf=dfluxp_dTf,
                     want_tangent=True,
                     T_flow_lagged=T_flow_lagged,
                 )
 
                 # fm/mf coefficients use the derivative wrt the column's temperature
-                RTT_ff = RTT_ff + _vctrzd_quad_point_integration(N_q, dqadv_dTf, N_q, wJe_q, True)
-                RTT_fm = RTT_fm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTf, N_q, wJe_q, True)
+                RTT_ff = RTT_ff + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTf, wJe_q, False)
+                RTT_fm = RTT_fm + _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dTf, wJe_q, False)
                 RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
                 RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
 
                 if monolithic:
-                    ff_matrices["KpT_ff"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTf, N_q, wJe_q, True)
-                    fm_matrices["KpT_fm"] = _vctrzd_quad_point_integration(
-                        N_qm, -dfluxp_dTf, N_q, wJe_q, True
-                    )
+                    ff_matrices["KpT_ff"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dTf, wJe_q, False)
+                    fm_matrices["KpT_fm"] = _vctrzd_qp_vctr_integrate(N_qm, -dfluxp_dTf, wJe_q, False)
                     mf_matrices["KpT_mf"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_qm, wJe_q, True)
                     mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(
                         N_qm, -dfluxp_dTm, N_qm, wJe_q, True
                     )
 
-                    ff_matrices["KTp_ff"] = _vctrzd_quad_point_integration(N_q, dqadv_dpf, N_q, wJe_q, True)
-                    fm_matrices["KTp_fm"] = _vctrzd_quad_point_integration(N_qm, -dqadv_dpf, N_q, wJe_q, True)
+                    ff_matrices["KTp_ff"] = _vctrzd_qp_vctr_integrate(N_q, dqadv_dpf, wJe_q, False)
+                    fm_matrices["KTp_fm"] = _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dpf, wJe_q, False)
                     mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
                     mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
                         N_qm, -dqadv_dpm, N_qm, wJe_q, True
@@ -2568,7 +2583,7 @@ def _integrate_well_coupling_residual(
     # Leak-off mass flux
     if pressure_coupling or advection_on:
         flux_p_q, _, _, _, _ = _evaluate_well_leakoff_flux(
-            rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q
+            rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q, N_q
         )
 
     # F_Pdiffusion and F_Tadvection hold inflows, so the leak-off outflow enters negatively
@@ -2609,10 +2624,7 @@ def _integrate_well_coupling_residual(
                 N_q @ T_flow[enodes_m],
                 flux_p_q,
                 fluid,
-                perforation_conductance,
-                radius,
-                mu_q,
-                rhof_q,
+                N_q,
                 T_flow_lagged=T_flow_lagged,
             )
             well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
@@ -2671,13 +2683,14 @@ def _integrate_well_coupling_tangent(  # noqa
             mu_q,
             p_w_q,
             p_m_q,
+            N_q,
             want_tangent_dp=True,
             want_tangent_dT=thermal_coupling,
-        )
+        )  # well-side tangents are rows over the well nodes
 
     if pressure_coupling:
-        ww_matrices["Kpp_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpw, N_q, wJe_q, True)
-        wm_matrices["Kpp_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpw, N_q, wJe_q, True)
+        ww_matrices["Kpp_ww"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dpw, wJe_q, False)
+        wm_matrices["Kpp_wm"] = _vctrzd_qp_vctr_integrate(N_q, -dfluxp_dpw, wJe_q, False)
         mw_matrices["Kpp_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dpm, N_q, wJe_q, True)
         mm_matrices["Kpp_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dpm, N_q, wJe_q, True)
 
@@ -2726,29 +2739,27 @@ def _integrate_well_coupling_tangent(  # noqa
                 N_q @ T_flow[enodes_m],
                 flux_p_q,
                 fluid,
-                perforation_conductance,
-                radius,
-                mu_q,
-                rhof_q,
+                N_q,
                 dfluxp_dpw=dfluxp_dpw,
                 dfluxp_dpm=dfluxp_dpm,
+                dfluxp_dTw=dfluxp_dTw,
                 want_tangent=True,
                 T_flow_lagged=T_flow_lagged,
             )
-            RTT_ww = RTT_ww + _vctrzd_quad_point_integration(N_q, dqadv_dTw, N_q, wJe_q, True)
-            RTT_wm = RTT_wm + _vctrzd_quad_point_integration(N_q, -dqadv_dTw, N_q, wJe_q, True)
+            RTT_ww = RTT_ww + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTw, wJe_q, False)
+            RTT_wm = RTT_wm + _vctrzd_qp_vctr_integrate(N_q, -dqadv_dTw, wJe_q, False)
             RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
             RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
 
             # Off-diagonal pressure/temperature coupling
             if monolithic:
-                ww_matrices["KpT_ww"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTw, N_q, wJe_q, True)
-                wm_matrices["KpT_wm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTw, N_q, wJe_q, True)
+                ww_matrices["KpT_ww"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dTw, wJe_q, False)
+                wm_matrices["KpT_wm"] = _vctrzd_qp_vctr_integrate(N_q, -dfluxp_dTw, wJe_q, False)
                 mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
                 mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
 
-                ww_matrices["KTp_ww"] += _vctrzd_quad_point_integration(N_q, dqadv_dpw, N_q, wJe_q, True)
-                wm_matrices["KTp_wm"] += _vctrzd_quad_point_integration(N_q, -dqadv_dpw, N_q, wJe_q, True)
+                ww_matrices["KTp_ww"] += _vctrzd_qp_vctr_integrate(N_q, dqadv_dpw, wJe_q, False)
+                wm_matrices["KTp_wm"] += _vctrzd_qp_vctr_integrate(N_q, -dqadv_dpw, wJe_q, False)
                 mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
                 mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
 
@@ -2846,7 +2857,13 @@ def integrate_residuals(  # noqa
     p_nodes, T_flow_nodes = p[dofs], T_flow[dofs]
     p_0_nodes, T_0_nodes = p_0[dofs].reshape(-1, 1), T_0[dofs].reshape(-1, 1)
     nodal_fluid = _evaluate_nodal_fluid_state(
-        T[dofs], T_flow_nodes, p_nodes, fluid, T_flow_lagged=T_flow_lagged, want_energy=thermal_coupling
+        T[dofs],
+        T_flow_nodes,
+        p_nodes,
+        fluid,
+        T_flow_lagged=T_flow_lagged,
+        want_energy=thermal_coupling,
+        want_viscosity=need_flow_props,
     )
 
     # ----- Matrix integration element loop; skipped when nothing is solved or coupled here
@@ -3324,6 +3341,7 @@ def integrate_tangent_matrices(  # noqa
         solve_p=solve_p,
         solve_T=solve_T,
         want_energy=thermal_coupling,
+        want_viscosity=need_flow_props,
     )
 
     KTu = csc_matrix((mesh_data.nn, mesh_data.nsd * mesh_data.nn))
@@ -3414,9 +3432,6 @@ def integrate_tangent_matrices(  # noqa
                 nodal_state,
                 np.asarray(enodes),
                 T_flow_lagged=T_flow_lagged,
-                calc_derivatives=True,
-                solve_p=solve_p,
-                solve_T=solve_T,
                 want_energy=thermal_coupling,
                 want_flow=need_flow_props,
             )
@@ -3696,16 +3711,19 @@ def integrate_tangent_matrices(  # noqa
             vec_counter = stop
 
         # Chain rule through this region's nodal porosity: dphi_L/du = biot * nodal_strain
-        if solve_Tu:
-            dFT_dphi_global = _assemble_global_matrices(
-                {"G": np.concatenate(dFT_dphi_entries)},
-                mesh_data.conn,
-                mesh_data.nn,
-                mesh_data.nne_list,
-                mesh_data.elem_indx,
-                np.asarray(mesh_data.region_lists[r], dtype=np.int32),
-            )["G"]
-            KTu = KTu + solid.biot * dFT_dphi_global @ mechanics.nodal_strain[r]
+        # u -> T coupled in the matrix through porosity, which is small.
+        # Neglect the displacement tangent in porosity.
+        # Code left here for posterity if it ever wants to be turned back on.
+        # if solve_Tu:
+        # dFT_dphi_global = _assemble_global_matrices(
+        #     {"G": np.concatenate(dFT_dphi_entries)},
+        #     mesh_data.conn,
+        #     mesh_data.nn,
+        #     mesh_data.nne_list,
+        #     mesh_data.elem_indx,
+        #     np.asarray(mesh_data.region_lists[r], dtype=np.int32),
+        # )["G"]
+        # KTu = KTu + solid.biot * dFT_dphi_global @ mechanics.nodal_strain[r]
 
     # ----- Return and convert to sparse matrix
     integrated_matrices = _assemble_global_matrices(
