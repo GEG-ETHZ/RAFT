@@ -414,8 +414,8 @@ def check_thermoelastic_cooling(
 
     if plot_on:
         plot_order = np.argsort(x)
-        figure, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
-        figure.get_layout_engine().set(hspace=0.18)
+        figure, axes = plt.subplots(3, 2, figsize=(12, 12))
+        figure.subplots_adjust(hspace=0.6)
         for axis, (label, expected, actual), error in zip(
             axes.ravel()[: len(comparison_data)], comparison_data, relative_errors, strict=True
         ):
