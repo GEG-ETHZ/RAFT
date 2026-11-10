@@ -141,7 +141,7 @@ simulation:
 
   # Physical controls
   rate_order: 1     # order of rate of change approximation
-  gravity: 0    # m/s^2
+  gravity: 10    # m/s^2
   axisymmetric_on: 0
 
   # Numerical controls
