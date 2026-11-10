@@ -336,6 +336,105 @@ def check_advection(
     return test_pass
 
 
+def check_thermoelastic_cooling(
+    config_name: str,
+    config_dir: Path,
+    analysis: dict[str, Any],
+    results: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+    plot_path: Path | None = None,
+) -> bool:
+    """Check thermoelastic cooling against the cold-injection analytical solution."""
+    config = load_config(config_name, config_dir, verbose=False)
+    material = config["material"]
+    solid = material["solid"]
+    fluid = material["fluid"]
+
+    nodes = analysis["points"]
+    cells = analysis["cells"]
+    x = np.array([np.mean(nodes[cell, 0]) for cell in cells])
+    L = float(np.max(nodes[:, 0]) - np.min(nodes[:, 0]))
+
+    p0 = float(config["initial_conditions"]["p_ini"])
+    T0 = float(config["initial_conditions"]["T_ini"])
+    q = _bc_value(config, "hydraulics", "flux", 0) / float(np.max(nodes[:, 1]) - np.min(nodes[:, 1]))
+    pout = _bc_value(config, "hydraulics", "pressure", 0)
+    Tin = _bc_value(config, "thermal", "temperature", 0)
+    Tout = _bc_value(config, "thermal", "temperature", 1)
+
+    bulk_modulus = float(solid["bulk_mod"])
+    biot_coefficient = float(solid["biot_coeff"])
+    drained_bulk_modulus = (1.0 - biot_coefficient) * bulk_modulus
+    thermal_expansion = float(solid["therm_expansion"])
+    b_bb = float(solid["b_BB"])
+    stress_init = float(solid["stress_init"])
+    reference_permeability = float(np.asarray(solid["permeability"], dtype=float).reshape(-1)[0])
+    viscosity = float(fluid["viscosity"])
+
+    y0 = 1.0 + b_bb * stress_init
+    temperature = Tin + (Tout - Tin) * x / L
+    C1 = b_bb * drained_bulk_modulus * thermal_expansion * (Tout - Tin) / L
+    C2 = b_bb * biot_coefficient * q * viscosity / (reference_permeability * y0**2)
+    yL = (
+        y0
+        + b_bb * drained_bulk_modulus * thermal_expansion * (Tout - Tin)
+        - b_bb * biot_coefficient * (pout - p0)
+    )
+    y = np.sqrt(C1 / C2) * np.tan(np.arctan(np.sqrt(C2 / C1) * yL) + np.sqrt(C1 * C2) * (x - L))
+    pressure = p0 + (y0 + b_bb * drained_bulk_modulus * thermal_expansion * (temperature - T0) - y) / (
+        b_bb * biot_coefficient
+    )
+    stress = (
+        stress_init
+        + drained_bulk_modulus * thermal_expansion * (temperature - T0)
+        - biot_coefficient * (pressure - p0)
+    )
+    aperture = np.sqrt(12.0 * reference_permeability) * y0 / y
+    permeability = aperture**2 / 12.0
+
+    actual_stress = analysis["scalars"]["effective_stress"]
+    actual_aperture = analysis["scalars"]["aperture"]
+    actual_permeability = analysis["scalars"]["permeability"]
+    actual_pressure = np.array([np.mean(results["scalars"]["p"][cell]) for cell in cells])
+    actual_temperature = np.array([np.mean(results["scalars"]["T"][cell]) for cell in cells])
+
+    comparison_data = [
+        ("Temperature (K)", temperature, actual_temperature),
+        ("Pressure (Pa)", pressure, actual_pressure),
+        ("Effective stress (Pa)", stress, actual_stress),
+        ("Aperture (m)", aperture, actual_aperture),
+        ("Permeability (m^2)", permeability, actual_permeability),
+    ]
+    relative_errors = [
+        float(np.sum((expected - actual) ** 2) / np.sum(expected**2))
+        for _, expected, actual in comparison_data
+    ]
+    relative_error = sum(relative_errors)
+
+    if plot_on:
+        plot_order = np.argsort(x)
+        figure, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
+        for axis, (label, expected, actual), error in zip(
+            axes.ravel()[: len(comparison_data)], comparison_data, relative_errors, strict=True
+        ):
+            axis.plot(x[plot_order], expected[plot_order], "r-", label="Analytical")
+            axis.plot(x[plot_order], actual[plot_order], "ko", markersize=3, label="RAFT")
+            axis.set_xlabel("x (m)")
+            axis.set_ylabel(label)
+            axis.set_title(f"{label} - relative error: {error:.3e}")
+            axis.grid(True, alpha=0.3)
+            axis.legend()
+        axes.flat[-1].axis("off")
+        figure.suptitle(test_name)
+        if plot_path is None:
+            plot_path = config_dir / "thermoelastic_cooling_comparison.png"
+        figure.savefig(plot_path, dpi=150)
+        plt.close(figure)
+
+    return bool(relative_error < 1.0e-5)
+
+
 def check_buoyancy(
     config_name: str,
     config_dir: Path,

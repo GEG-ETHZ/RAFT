@@ -18,9 +18,12 @@
 """Test subsurface simulator for TANGO."""
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
+from scripts.analyze_permeability_outputs import _read_vtk, _timestep_files, analyze
 
 import tests.test_checks as test_checks
 from raft.preprocessing import preprocessing
@@ -131,6 +134,92 @@ def test_advection() -> None:
     plot_on = False
     test_pass = test_checks.check_advection(
         config_filename, case_dir, primary_variables, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
+def test_thermoelastic_cooling() -> None:
+    """Check cold-injection thermoelastic feedback against the analytical solution."""
+    repo_root = Path(__file__).parents[1]
+    source_config = repo_root / "config" / "config_example_2D.yaml"
+    output_root = repo_root / "outputs"
+    config = deepcopy(yaml.safe_load(source_config.read_text()))
+    mesh_path = Path(__file__).parent / "test_configs" / "square2D_Q4.msh"
+    config["mesh"] = {"file": str(mesh_path), "dimensions": 2}
+    config["material"]["solid"] = {
+        "bulk_mod": 20.0e9,
+        "density": 2000.0,
+        "therm_cond": 3.0,
+        "specific_heat": 800.0,
+        "therm_expansion": 12.0e-6,
+        "porosity": 0.01,
+        "biot_coeff": 0.5,
+        "permeability": [5.0e-15],
+        "b_BB": 3.16e-7,
+        "stress_init": 32.0e6,
+    }
+    config["material"]["fluid"]["viscosity"] = 1.0e-3
+    config["initial_conditions"] = {
+        "assignment": "constant",
+        "T_ini": 330.0,
+        "p_ini": 6.0e6,
+        "T_grad": 0.0,
+        "p_grad": 0.0,
+        "grad_direction_T": [1, 0, 0],
+        "grad_direction_p": [1, 0, 0],
+    }
+    config["boundary_conditions"] = [
+        {
+            "faces": ["x_min"],
+            "hydraulics": {"type": "flux", "values": [1.0e-7]},
+            "thermal": {"type": "temperature", "values": [330.0]},
+        },
+        {
+            "faces": ["x_max"],
+            "hydraulics": {"type": "pressure", "values": [5.9e6]},
+            "thermal": {"type": "temperature", "values": [410.0]},
+        },
+    ]
+    config["physics"]["matrix"] = {"flow": "steady", "heat": "steady", "advection": False}
+    config["simulation"].update(
+        {
+            "t_start": 0.0,
+            "t_end": 1.0,
+            "timestep": 1.0,
+            "timestep_min": 1.0,
+            "timestep_max": 1.0,
+            "output_frequency": 1,
+            "output_vtk": 1,
+            "output_directory": str(output_root),
+            "gravity": 0.0,
+        }
+    )
+    config_path = output_root / "thermoelastic_cooling.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    primary_variables, mesh = main(
+        config_name=config_path.name,
+        config_dir=output_root,
+        verbosity="quiet",
+    )
+    del primary_variables, mesh
+
+    output_dir = output_root / config_path.stem
+    analysis_dir = output_dir / "permeability_analysis"
+    analyze(config_path, output_dir, analysis_dir)
+    _, analysis_path = _timestep_files(analysis_dir)[-1]
+    analysis = _read_vtk(analysis_path)
+    _, results_path = _timestep_files(output_dir)[-1]
+    results = _read_vtk(results_path)
+
+    test_pass = test_checks.check_thermoelastic_cooling(
+        config_path.name,
+        output_root,
+        analysis,
+        results,
+        "Thermoelastic Cooling",
+        plot_on=True,
+        plot_path=output_dir / "thermoelastic_cooling_comparison.png",
     )
     assert test_pass
 

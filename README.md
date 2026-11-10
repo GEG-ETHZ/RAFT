@@ -23,6 +23,7 @@ A finite element method (FEM) simulator for coupled subsurface fluid flow and he
 - [Running the simulation](#running-the-simulation)
   - [Run options](#run-options)
   - [Outputs](#outputs)
+  - [Thermoelastic cooling](#thermoelastic-cooling)
 - [Coupling API](#coupling-api)
 - [Theory](#theory)
 - [Configuration Parameters](#configuration-parameters)
@@ -101,6 +102,58 @@ Results are written to `outputs/<config name>/`, or to `<output_directory>/<conf
 Output steps are every `output_frequency` accepted timesteps, starting from the initial condition (step 0).
 
 Meshes are made with [Gmsh](https://Gmsh.info/), by hand or with the generator described under [Mesh generation](#mesh-generation), and must be exported as `.msh` files in Version 2 ASCII format. Gmsh requires a separate download and installation.
+
+### Thermoelastic cooling
+RAFT can model pressure- and temperature-dependent permeability using
+`raft.matprops.get_effective_permeability`. The effective stress is calculated as
+
+$$
+\sigma' = \sigma'_0 + (1-\alpha_B)K_d\alpha_v(T-T_0)
+             - \alpha_B(p-p_0),
+$$
+
+where $K_d$ is the drained bulk modulus, $\alpha_v$ is the solid thermal expansion
+coefficient, and $\alpha_B$ is the Biot coefficient. The Bandis-Barton aperture law
+then gives
+
+$$
+w = w_0\frac{1+B\sigma'_0}{1+B\sigma'},
+\qquad
+k_\mathrm{eff} = \frac{w^2}{12}.
+$$
+
+For anisotropic permeability, the scalar cubic-law value is multiplied by the
+configured directional permeability ratios. The function also returns analytical
+derivatives with respect to pressure and temperature for the coupled solver. If
+`T_flow_lagged` is enabled, the temperature derivative is set to zero for the
+current flow solve.
+
+The permeability analysis script reconstructs these effective fields from saved
+VTK output without rerunning the simulation. For the default 2D example, run:
+
+```bash
+uv run python scripts/analyze_permeability_outputs.py
+```
+
+This writes cell-wise `effective_stress`, `aperture`, and permeability fields to
+`outputs/config_example_2D/permeability_analysis/`. To analyze another run, provide
+the configuration and output directories explicitly:
+
+```bash
+uv run python scripts/analyze_permeability_outputs.py \
+  --config outputs/thermoelastic_cooling.yaml \
+  --output-dir outputs/thermoelastic_cooling \
+  --analysis-dir outputs/thermoelastic_cooling/permeability_analysis
+```
+
+The thermoelastic cooling verification test uses a quasi-1D 2D case, compares the
+simulation and reconstructed fields with the cold-injection analytical solution,
+and writes the comparison plot to
+`outputs/thermoelastic_cooling/thermoelastic_cooling_comparison.png`. Run it with:
+
+```bash
+uv run pytest tests/test_simulation.py::test_thermoelastic_cooling -q
+```
 
 ## Theory
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a compressible, pressure- and temperature-dependent fluid equation of state. The governing equations, fluid EOS, finite element discretization, fracture coupling, mesh cutting algorithm, stabilization, and time-integration schemes are documented in [theory.md](theory.md).
