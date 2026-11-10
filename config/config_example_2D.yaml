@@ -4,10 +4,10 @@ mesh:
   domain:  # outer boundary, used by scripts/raft_to_geo.py
         shape: "box"
         values: [[-51, -50], [102, 75]]
-  # removing discrete fractures to better see re-alignment of flow field
   sizing:  # element sizes, used by scripts/raft_to_geo.py
       outer: 20
-      frac: [[1, 1, 2], [1, 5, 20]]
+  # removing discrete fractures to better see re-alignment of flow field
+  #     frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
 
   regions:
@@ -21,10 +21,10 @@ mesh:
         values: [[0, 75], [102, 75], [0, 55], [-51, 55], [-51, 75]]
         region_number: 2
   # removing discrete fractures to better see re-alignment of flow field
-  fractures:
-         - values: [[27, 53], [20], [20]]
-         - values: [[45.5, 41], [22], [130]]
-         - values: [[13, 33, 0.0], [20], [100]]
+  # fractures:
+  #        - values: [[27, 53], [20], [20]]
+  #        - values: [[45.5, 41], [22], [130]]
+  #        - values: [[13, 33, 0.0], [20], [100]]
 
 
 material:
@@ -58,9 +58,9 @@ material:
 
   # removing discrete fractures to better see re-alignment of flow field
   # Fracture parameters
-  fracture:
-    aperture: [1.0e-6, 1.0e-6, 1.1e-6]
-    heat_transfer_factor: [1, 1, 1]
+  # fracture:
+  #   aperture: [1.0e-6, 1.0e-6, 1.1e-6]
+  #   heat_transfer_factor: [1, 1, 1]
 
 initial_conditions:
   assignment: "constant"
