@@ -417,7 +417,7 @@ def check_thermoelastic_cooling(
         sorted_x = x[plot_order]
         unique_x, unique_indices = np.unique(sorted_x, return_index=True)
         figure, axes = plt.subplots(3, 2, figsize=(12, 12))
-        figure.subplots_adjust(hspace=0.6)
+        figure.subplots_adjust(hspace=0.5, wspace=0.3)
         for axis, (label, expected, actual), error in zip(
             axes.ravel()[: len(comparison_data)], comparison_data, relative_errors, strict=True
         ):
