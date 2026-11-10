@@ -118,9 +118,9 @@ boundary_conditions:
 
 physics:
   matrix:
-    flow: transient
-    heat: transient
-    advection: on
+    flow: steady
+    heat: steady
+    advection: off
 
 simulation:
   # Time
