@@ -341,7 +341,7 @@ def check_thermoelastic_cooling(
     config_dir: Path,
     analysis: dict[str, Any],
     results: dict[str, Any],
-    test_name: str,
+    _test_name: str,
     plot_on: bool,
     plot_path: Path | None = None,
 ) -> bool:
@@ -415,18 +415,30 @@ def check_thermoelastic_cooling(
     if plot_on:
         plot_order = np.argsort(x)
         figure, axes = plt.subplots(3, 2, figsize=(12, 12), constrained_layout=True)
+        figure.get_layout_engine().set(hspace=0.18)
         for axis, (label, expected, actual), error in zip(
             axes.ravel()[: len(comparison_data)], comparison_data, relative_errors, strict=True
         ):
             axis.plot(x[plot_order], expected[plot_order], "r-", label="Analytical")
             axis.plot(x[plot_order], actual[plot_order], "ko", markersize=3, label="RAFT")
-            axis.set_xlabel("x (m)")
-            axis.set_ylabel(label)
-            axis.set_title(f"{label} - relative error: {error:.3e}")
+            axis.set_xlabel("x (m)", fontsize=14)
+            axis.set_ylabel(label, fontsize=14)
+            axis.set_title(label, fontsize=15)
+            axis.text(
+                0.5,
+                0.08,
+                f"relative error: {error:.3e}",
+                transform=axis.transAxes,
+                ha="center",
+                va="bottom",
+                fontsize=14,
+                fontweight="bold",
+            )
+            axis.tick_params(axis="both", labelsize=12)
             axis.grid(True, alpha=0.3)
-            axis.legend()
+            if axis is axes.flat[0]:
+                axis.legend(fontsize=12)
         axes.flat[-1].axis("off")
-        figure.suptitle(test_name)
         if plot_path is None:
             plot_path = config_dir / "thermoelastic_cooling_comparison.png"
         figure.savefig(plot_path, dpi=150)
