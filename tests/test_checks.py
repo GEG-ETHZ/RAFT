@@ -358,7 +358,9 @@ def check_thermoelastic_cooling(
 
     p0 = float(config["initial_conditions"]["p_ini"])
     T0 = float(config["initial_conditions"]["T_ini"])
-    q = _bc_value(config, "hydraulics", "flux", 0) / float(np.max(nodes[:, 1]) - np.min(nodes[:, 1]))
+    mass_flux = _bc_value(config, "hydraulics", "flux", 0)
+    transverse_length = float(np.max(nodes[:, 1]) - np.min(nodes[:, 1]))
+    q = mass_flux / transverse_length
     pout = _bc_value(config, "hydraulics", "pressure", 0)
     Tin = _bc_value(config, "thermal", "temperature", 0)
     Tout = _bc_value(config, "thermal", "temperature", 1)
