@@ -431,7 +431,7 @@ def check_thermoelastic_cooling(
             axis.set_title(label, fontsize=15)
             axis.text(
                 0.5,
-                0.08,
+                0.04,
                 f"relative error: {error:.3e}",
                 transform=axis.transAxes,
                 ha="center",
