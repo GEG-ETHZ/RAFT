@@ -2157,23 +2157,6 @@ def _supg_tau_values(
     return tau
 
 
-def _evaluate_total_energy(
-    T: npt.NDArray[np.float64],
-    phi_L: PropertyResult,
-    rho_f: PropertyResult,
-    u_f: PropertyResult,
-    solid: RegionSolidData,
-    *,
-    no_solid: bool,
-) -> npt.NDArray[np.float64]:
-    """Evaluate the total (solid + fluid) stored energy."""
-    # Evaluated in numba kernel.
-    E: npt.NDArray[np.float64] = _total_energy_values(
-        T, phi_L.value, rho_f.value, u_f.value, solid.rho_s, solid.cp_s, no_solid
-    )
-    return E
-
-
 def _evaluate_advection_terms(
     N_q: npt.NDArray[np.float64],  # Shape functions
     B_q: npt.NDArray[np.float64],  # Shape function gradients
@@ -2207,109 +2190,231 @@ def _evaluate_advection_terms(
     npt.NDArray[np.float64],  # integrand_SUPG_dp (KTp), `_EMPTY` unless want_tangent_dp
     npt.NDArray[np.float64],  # integrand_SUPG_dphi (KTu), `_EMPTY` unless want_tangent_dphi
 ]:
-    """Evaluate the SUPG-stabilized advective energy residual integrands and tangents."""
-    rho_s, cp_s = solid.rho_s, solid.cp_s
-    rho_f_n = rho_f.q_n
-    hf_q = hf.q_n
-    darcy_flux = q_D / rho_f_n.value  # Volume flux
+    """Evaluate the SUPG-stabilized advective energy residual integrands and tangents.
 
+    Unwanted tangents are returned empty. The work is done in `_advection_terms_values`.
+    """
     # lambda_e is a region constant: scalar-like (isotropic fracture case), (nq, 1, 1)
     # (isotropic bulk case), or (nq, nsd, nsd) (anisotropic). Broadcast into a fresh array so
     # the numba kernel always sees the same contiguous, writable type; a read-only view would
-    # cost an extra ~1s compiled specialization.
+    # cost an extra compiled specialization.
     lambda_e_bcast = np.empty((nq, 1, 1) if isotropic_cond else (nq, nsd, nsd))
     lambda_e_bcast[...] = lambda_e
 
-    # Volumetric heat capacity and transient rate for the tau transient limit
-    phi_q = phi_L.q_n.value
-    heat_capacity = np.ascontiguousarray(
-        (1 - phi_q) * rho_s * cp_s * (1 - no_solid) + phi_q * rho_f_n.value * hf_q.cp
+    phi_q, rho_q, u_q, hf_q = phi_L.q, rho_f.q, u_f.q, hf.q
+    return _advection_terms_values(  # type: ignore[no-any-return]
+        N_q,
+        B_q,
+        q_D,
+        kin.T_q,
+        kin_n.T_q,
+        kin.L_vec,
+        phi_q.value,
+        phi_q.dp,
+        phi_q.dT,
+        rho_q.value,
+        rho_q.dp,
+        rho_q.dT,
+        u_q.value,
+        u_q.dp,
+        u_q.dT,
+        hf_q.value,
+        hf_q.dp,
+        hf_q.dT,
+        hf_q.cp,
+        hf.e.value,
+        rho_f.e.value,
+        lambda_e_bcast,
+        dqD_dT if want_tangent_dT else _EMPTY_3D,
+        dqD_dp if want_tangent_dp else _EMPTY_3D,
+        cv,
+        solid.rho_s * solid.cp_s * (0.0 if no_solid else 1.0),
+        float(steady_temp),
+        nsd,
+        isotropic_cond,
+        want_tangent_dT,
+        want_tangent_dp,
+        want_tangent_dphi,
     )
-    rate = (1 - steady_temp) * cv[0]
-    # Evaluated in numba kernel.
-    tau = _supg_tau_values(hf_q.cp, q_D, kin.L_vec, lambda_e_bcast, heat_capacity, rate, nsd, isotropic_cond)
 
-    # Discretized strong form residual at quadrature points
-    # Energy rate
-    E_q = _evaluate_total_energy(kin.T_q, phi_L.q, rho_f.q, u_f.q, solid, no_solid=no_solid)
-    energy_dot = (1 - steady_temp) * (
-        cv[0] * E_q[:, :, 0:1] + cv[1] * E_q[:, :, 1:2] + cv[2] * E_q[:, :, 2:3]
-    )
-    # Enthalpy at nodes
-    grad_hf = B_q @ hf.e_n.value  # Enthalpy gradient
-    grad_rhof = B_q @ rho_f.e_n.value  # density gradient
-    RTh = (
-        energy_dot + (grad_hf * rho_f_n.value + hf_q.value * grad_rhof).transpose(0, 2, 1) @ darcy_flux
-    )  # discretized residual
 
-    integrand_advection = q_D * hf_q.value
-    integrand_SUPG = hf_q.cp * q_D * tau * RTh
+@njit(cache=True)  # type: ignore[untyped-decorator]
+def _history_column(n_columns: int, column: int) -> int:
+    """Column of a time-history field, reusing the current iterate where only it is stored."""
+    return column if n_columns > column else 0
 
-    integrand_advection_dT = _EMPTY
-    integrand_SUPG_dT = _EMPTY
-    if want_tangent_dT:
-        # Common terms in dT and dp. want_tangent_dp never appears without want_tangent_dT.
-        phi_L_n = phi_L.q_n
-        u_f_n = u_f.q_n
-        internal_energy_term = rho_f_n.value * u_f_n.value - rho_s * cp_s * kin_n.T_q
-        hf_over_rho = hf_q.value / rho_f_n.value
-        grad_hf_eff = grad_hf + hf_over_rho * grad_rhof
 
-        # Specific to dT
-        D2 = grad_rhof.transpose(0, 2, 1) @ q_D  # d/dTe of (grad_rhof . q_D), nq x 1 x 1
-        dqD_dT_direct = -dqD_dT  # +d(q_D)/dT, opposite sign convention from Kpp/KpT's dqD_dT
+# error_model="numpy": see _effective_length
+@njit(cache=True, error_model="numpy")  # type: ignore[untyped-decorator]
+def _advection_terms_values(  # noqa: C901
+    N_q: npt.NDArray[np.float64],  # (nq, 1, nne)
+    B_q: npt.NDArray[np.float64],  # (nq, nsd, nne)
+    q_D: npt.NDArray[np.float64],  # mass flux (nq, nsd, 1)
+    T_q: npt.NDArray[np.float64],  # temperature history at quad points (nq, 1, 4)
+    T_n_q: npt.NDArray[np.float64],  # current-iterate temperature at quad points (nq, 1, 1)
+    L_vec: npt.NDArray[np.float64],  # element extents (nsd, 1)
+    phi_value: npt.NDArray[np.float64],  # quad point values (nq, 1, history or 1)
+    phi_dp: npt.NDArray[np.float64],
+    phi_dT: npt.NDArray[np.float64],
+    rho_value: npt.NDArray[np.float64],
+    rho_dp: npt.NDArray[np.float64],
+    rho_dT: npt.NDArray[np.float64],
+    u_value: npt.NDArray[np.float64],
+    u_dp: npt.NDArray[np.float64],
+    u_dT: npt.NDArray[np.float64],
+    hf_value: npt.NDArray[np.float64],
+    hf_dp: npt.NDArray[np.float64],
+    hf_dT: npt.NDArray[np.float64],
+    hf_cp: npt.NDArray[np.float64],
+    hf_nodes: npt.NDArray[np.float64],  # nodal enthalpy (nne, history or 1)
+    rho_nodes: npt.NDArray[np.float64],  # nodal density (nne, history or 1)
+    lambda_e: npt.NDArray[np.float64],  # (nq, 1, 1) isotropic or (nq, nsd, nsd)
+    dqD_dT: npt.NDArray[np.float64],  # (nq, nsd, nne), Kpp/KpT sign convention; empty unless want_dT
+    dqD_dp: npt.NDArray[np.float64],  # (nq, nsd, nne), Kpp/KpT sign convention; empty unless want_dp
+    cv: npt.NDArray[np.float64],  # rate coefficients
+    solid_capacity: float,  # rho_s cp_s, 0 without solid
+    steady_temp: float,
+    nsd: int,
+    isotropic_cond: bool,
+    want_dT: bool,
+    want_dp: bool,
+    want_dphi: bool,
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Numba kernel for the SUPG advection integrands and tangents, one quadrature point at a time.
 
-        # Partial derivative of residual
-        dR_dT = (
-            (1 - steady_temp)
-            * cv[0]
-            * (
-                (1 - phi_L_n.value) * rho_s * cp_s * (1 - no_solid)
-                + phi_L_n.dT * internal_energy_term
-                + phi_L_n.value * (rho_f_n.dT * u_f_n.value + rho_f_n.value * u_f_n.dT)
+    Returns (advection, SUPG, advection_dT, SUPG_dT, advection_dp, SUPG_dp, SUPG_dphi); the
+    tangents are (nq, nsd, nne) rows over the element nodes, or empty when not wanted.
+    """
+    nq = N_q.shape[0]
+    nne = N_q.shape[2]
+    rate = (1.0 - steady_temp) * cv[0]
+    empty = np.empty((0, 0, 0))
+
+    integrand_advection = np.empty((nq, nsd, 1))
+    integrand_SUPG = np.empty((nq, nsd, 1))
+    advection_dT = np.empty((nq, nsd, nne)) if want_dT else empty
+    SUPG_dT = np.empty((nq, nsd, nne)) if want_dT else empty
+    advection_dp = np.empty((nq, nsd, nne)) if want_dp else empty
+    SUPG_dp = np.empty((nq, nsd, nne)) if want_dp else empty
+    SUPG_dphi = np.empty((nq, nsd, nne)) if want_dphi else empty
+
+    # SUPG coefficient from the current-iterate heat capacity
+    heat_capacity = np.empty((nq, 1, 1))
+    for q in range(nq):
+        phi = phi_value[q, 0, 0]
+        heat_capacity[q, 0, 0] = (1.0 - phi) * solid_capacity + phi * rho_value[q, 0, 0] * hf_cp[q, 0, 0]
+    tau_all = _supg_tau_values(hf_cp, q_D, L_vec, lambda_e, heat_capacity, rate, nsd, isotropic_cond)
+
+    grad_hf = np.empty(nsd)
+    grad_rho = np.empty(nsd)
+    darcy_flux = np.empty(nsd)
+    for q in range(nq):
+        tau = tau_all[q, 0, 0]
+        rho = rho_value[q, 0, 0]
+        hf = hf_value[q, 0, 0]
+        cp = hf_cp[q, 0, 0]
+        phi = phi_value[q, 0, 0]
+        u = u_value[q, 0, 0]
+
+        # Energy rate from the stored energy history
+        energy_dot = 0.0
+        for c in range(3):
+            ip = _history_column(phi_value.shape[2], c)
+            ir = _history_column(rho_value.shape[2], c)
+            iu = _history_column(u_value.shape[2], c)
+            phi_c = phi_value[q, 0, ip]
+            E_c = (1.0 - phi_c) * solid_capacity * T_q[q, 0, c] + phi_c * rho_value[q, 0, ir] * u_value[
+                q, 0, iu
+            ]
+            energy_dot += cv[c] * E_c
+        energy_dot *= 1.0 - steady_temp
+
+        # Nodal enthalpy and density gradients, volume flux
+        for d in range(nsd):
+            gh = 0.0
+            gr = 0.0
+            for j in range(nne):
+                gh += B_q[q, d, j] * hf_nodes[j, 0]
+                gr += B_q[q, d, j] * rho_nodes[j, 0]
+            grad_hf[d] = gh
+            grad_rho[d] = gr
+            darcy_flux[d] = q_D[q, d, 0] / rho
+
+        # Discretized strong form residual
+        RTh = energy_dot
+        for d in range(nsd):
+            RTh += (grad_hf[d] * rho + hf * grad_rho[d]) * darcy_flux[d]
+
+        for d in range(nsd):
+            integrand_advection[q, d, 0] = q_D[q, d, 0] * hf
+            integrand_SUPG[q, d, 0] = cp * q_D[q, d, 0] * tau * RTh
+
+        if not (want_dT or want_dp or want_dphi):
+            continue
+
+        # Common terms of the tangents
+        internal_energy_term = rho * u - solid_capacity * T_n_q[q, 0, 0]
+        hf_over_rho = hf / rho
+
+        if want_dT:
+            D2 = 0.0  # d/dTe of (grad_rho . q_D)
+            for d in range(nsd):
+                D2 += grad_rho[d] * q_D[q, d, 0]
+            storage_dT = rate * (
+                (1.0 - phi) * solid_capacity
+                + phi_dT[q, 0, 0] * internal_energy_term
+                + phi * (rho_dT[q, 0, 0] * u + rho * u_dT[q, 0, 0])
             )
-            * N_q
-            + (hf_q.dT + hf_over_rho * rho_f_n.dT) * (q_D.transpose(0, 2, 1) @ B_q)
-            + grad_hf_eff.transpose(0, 2, 1) @ dqD_dT_direct
-            + (hf_q.dT / rho_f_n.value - hf_over_rho * rho_f_n.dT / rho_f_n.value) * D2 * N_q
-        )
-        integrand_advection_dT = hf_q.dT * q_D * N_q + hf_q.value * dqD_dT_direct
-        integrand_SUPG_dT = tau * hf_q.cp * dR_dT * q_D + tau * hf_q.cp * RTh * dqD_dT_direct
+            enthalpy_dT = hf_dT[q, 0, 0] + hf_over_rho * rho_dT[q, 0, 0]
+            density_dT = (hf_dT[q, 0, 0] / rho - hf_over_rho * rho_dT[q, 0, 0] / rho) * D2
+            for j in range(nne):
+                N_j = N_q[q, 0, j]
+                qB = 0.0
+                grad_dq = 0.0  # grad_hf_eff . d(q_D)/dT_j
+                for d in range(nsd):
+                    qB += q_D[q, d, 0] * B_q[q, d, j]
+                    grad_dq += (grad_hf[d] + hf_over_rho * grad_rho[d]) * -dqD_dT[q, d, j]
+                dR_dT = storage_dT * N_j + enthalpy_dT * qB + grad_dq + density_dT * N_j
+                for d in range(nsd):
+                    dq_direct = -dqD_dT[q, d, j]  # +d(q_D)/dT, opposite sign convention from KpT
+                    advection_dT[q, d, j] = hf_dT[q, 0, 0] * q_D[q, d, 0] * N_j + hf * dq_direct
+                    SUPG_dT[q, d, j] = tau * cp * dR_dT * q_D[q, d, 0] + tau * cp * RTh * dq_direct
 
-    integrand_advection_dp = _EMPTY
-    integrand_SUPG_dp = _EMPTY
-    if want_tangent_dp:
-        dqD_dp_direct = -dqD_dp  # +d(q_D)/dp, opposite sign convention from Kpp/KpT's dqD_dp
-        # Partial derivative of residual
-        dR_dp = (
-            (1 - steady_temp)
-            * cv[0]
-            * (
-                phi_L_n.dp * internal_energy_term
-                + phi_L_n.value * (rho_f_n.dp * u_f_n.value + rho_f_n.value * u_f_n.dp)
+        if want_dp:
+            storage_dp = rate * (
+                phi_dp[q, 0, 0] * internal_energy_term + phi * (rho_dp[q, 0, 0] * u + rho * u_dp[q, 0, 0])
             )
-            * N_q
-            + (hf_q.dp + hf_over_rho * rho_f_n.dp) * q_D * B_q
-            + grad_hf_eff * dqD_dp_direct
-            + (hf_q.dp * grad_rhof / rho_f_n.value - hf_over_rho * grad_rhof / rho_f_n.value * rho_f_n.dp)
-        )
-        integrand_advection_dp = hf_q.dp * q_D * N_q + hf_q.value * dqD_dp_direct
-        integrand_SUPG_dp = tau * hf_q.cp * dR_dp * q_D + tau * hf_q.cp * RTh * dqD_dp_direct
+            enthalpy_dp = hf_dp[q, 0, 0] + hf_over_rho * rho_dp[q, 0, 0]
+            for j in range(nne):
+                N_j = N_q[q, 0, j]
+                for d in range(nsd):
+                    dq_direct = -dqD_dp[q, d, j]  # +d(q_D)/dp, opposite sign convention from Kpp
+                    # componentwise in d, as in the original vectorized form
+                    dR_dp = (
+                        storage_dp * N_j
+                        + enthalpy_dp * q_D[q, d, 0] * B_q[q, d, j]
+                        + (grad_hf[d] + hf_over_rho * grad_rho[d]) * dq_direct
+                        + hf_dp[q, 0, 0] * grad_rho[d] / rho
+                        - hf_over_rho * grad_rho[d] / rho * rho_dp[q, 0, 0]
+                    )
+                    advection_dp[q, d, j] = hf_dp[q, 0, 0] * q_D[q, d, 0] * N_j + hf * dq_direct
+                    SUPG_dp[q, d, j] = tau * cp * dR_dp * q_D[q, d, 0] + tau * cp * RTh * dq_direct
 
-    integrand_SUPG_dphi = _EMPTY
-    if want_tangent_dphi:
-        dR_dphi = (1 - steady_temp) * cv[0] * internal_energy_term * N_q
-        integrand_SUPG_dphi = tau * hf_q.cp * dR_dphi * q_D
+        if want_dphi:
+            for j in range(nne):
+                dR_dphi = rate * internal_energy_term * N_q[q, 0, j]
+                for d in range(nsd):
+                    SUPG_dphi[q, d, j] = tau * cp * dR_dphi * q_D[q, d, 0]
 
-    return (
-        integrand_advection,
-        integrand_SUPG,
-        integrand_advection_dT,
-        integrand_SUPG_dT,
-        integrand_advection_dp,
-        integrand_SUPG_dp,
-        integrand_SUPG_dphi,
-    )
+    return integrand_advection, integrand_SUPG, advection_dT, SUPG_dT, advection_dp, SUPG_dp, SUPG_dphi
 
 
 # ---- Integration functions
@@ -3026,7 +3131,7 @@ def integrate_residuals(  # noqa
                         no_solid=on_submesh,
                         isotropic_cond=isotropic_cond,
                     )
-                    # Raw avection
+                    # Raw advection
                     element_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(
                         B_q, integrand_advection, wJe_q, flow.isotropic_perm
                     )
