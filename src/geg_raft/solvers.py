@@ -34,7 +34,11 @@ from .matrixassembly import (
 )
 from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
-from .solidmechanics import internal_force
+from .solidmechanics import fracture_contact, fracture_face_nodes, internal_force
+
+# Stagnation acceptance: no new minimum residual in this many iterations, within this factor of NR_tol
+STAGNATION_WINDOW = 10
+STAGNATION_FACTOR = 10.0
 
 
 def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
@@ -201,6 +205,18 @@ def _check_convergence_NR(
     return converged, NR["all"][iteration]
 
 
+def _stagnated(NR_all: npt.NDArray[np.float64], iteration: int, NR_tol: float) -> bool:
+    """Residual has reached no new minimum over the last STAGNATION_WINDOW iterations and is near NR_tol.
+
+    Accepts a solution whose residual is held above NR_tol by round-off rather than by the physics.
+    """
+    if iteration < STAGNATION_WINDOW:
+        return False
+    best_before = NR_all[: iteration + 1 - STAGNATION_WINDOW].min()
+    best_recent = NR_all[iteration + 1 - STAGNATION_WINDOW : iteration + 1].min()
+    return bool(best_recent >= best_before and NR_all[iteration] < STAGNATION_FACTOR * NR_tol)
+
+
 def _plot_nr_residuals(
     NR: dict[str, Any],
     aitken_state: dict[str, Any],
@@ -312,6 +328,34 @@ def _aitken_relax(
     return sol_mp1_damped, res_mp1, delta, sol_mp1_damped
 
 
+def _field_row_scale(A: sp.csc_matrix[Any], key_dofs: dict[str, Any]) -> npt.NDArray[np.float64]:
+    """Row scale per field, 1 / mean |diag| of the field's diagonal block."""
+    diag = np.abs(A.diagonal())
+    scale = np.ones(A.shape[0])
+    for dofs in key_dofs.values():
+        d = diag[dofs]
+        d = d[d > 0.0]
+        if d.size:
+            scale[dofs] = 1.0 / d.mean()
+    return scale
+
+
+def _relax_dofs(
+    key: str, local_dofs: npt.NDArray[np.int_], mesh: dict[str, Any], mechanics: MechanicsMatrices
+) -> npt.NDArray[np.int_]:
+    """DoFs of `key` that set the Aitken factor: all of them for p and T; for u, the fracture face nodes
+    where contact occurs (none without fractures, since the force balance is otherwise linear).
+    """
+    if key != "u":
+        return local_dofs
+    if not mechanics.interface.weights.size:
+        return np.empty(0, dtype=int)
+    nsd = mesh["nsd"]
+    face_nodes = np.unique(fracture_face_nodes(mesh))
+    dofs: npt.NDArray[np.int_] = (nsd * face_nodes[:, None] + np.arange(nsd)).ravel()
+    return dofs
+
+
 # Placeholder when mechanics is off
 
 # Primary-variable keys and the physics field that solves them, in block order
@@ -394,7 +438,8 @@ def _newton_raphson_loop(  # noqa
         nn_all += len(local_dofs)
 
         # Initialize relaxation
-        free_dofs_key = np.setdiff1d(local_dofs, fixed_dofs[key]).astype(int) + key_dofs[key][0]
+        free_dofs_key = np.setdiff1d(_relax_dofs(key, local_dofs, mesh, mechanics), fixed_dofs[key])
+        free_dofs_key = free_dofs_key.astype(int) + key_dofs[key][0]
         aitken_state["variables_km1"] = np.vstack(
             (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
         )
@@ -405,7 +450,9 @@ def _newton_raphson_loop(  # noqa
     aitken_state["delta_variables_km1"] = np.zeros((nn_all, 1))
 
     # Run-type labels
-    if len(keys) > 1:
+    if set(keys) == {"u", "p"}:
+        label = "MONOLITHIC HYDRO-MECHANIC"
+    elif len(keys) > 1:
         label = "MONOLITHIC"
     elif solve_u:
         label = "ITERATIVE DISPLACEMENT"
@@ -436,7 +483,13 @@ def _newton_raphson_loop(  # noqa
             )
         # Force balance from the stored linear matrices
         if solve_u:
-            F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material)
+            F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material, mesh["nn"])
+            K_uu = mechanics.K_uu
+            if mechanics.interface.weights.size:
+                # Fracture contact, the only nonlinear term of the force balance
+                contact_force, K_contact = fracture_contact(mechanics.interface, primary_variables["u"][:, 0])
+                F_vec["F_u_internal"] = F_vec["F_u_internal"] + contact_force
+                K_uu = sp.csc_matrix(K_uu + K_contact)
 
         # Update reaction flow rates in-loop when coupled, for the enthalpy boundary flux
         if solve_p and solve_T:
@@ -461,6 +514,11 @@ def _newton_raphson_loop(  # noqa
             if verbose:
                 print(" - CONVERGED")
             break
+        elif _stagnated(NR["all"], iteration, NR_tol):
+            converged = True
+            if verbose:
+                print(f" - CONVERGED (stagnated at {iteration_error:.2e} > NR_tol)")
+            break
         else:  # Update iteration
             # Integrate Jacobian
             jacobian: dict[str, Any] = {}
@@ -484,7 +542,7 @@ def _newton_raphson_loop(  # noqa
             # Assemble Jacobian - different by case
             if solve_u and not (solve_p or solve_T):
                 # Mechanics only
-                A = mechanics.K_uu
+                A = K_uu
                 b = R["u"]
 
             elif solve_u and solve_p and solve_T:
@@ -505,7 +563,7 @@ def _newton_raphson_loop(  # noqa
                     sp.csc_matrix[Any],
                     sp.bmat(
                         [
-                            [mechanics.K_uu, mechanics.K_up, mechanics.K_uT],
+                            [K_uu, mechanics.K_up, mechanics.K_uT],
                             [jacobian["Kpu"], jacobian["Kpp"], jacobian["KpT"]],
                             [
                                 jacobian["KTu"] - K_enth_bnd["K_enth_bnd_Tu"],
@@ -534,7 +592,7 @@ def _newton_raphson_loop(  # noqa
                     sp.csc_matrix[Any],
                     sp.bmat(
                         [
-                            [mechanics.K_uu, mechanics.K_uT],
+                            [K_uu, mechanics.K_uT],
                             [jacobian["KTu"], jacobian["KTT"] - K_enth_bnd["K_enth_bnd"]],
                         ],
                         format="csc",
@@ -549,7 +607,7 @@ def _newton_raphson_loop(  # noqa
                     sp.csc_matrix[Any],
                     sp.bmat(
                         [
-                            [mechanics.K_uu, mechanics.K_up],
+                            [K_uu, mechanics.K_up],
                             [jacobian["Kpu"], jacobian["Kpp"]],
                         ],
                         format="csc",
@@ -609,6 +667,10 @@ def _newton_raphson_loop(  # noqa
                 b = R["T"]
 
             # Solve system of equations
+            # Scale each field's rows to a common magnitude before the solve
+            row_scale = _field_row_scale(A, key_dofs)
+            A = sp.csc_matrix(sp.diags(row_scale) @ A)
+            b = row_scale[:, None] * np.asarray(b)
             delta_var = _partition_and_solve_matrix(A, -b, np.arange(0, nn_all), nE)
 
             d_n = d_n + NR_step * delta_var.reshape(-1, 1)
@@ -666,7 +728,7 @@ def _newton_raphson_loop(  # noqa
     if solve_p and not solve_T:
         primary_variables["q"] = _reaction_flow_rates(F_vec, F_ext, fixed_dofs, dirichlet_dofs)
 
-    if debug_plot_on or iteration >= iter_max:
+    if debug_plot_on or iteration >= iter_max or not converged:
         _plot_nr_residuals(NR, aitken_state, iteration, iter_max, keys)
 
     return primary_variables, converged, iteration_error

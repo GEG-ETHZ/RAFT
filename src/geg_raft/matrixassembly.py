@@ -2982,7 +2982,12 @@ def integrate_residuals(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
-        strain = mechanics.nodal_strain[r] @ primary_variables["u"] if mechanics_on else _EMPTY
+        # strain from the reference displacement
+        strain = (
+            mechanics.nodal_strain[r] @ (primary_variables["u"] - material["u_0"][:, None])
+            if mechanics_on
+            else _EMPTY
+        )
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(
             p_nodes,
@@ -3462,7 +3467,11 @@ def integrate_tangent_matrices(  # noqa
             material, r, is_fracture=is_fracture, is_well=is_well
         )
         solid = _get_region_solid_data(material, r, no_solid=on_submesh)
-        strain = mechanics.nodal_strain[r] @ primary_variables["u"][:, 0:1] if mechanics_on else _EMPTY
+        strain = (
+            mechanics.nodal_strain[r] @ (primary_variables["u"][:, 0:1] - material["u_0"][:, None])
+            if mechanics_on
+            else _EMPTY
+        )
         dFT_dphi_entries: list[npt.NDArray[np.float64]] = []
         # Porosity depends on region solid properties, so nodes shared across regions differ
         nodal_phi_L = _evaluate_nodal_porosity(

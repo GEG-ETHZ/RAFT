@@ -27,9 +27,17 @@ import numpy as np
 import numpy.typing as npt
 
 from .matprops import get_EOS, get_porosity, get_porosity_lagrangian, get_viscosity
-from .matrixassembly import _get_region_value
+from .matrixassembly import _get_quad_points_and_shape_functions, _get_region_value
+from .mechconstitutive import penalty_contact
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
-from .solidmechanics import STRESS_NAMES, element_stress, element_volumetric_strain, nodal_stress
+from .solidmechanics import (
+    STRESS_NAMES,
+    element_penalty,
+    element_stress,
+    element_volumetric_strain,
+    fracture_face_nodes,
+    nodal_stress,
+)
 from .writevtk import write_mesh2vtk
 
 # Default output directory: /main_folder/outputs/
@@ -488,7 +496,9 @@ def _build_cell_scalars(
         porosity = np.empty(mesh["ne"])
         p_0 = material["p_0"]
         mechanics_on = controls["physics"].matrix.solve_mechanics
-        strain = element_volumetric_strain(mesh, controls, primary_variables) if mechanics_on else np.empty(0)
+        strain = np.empty(0)
+        if mechanics_on:
+            strain = element_volumetric_strain(mesh, material, controls, primary_variables)
         for e in range(ne):
             enodes = conn[e]
             region = mesh["regions"][e]
@@ -881,6 +891,41 @@ def _write_matrix_output(
     )
 
 
+# Strip cell [i+, j+, j-, i-] of each L2 fracture element: element node and face of each strip node
+_STRIP_NODE = (0, 1, 1, 0)
+_STRIP_SIDE = (0, 0, 1, 1)  # 0 positive face, 1 negative face
+
+
+def _fracture_contact_cell_data(
+    mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any], u: npt.NDArray[np.float64]
+) -> list[dict[str, Any]]:
+    """Per-element mean normal jump g_n (opening positive, negative in penalty contact) and contact
+    pressure (compression positive), from the total displacement u.
+    """
+    fmesh = mesh["fracture_mesh"]
+    nsd = mesh["nsd"]
+    U = u.reshape(-1, nsd)
+    faces = fracture_face_nodes(mesh)
+    normals = np.empty((len(fmesh["conn"]), nsd))
+    for r, elems in enumerate(fmesh["region_lists"]):
+        normals[elems] = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
+    # normal jump n . (u+ - u-) at each element node, (ne_f, nne_f)
+    jump = U[faces[:, :, 0]] - U[faces[:, :, 1]]
+    g_nodes = np.sum(jump * normals[:, None, :], axis=2)
+
+    # Gauss point values from the linear jump
+    _, nq, N_q, _ = _get_quad_points_and_shape_functions(
+        fmesh["n_quadrature"][0], nsd - 1, fmesh["element_type"][0]
+    )
+    g_q = g_nodes @ N_q[:, 0, :].T
+    penalty = element_penalty(mesh, material, controls)
+    sigma_c, _ = penalty_contact(g_q, np.repeat(penalty[:, None], nq, axis=1))
+    return [
+        {"name": "normal_jump", "data": _sanitize(g_q.mean(axis=1))},
+        {"name": "contact_pressure", "data": _sanitize(sigma_c.mean(axis=1))},
+    ]
+
+
 def _write_fracture_output(
     n: int,
     io_path: str,
@@ -890,12 +935,20 @@ def _write_fracture_output(
     primary_variables: dict[str, Any],
     verbose: bool,
 ) -> None:
-    """Compute fluxes and write one solution to VTK for the fracture."""
+    """Compute fluxes and write one solution to VTK for the fractures, each as a strip of its two faces.
+
+    Every fracture element becomes a cell [i+, j+, j-, i-] at the fracture nodes, with point data copied
+    to both faces. The `displacement` vector moves each face with the rock on its side and separates the
+    faces by the aperture: u_side +- w/2 n, with u_side the total face displacement (zero without
+    mechanics).
+    """
     if verbose:
         print("     Writing fractures to output file...")
 
+    fmesh = mesh["fracture_mesh"]
+    nsd = mesh["nsd"]
     nn = mesh["nn"]
-    nn_f = nn + mesh["fracture_mesh"]["nn"]
+    nn_f = nn + fmesh["nn"]
     filename = os.path.join(io_path, f"Fracture.vtk.{n}")
 
     # ----- Extract primary variables (fracture nodes follow matrix nodes)
@@ -904,19 +957,49 @@ def _write_fracture_output(
     T_flow = _flow_temperature(primary_variables, controls)[nn:nn_f]  # flow property temperature
 
     # --- Calculate fluxes
-    flux = compute_fluid_flux(mesh["fracture_mesh"], material, p, T_flow, True, controls["gravity"])
+    flux = compute_fluid_flux(fmesh, material, p, T_flow, True, controls["gravity"])
+    scalardata_node = _build_point_scalars(controls, fmesh, material, p, T)
+    scalardata_cell = _build_fracture_cell_data(fmesh, material)
 
-    scalardata_point = _build_point_scalars(controls, mesh["fracture_mesh"], material, p, T)
+    # ----- Strip mesh: four nodes per element at the fracture nodes
+    conn_f = np.asarray(fmesh["conn"])
+    ne_f = conn_f.shape[0]
+    strip_node = conn_f[:, _STRIP_NODE]  # fracture node of each strip node, (ne_f, 4)
+    strip_side = np.tile(_STRIP_SIDE, (ne_f, 1))
+    index = strip_node.ravel()
+    strip_nodes = fmesh["nodes"][index]
+    strip_conn = np.arange(4 * ne_f).reshape(ne_f, 4).tolist()
 
-    vectordata_point = [{"name": "flux", "data": _sanitize(flux.T)}]
+    # Face separation by the aperture along each element's normal
+    offset = np.empty((ne_f, nsd))
+    for r, elems in enumerate(fmesh["region_lists"]):
+        normal = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
+        offset[elems] = 0.5 * _get_region_value(material["fracture"]["aperture"], r) * normal
+    sign = np.where(strip_side == 0, 1.0, -1.0)
+    displacement = sign[:, :, None] * offset[:, None, :]
 
-    scalardata_cell = _build_fracture_cell_data(mesh["fracture_mesh"], material)
+    if controls["physics"].solves("mechanics"):
+        # total displacement of the face on each strip node's side
+        U = primary_variables["u"][:, 0].reshape(-1, nsd)
+        faces = fracture_face_nodes(mesh)
+        local = np.tile(_STRIP_NODE, (ne_f, 1))
+        rows = np.arange(ne_f)[:, None]
+        displacement = displacement + U[faces[rows, local, strip_side]]
+        scalardata_cell = scalardata_cell + _fracture_contact_cell_data(
+            mesh, material, controls, primary_variables["u"][:, 0]
+        )
+
+    scalardata_point = [{"name": f["name"], "data": f["data"][index]} for f in scalardata_node]
+    vectordata_point = [
+        {"name": "flux", "data": _sanitize(flux.T[index])},
+        {"name": "displacement", "data": _sanitize(displacement.reshape(-1, nsd))},
+    ]
 
     write_mesh2vtk(
         filename,
         "TANGO",
-        mesh["fracture_mesh"]["nodes"],
-        mesh["fracture_mesh"]["conn"],
+        strip_nodes,
+        strip_conn,
         scalardata_point,
         vectordata_point,
         scalardata_cell,

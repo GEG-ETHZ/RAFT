@@ -31,6 +31,7 @@ from typing import Any, Literal, get_args
 
 import numpy as np
 import numpy.typing as npt
+from scipy.sparse import csc_matrix, diags
 
 from .dofmap import field_layouts
 from .history import History
@@ -220,7 +221,7 @@ def _build_steady_state_controls(controls: dict[str, Any]) -> dict[str, Any]:
     unstrained relative to themselves. Wells are excluded from the assembly.
     """
     controls_SS = controls.copy()
-    controls_SS["physics"] = controls["physics"].as_steady().with_off("mechanics")
+    controls_SS["physics"] = controls["physics"].as_steady()
     controls_SS["wells_on"] = 0
     controls_SS["monolithic"] = False
     controls_SS["volumetric_strain_on"] = 0
@@ -290,6 +291,20 @@ def _no_wells_problem(
     return mesh_no_wells, pv_no_wells, BC_no_wells
 
 
+def _steady_state_mechanics(mechanics: MechanicsMatrices, nn: int, nn_no_wells: int) -> MechanicsMatrices:
+    """Force-balance matrices for the steady-state initial condition, without wells.
+
+    The solved p and T become the reference p_0 and T_0, so the matrix carries no poro- or thermoelastic
+    load relative to them; only the fracture pressure columns of K_up remain.
+    """
+    if not mechanics.nodal_strain:
+        return mechanics
+    fracture_columns = (np.arange(nn_no_wells) >= nn).astype(np.float64)
+    K_up = csc_matrix(mechanics.K_up[:, :nn_no_wells] @ diags(fracture_columns))
+    K_uT = csc_matrix((mechanics.K_uT.shape[0], nn_no_wells))
+    return dataclasses.replace(mechanics, K_up=K_up, K_uT=K_uT)
+
+
 def _assign_ic_bc_compatible(
     config_ini: dict[str, Any],
     controls: dict[str, Any],
@@ -300,6 +315,7 @@ def _assign_ic_bc_compatible(
     t: float,
     n: int,
     verbose: bool,
+    mechanics: MechanicsMatrices,
 ) -> dict[str, Any]:
     """Steady-state initial condition without wells or external groups, the unperturbed state."""
     mesh_no_wells, pv_no_wells, BC_no_wells = _no_wells_problem(mesh, primary_variables, BC_config)
@@ -314,12 +330,14 @@ def _assign_ic_bc_compatible(
         BC_no_wells,
         n,
         verbose,
+        _steady_state_mechanics(mechanics, mesh["nn"], mesh_no_wells["nn_total"]),
     )
 
     nn_no_wells = mesh_no_wells["nn_total"]
     primary_variables["p"][:nn_no_wells] = pv_no_wells["p"]
     primary_variables["T"][:nn_no_wells] = pv_no_wells["T"]
     primary_variables["q"][:nn_no_wells] = pv_no_wells["q"]
+    primary_variables["u"][:, :] = pv_no_wells["u"]
     primary_variables["T"][nn_no_wells:] = config_ini["T_ini"]  # fallback for wells never inside the domain
     if "well_mesh" in mesh:
         primary_variables = _assign_well_ic_from_matrix(
@@ -404,6 +422,7 @@ def _solve_steady_state(  # noqa
     BC_config: list[dict[str, Any]],
     n: int,
     verbose: bool,
+    mechanics: MechanicsMatrices,
 ) -> dict[str, Any]:
     """Solve for a steady state compatible with the boundary conditions."""
     if verbose:
@@ -450,6 +469,7 @@ def _solve_steady_state(  # noqa
                 [1, 1, 1],
                 n,
                 verbose,
+                mechanics=mechanics,
             )
             primary_variables["T"][:, 1] = primary_variables["T"][:, 0]
         # Perform monolithic solution
@@ -467,6 +487,7 @@ def _solve_steady_state(  # noqa
             [1, 1, 1],
             n,
             verbose,
+            mechanics=mechanics,
         )
         if converged:
             break
@@ -481,6 +502,7 @@ def _solve_steady_state(  # noqa
     T = primary_variables["T"][:, 0]
     primary_variables["p"][:, :] = _broadcast_to_history(p)
     primary_variables["T"][:, :] = _broadcast_to_history(T)
+    primary_variables["u"][:, :] = primary_variables["u"][:, 0:1]
     return primary_variables
 
 
@@ -495,10 +517,23 @@ def _assign_initial_conditions(
     t: float,
     n: int,
     verbose: bool,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Assign initial conditions."""
+) -> tuple[dict[str, Any], dict[str, Any], MechanicsMatrices]:
+    """Assign initial conditions; the force-balance matrices are integrated first for BC_compatible."""
     if verbose:
         print("Assigning initial conditions...")
+
+    # In-situ total stress on matrix nodes, Voigt order
+    material["sigma_0"] = insitu_stress(
+        config_ini.get("stress", {}), mesh["nodes"], mesh["nsd"], bool(controls["axisymmetric_on"])
+    )
+    material["u_0"] = primary_variables["u"][:, 0].copy()
+
+    # Constant force-balance matrices, integrated once
+    mechanics = MechanicsMatrices.empty()
+    if controls["physics"].solves("mechanics"):
+        if verbose:
+            print("     Integrating force-balance matrices...")
+        mechanics = integrate_mechanics_matrices(mesh, material, controls)
 
     assign_type = config_ini["assignment"]
     supported_types = ["constant", "gradient", "BC_compatible"]
@@ -518,6 +553,7 @@ def _assign_initial_conditions(
             t,
             n,
             verbose,
+            mechanics,
         )
     else:
         raise ValueError(
@@ -527,11 +563,9 @@ def _assign_initial_conditions(
 
     material["p_0"] = primary_variables["p"][:, 0].copy()
     material["T_0"] = primary_variables["T"][:, 0].copy()
-    # In-situ total stress on matrix nodes, Voigt order
-    material["sigma_0"] = insitu_stress(
-        config_ini.get("stress", {}), mesh["nodes"], mesh["nsd"], bool(controls["axisymmetric_on"])
-    )
-    return primary_variables, material
+    # Reference displacement; nonzero only after the BC_compatible solve
+    material["u_0"] = primary_variables["u"][:, 0].copy()
+    return primary_variables, material, mechanics
 
 
 # ------------------------------------ Time integration decider
@@ -973,7 +1007,7 @@ def initialize_simulation(
     q = np.zeros((mesh["nn_total"], 1))
     primary_variables["q"] = q
 
-    [primary_variables, material] = _assign_initial_conditions(
+    primary_variables, material, mechanics = _assign_initial_conditions(
         config["initial_conditions"],
         controls,
         mesh,
@@ -991,13 +1025,6 @@ def initialize_simulation(
     if verbose:
         print("Export initial condition")
     postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
-
-    # Constant force-balance matrices, integrated once
-    mechanics = MechanicsMatrices.empty()
-    if controls["physics"].solves("mechanics"):
-        if verbose:
-            print("     Integrating force-balance matrices...")
-        mechanics = integrate_mechanics_matrices(mesh, material, controls)
 
     setup = SimSetup(mesh, material, controls, BC_config, critical_times, mechanics)
     state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, {})

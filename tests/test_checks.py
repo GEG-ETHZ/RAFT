@@ -25,8 +25,15 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import brentq
 
+from geg_raft.matrixassembly import _get_quad_points_and_shape_functions
 from geg_raft.preprocessing import load_config, preprocessing
-from geg_raft.solidmechanics import element_stress, insitu_stress, nodal_stress
+from geg_raft.solidmechanics import (
+    element_penalty,
+    element_stress,
+    fracture_face_nodes,
+    insitu_stress,
+    nodal_stress,
+)
 from geg_raft.subsurface import _rollover, advance, initialize_simulation, load_state, snapshot_state
 
 
@@ -1188,6 +1195,7 @@ def check_patch_test_elastic(
     material = cfg["material"]
     material["p_0"] = results["p"][:, 0]
     material["T_0"] = results["T"][:, 0]
+    material["u_0"] = np.zeros_like(results["u"][:, 0])
     material["sigma_0"] = sigma_0
 
     # calculate error; every stress recovery reproduces a constant stress exactly
@@ -1436,6 +1444,7 @@ def check_thermal_consolidation(
     material = cfg["material"]
     material["p_0"] = np.full(mesh["nn"], float(p_ini))
     material["T_0"] = np.full(mesh["nn"], float(T_ini))
+    material["u_0"] = np.zeros(mesh["nsd"] * mesh["nn"])
     material["sigma_0"] = np.zeros((mesh["nn"], 3))
 
     if plot_on:
@@ -1548,9 +1557,9 @@ def check_mandel(
         err_ex = max(err_ex, float(np.linalg.norm(p - p_e) / np.linalg.norm(p_e)))
         p_centre.append(np.mean(p[centre]) / p_undrained)
 
-        # no oscillation: the pressure falls steadily from its peak to the drained edge
+        # no oscillation: the pressure falls steadily from its peak to the drained edge, up to round-off
         peak = int(np.argmax(p[base]))
-        monotone = monotone and bool(np.all(np.diff(p[base][peak:]) <= 0.0))
+        monotone = monotone and bool(np.all(np.diff(p[base][peak:]) <= 1.0e-9 * p_undrained))
 
         if plot_on:
             p_plot = _mandel_pressure(x_plot, t, *exact)
@@ -1565,5 +1574,168 @@ def check_mandel(
 
     # Mandel-Cryer effect: the centre pressure first rises above its undrained value
     test_pass = bool(err_ex < tol and max(p_centre) > 1.0 and monotone)
+
+    return test_pass
+
+
+def _fracture_geometry(
+    config: dict[str, Any],
+) -> list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]]:
+    """Centre, unit tangent and half-length of each 2D fracture in a config."""
+    geometry = []
+    for spec in config["mesh"]["fractures"]:
+        theta = np.deg2rad(spec["values"][2][0])
+        centre = np.asarray(spec["values"][0][:2], dtype=float)
+        geometry.append((centre, np.array([np.cos(theta), np.sin(theta)]), float(spec["values"][1][0])))
+    return geometry
+
+
+def _fracture_normal_jump(mesh: dict[str, Any], u: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Normal jump g_n = n . (u+ - u-) at each fracture element node, (ne_f, nne_f)."""
+    fmesh = mesh["fracture_mesh"]
+    nsd = mesh["nsd"]
+    U = u.reshape(-1, nsd)
+    faces = fracture_face_nodes(mesh)
+    normals = np.empty((len(fmesh["conn"]), nsd))
+    for r, elems in enumerate(fmesh["region_lists"]):
+        normals[elems] = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
+    jump = U[faces[:, :, 0]] - U[faces[:, :, 1]]
+    g: npt.NDArray[np.float64] = np.sum(jump * normals[:, None, :], axis=2)
+    return g
+
+
+def _closure_stress(config: dict[str, Any], normal: npt.NDArray[np.float64]) -> float:
+    """In-situ normal stress on a fracture, compression positive: -n . sigma_0 . n."""
+    values = config["initial_conditions"]["stress"]["values"]
+    sxx, syy, sxy = values.get("Sxx", 0.0), values.get("Syy", 0.0), values.get("Sxy", 0.0)
+    return float(-(sxx * normal[0] ** 2 + 2.0 * sxy * normal[0] * normal[1] + syy * normal[1] ** 2))
+
+
+def _sneddon_opening(
+    s: npt.NDArray[np.float64], a: float, net_pressure: float, E: float, nu: float
+) -> npt.NDArray[np.float64]:
+    """Plane-strain opening of a pressurized fracture of half-length a in an infinite medium."""
+    opening: npt.NDArray[np.float64] = (
+        4.0 * (1.0 - nu**2) * net_pressure / E * np.sqrt(np.clip(a**2 - s**2, 0.0, None))
+    )
+    return opening
+
+
+def check_sneddon(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Pressurized fracture under in-situ compression: opening from the net pressure (plane strain)."""
+    # Set tolerance
+    tol = 2.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    _, G = _elastic_moduli(config)
+    nu = config["material"]["solid"]["poisson_ratio"]
+    E = 2.0 * G * (1.0 + nu)
+    centre, tangent, a = _fracture_geometry(config)[0]
+    normal = np.array([-tangent[1], tangent[0]])
+    net_pressure = config["initial_conditions"]["p_ini"] - _closure_stress(config, normal)
+
+    # opening at the fracture element nodes against the analytical profile
+    fmesh = mesh["fracture_mesh"]
+    g = _fracture_normal_jump(mesh, results["u"][:, 0]).ravel()
+    s = ((fmesh["nodes"][np.asarray(fmesh["conn"])] - centre) @ tangent).ravel()
+    g_exact = _sneddon_opening(s, a, net_pressure, E, nu)
+
+    if plot_on:
+        s_plot = np.linspace(-a, a, 400)
+        plt.figure()
+        plt.plot(s_plot / a, _sneddon_opening(s_plot, a, net_pressure, E, nu) * 1e3, "-", label="exact")
+        order = np.argsort(s)
+        plt.plot(s[order] / a, g[order] * 1e3, "o", mfc="none", ms=3, label="RAFT")
+        plt.xlabel("x / a")
+        plt.ylabel("opening (mm)")
+        plt.title(test_name)
+        plt.legend()
+
+    # calculate error
+    err_ex = np.linalg.norm(g - g_exact) / np.linalg.norm(g_exact)
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def _pinned_points(
+    geometry: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]],
+) -> list[npt.NDArray[np.float64]]:
+    """Fracture tips and intersections, where the faces are pinned."""
+    pinned = [c + side * a * t for c, t, a in geometry for side in (-1.0, 1.0)]
+    for i, (c1, t1, _) in enumerate(geometry):
+        for c2, t2, _ in geometry[i + 1 :]:
+            s1, _ = np.linalg.solve(np.column_stack([t1, -t2]), c2 - c1)
+            pinned.append(c1 + s1 * t1)
+    return pinned
+
+
+def check_fracture_closure(
+    config_name: str,
+    config_dir: Path,
+    results: dict[str, Any],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Closed fractures under in-situ compression: the contact pressure carries the net closure stress.
+
+    Checked at the Gauss points more than five of their element lengths from the tips and junctions,
+    where the faces are pinned, and as the mean over each fracture.
+    """
+    # Set tolerance
+    tol_local = 5.0e-3
+    tol_mean = 1.5e-2
+
+    # Load config and the penalty of each fracture element
+    config = load_config(config_name, config_dir, verbose=False)
+    cfg, _ = preprocessing(config_name, config_dir, verbose=False)
+    penalty = element_penalty(mesh, cfg["material"], cfg["simulation"])
+    geometry = _fracture_geometry(config)
+
+    # contact pressure at the Gauss points from the linear normal jump
+    fmesh = mesh["fracture_mesh"]
+    element_nodes = fmesh["nodes"][np.asarray(fmesh["conn"])]
+    _, _, N_q, _ = _get_quad_points_and_shape_functions(fmesh["n_quadrature"][0], 1, fmesh["element_type"][0])
+    g_q = _fracture_normal_jump(mesh, results["u"][:, 0]) @ N_q[:, 0, :].T
+    sigma_c = penalty[:, None] * np.clip(-g_q, 0.0, None)
+    x_q = N_q[:, 0, :] @ element_nodes  # Gauss point coordinates, (ne_f, nq, nsd)
+
+    h = np.linalg.norm(element_nodes[:, -1] - element_nodes[:, 0], axis=1)
+    distance = np.min([np.linalg.norm(x_q - point, axis=2) for point in _pinned_points(geometry)], axis=0)
+    interior = distance > 5.0 * h[:, None]
+
+    if plot_on:
+        plt.figure()
+
+    test_pass = True
+    for r, (centre, t, a) in enumerate(geometry):
+        elems = fmesh["region_lists"][r]
+        expected = _closure_stress(config, np.array([-t[1], t[0]])) - config["initial_conditions"]["p_ini"]
+        local = np.abs(sigma_c[elems][interior[elems]] / expected - 1.0)
+        mean = sigma_c[elems].mean() / expected
+        test_pass = test_pass and bool(local.max() < tol_local and abs(mean - 1.0) < tol_mean)
+
+        if plot_on:
+            s = ((x_q[elems] - centre) @ t).ravel()
+            order = np.argsort(s)
+            plt.plot(
+                s[order] / a, sigma_c[elems].ravel()[order] / expected, ".-", ms=3, label=f"fracture {r + 1}"
+            )
+
+    if plot_on:
+        plt.xlabel("position along fracture / half-length")
+        plt.ylabel("contact pressure / closure stress")
+        plt.title(test_name)
+        plt.legend()
 
     return test_pass

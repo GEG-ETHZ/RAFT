@@ -544,5 +544,31 @@ def test_thermal_consolidation(config_filename: str, times: list[float]) -> None
     assert test_pass
 
 
+def test_sneddon() -> None:
+    """Check the opening of a pressurized fracture under in-situ compression against Sneddon."""
+    case_dir = _test_data_dir()
+    test_name = "Sneddon Pressurized Fracture"
+    config_filename = "config_test_sneddon.yaml"
+    results, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_sneddon(config_filename, case_dir, results, mesh, test_name, plot_on)
+    assert test_pass
+
+
+def test_fracture_closure() -> None:
+    """Check penalty contact on two crossing fractures closed by the in-situ stress, after a time step."""
+    case_dir = _test_data_dir()
+    test_name = "Fracture Closure"
+    config_filename = "config_test_fracture_closure.yaml"
+    results, mesh = main(config_name=config_filename, config_dir=case_dir, verbosity="quiet")
+
+    plot_on = False
+    test_pass = test_checks.check_fracture_closure(
+        config_filename, case_dir, results, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))

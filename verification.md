@@ -15,6 +15,8 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Terzaghi Consolidation](#terzaghi-consolidation)
 - [Mandel's Problem](#mandels-problem)
 - [Thermo-poroelastic Consolidation](#thermo-poroelastic-consolidation)
+- [Sneddon Pressurized Fracture](#sneddon-pressurized-fracture)
+- [Fracture Closure](#fracture-closure)
 
 ## Heterogeneous Conduction and Flow
 
@@ -316,3 +318,48 @@ _Thermo-poroelastic consolidation: displacement_
 **Error metric.** Relative $L_2$ error of the nodal temperature, pressure and displacement at each time. The stress errors use the nodes below the top metre, both relative to $\lVert\sigma_{xx}^{ex}\rVert_2$:
 
 $$e = \frac{\lVert x^{ex}-x \rVert_2}{\lVert x^{ex} \rVert_2} < 3\times10^{-2}$$
+
+## Sneddon Pressurized Fracture
+
+**Test:** `test_sneddon`
+
+**Setup.** A straight fracture of half-length $a = 1$ m along $y = 0$, centred in a square of half-width $40a$ with rollers on its boundary. The mesh conforms to the fracture and is refined to $h = 0.02a$ around it. The rock carries a uniform in-situ stress $\boldsymbol{\sigma}_0 = -S\textbf{I}$ ($S = 10$ MPa), and the fracture holds fluid at $p_f = S + \Delta P$ ($\Delta P = 1$ MPa), with flow and heat off. The opening forms in the first time step.
+
+**Assumptions.** Plane strain, linear elasticity, an infinite medium, and fluid pressure acting on the faces in full.
+
+**Analytical solution.** The in-situ stress cancels $S$ of the fracture pressure, so the faces open under the net pressure $\Delta P$ (Sneddon):
+
+$$g_n(x) = \frac{4(1-\nu^2)\,\Delta P}{E}\sqrt{a^2 - x^2}$$
+
+**Comparison.** Analytical (line) and finite element (RAFT, markers) opening at the fracture element nodes.
+
+![Sneddon Pressurized Fracture — Opening](figures/verification/sneddon_opening.png)
+_Sneddon pressurized fracture: opening_
+
+**Error metric.** Relative $L_2$ error of the nodal opening. The error is 1.5%. On a mesh that the fracture cuts instead of following its element faces, the kinked fracture surface doubles it.
+
+$$e = \frac{\lVert g_n^{ex}-g_n \rVert_2}{\lVert g_n^{ex} \rVert_2} < 2\times10^{-2}$$
+
+## Fracture Closure
+
+**Test:** `test_fracture_closure`
+
+**Setup.** The Sneddon setup with a second, crossing fracture ($x = 0.31$ m, half-length $0.6$ m) forming a junction, on a mesh conforming to both. Both fractures hold fluid at $p_f = S - 1$ MPa below the in-situ compression $S = 10$ MPa, so they close in the first time step.
+
+**Assumptions.** As for Sneddon, with normal penalty contact.
+
+**Analytical solution.** Closed faces transmit the net closure stress, uniformly along each fracture:
+
+$$\sigma_c = -\vec{n}\cdot\boldsymbol{\sigma}_0\cdot\vec{n} - p_f = 1\ \text{MPa}$$
+
+The penalty penetration is $\sigma_c/\epsilon_N$. The faces are pinned at the tips, where the nodes are not split, and at the junction, so the contact pressure departs from $\sigma_c$ within a few elements of those points.
+
+**Comparison.** Contact pressure at the Gauss points along each fracture, relative to the closure stress.
+
+![Fracture Closure — Contact Pressure](figures/verification/fracture_closure_contact.png)
+_Fracture closure: contact pressure along both fractures_
+
+**Error metric.** At the Gauss points more than five of their element lengths from a tip or junction, and for the mean over each fracture:
+
+$$\left\lvert\frac{\sigma_c}{\sigma_c^{ex}} - 1\right\rvert < 5\times10^{-3}, \qquad \left\lvert\frac{\bar{\sigma}_c}{\sigma_c^{ex}} - 1\right\rvert < 1.5\times10^{-2}$$
+

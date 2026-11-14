@@ -15,10 +15,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Linear (thermo-poro)elastic force balance of the matrix.
+"""Linear (thermo-poro)elastic force balance of the matrix, with fracture face loads and contact.
 
 Voigt order: 2D [xx, yy, xy]; axisymmetric [rr, zz, rz, tt]; 3D [xx, yy, zz, xz, yz, xy].
 Shear strains are engineering strains; shear stresses are tensor components.
+
+The fracture faces are the split matrix nodes on either side of each fracture element. The jump
+[[u]] = u+ - u- is taken between the positive and negative matrix elements of each fracture
+element (`fracture_mesh["matrix_conn"]`), with the unit normal pointing from the negative to the
+positive side, so g_n = n . [[u]] is the opening.
 """
 
 import bisect
@@ -37,11 +42,13 @@ from .matrixassembly import (
     _get_quad_points_and_shape_functions,
     _get_region_mesh_data,
     _get_region_value,
+    _iter_fracture_matrix_matches,
     _lumped_mass,
     _pad_sparse,
     _vctrzd_quad_point_integration,
 )
-from .mechanicsdata import MechanicsMatrices
+from .mechanicsdata import FractureInterface, MechanicsMatrices
+from .mechconstitutive import elasticity_matrix, penalty_contact
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 
 # Stress component names in Voigt order, for output
@@ -61,37 +68,20 @@ def identity_voigt(nsd: int, axisymmetric: bool) -> npt.NDArray[np.float64]:
     return np.array([1.0, 1.0, 0.0])
 
 
-def elasticity_matrix(
-    E: float, nu: float, nsd: int, plane: str, axisymmetric: bool
-) -> npt.NDArray[np.float64]:
-    """Isotropic elasticity matrix D (Voigt form of the elasticity tensor C)."""
-    if nsd == 3:
-        # 3D matrix
-        lam = E * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
-        G = E / (2.0 * (1.0 + nu))
-        D = np.zeros((6, 6))
-        D[:3, :3] = lam
-        D[[0, 1, 2], [0, 1, 2]] = lam + 2.0 * G
-        D[[3, 4, 5], [3, 4, 5]] = G
-        return D
-    if axisymmetric:
-        # axisymmetric matrix with 4 stress components
-        c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
-        return c * np.array(
-            [
-                [1.0 - nu, nu, 0.0, nu],
-                [nu, 1.0 - nu, 0.0, nu],
-                [0.0, 0.0, 0.5 - nu, 0.0],
-                [nu, nu, 0.0, 1.0 - nu],
-            ]
-        )
-    if plane == "stress":
-        # plane stress
-        c = E / (1.0 - nu**2)
-        return c * np.array([[1.0, nu, 0.0], [nu, 1.0, 0.0], [0.0, 0.0, 0.5 * (1.0 - nu)]])
-    # plane strain
-    c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
-    return c * np.array([[1.0 - nu, nu, 0.0], [nu, 1.0 - nu, 0.0], [0.0, 0.0, 0.5 - nu]])
+def _voigt_traction(sigma: npt.NDArray[np.float64], n: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Traction sigma . n from a Voigt stress (tensor shear components), in the dimension of n."""
+    if n.size == 2:  # [xx, yy, xy], or axisymmetric [rr, zz, rz, tt]
+        return np.array([sigma[0] * n[0] + sigma[2] * n[1], sigma[2] * n[0] + sigma[1] * n[1]])
+    # [xx, yy, zz, xz, yz, xy]
+    tensor = np.array(
+        [
+            [sigma[0], sigma[5], sigma[3]],
+            [sigma[5], sigma[1], sigma[4]],
+            [sigma[3], sigma[4], sigma[2]],
+        ]
+    )
+    result: npt.NDArray[np.float64] = tensor @ n
+    return result
 
 
 def strain_displacement(
@@ -229,19 +219,35 @@ def integrate_mechanics_matrices(
 
     # p and T live on all nodes; pad the coupling columns to nn_total
     shape = (nsd * mesh_data.nn, mesh["nn_total"])
+    K_up = _pad_sparse(coupling["K_up"], shape)
+
+    # fracture faces: fracture pressure in the fracture columns of K_up, and the in-situ stress face load
+    F_fracture_0 = np.zeros((nsd * mesh_data.nn, 1))
+    interface = FractureInterface.empty()
+    if controls["fracture_on"]:
+        interface, K_upf, F_fracture_0 = integrate_fracture_interface(mesh, material, controls)
+        K_up = csc_matrix(K_up + K_upf)
+
     return MechanicsMatrices(
-        K_uu, _pad_sparse(coupling["K_up"], shape), _pad_sparse(coupling["K_uT"], shape), tuple(nodal_strain)
+        K_uu, K_up, _pad_sparse(coupling["K_uT"], shape), tuple(nodal_strain), F_fracture_0, interface
     )
 
 
 def internal_force(
-    matrices: MechanicsMatrices, primary_variables: dict[str, Any], material: dict[str, Any]
+    matrices: MechanicsMatrices, primary_variables: dict[str, Any], material: dict[str, Any], nn: int
 ) -> npt.NDArray[np.float64]:
-    """Internal force K_uu u + K_up (p - p_0) + K_uT (T - T_0) of the current iterate, (nsd*nn, 1)."""
+    """Internal force K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 at the current iterate.
+
+    The matrix columns of K_up act on the change from p_0 and the fracture columns on the total
+    fracture pressure, which loads the faces. Fracture contact is added separately (`fracture_contact`).
+    """
     u = primary_variables["u"][:, 0:1]
     dp = primary_variables["p"][:, 0:1] - material["p_0"].reshape(-1, 1)
+    dp[nn:] = primary_variables["p"][nn:, 0:1]
     dT = primary_variables["T"][:, 0:1] - material["T_0"].reshape(-1, 1)
-    force: npt.NDArray[np.float64] = matrices.K_uu @ u + matrices.K_up @ dp + matrices.K_uT @ dT
+    force: npt.NDArray[np.float64] = (
+        matrices.K_uu @ u + matrices.K_up @ dp + matrices.K_uT @ dT - matrices.F_fracture_0
+    )
     return force
 
 
@@ -274,14 +280,17 @@ def insitu_stress(
 
 
 def element_volumetric_strain(
-    mesh: dict[str, Any], controls: dict[str, Any], primary_variables: dict[str, Any]
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    controls: dict[str, Any],
+    primary_variables: dict[str, Any],
 ) -> npt.NDArray[np.float64]:
-    """Element-mean volumetric strain (ne,) of the current iterate."""
+    """Element-mean volumetric strain (ne,) of the current iterate, from the reference displacement u_0."""
     mesh_data = _get_region_mesh_data(mesh, is_fracture=False, is_well=False)
     nsd = mesh_data.nsd
     axisymmetric = bool(controls["axisymmetric_on"])
     m = identity_voigt(nsd, axisymmetric)
-    u = primary_variables["u"][:, 0]
+    u = primary_variables["u"][:, 0] - material["u_0"]
 
     strain = np.zeros(mesh["ne"])
     elem_type_counter = -1  # force an update on the first element
@@ -319,8 +328,8 @@ def _element_stresses(
     m = identity_voigt(nsd, axisymmetric)
     nn = mesh_data.nn
 
-    # current iterate on matrix nodes
-    u = primary_variables["u"][:, 0]
+    # change of the current iterate from the reference state, on matrix nodes
+    u = primary_variables["u"][:, 0] - material["u_0"]
     dp = primary_variables["p"][:nn, 0] - material["p_0"][:nn]
     dT = primary_variables["T"][:nn, 0] - material["T_0"][:nn]
 
@@ -419,3 +428,173 @@ def nodal_stress(
     # in-situ stress plus the recovered change
     result: npt.NDArray[np.float64] = material["sigma_0"] + change
     return result
+
+
+# ------------------------ Fracture face kinematics, loads and contact ----------------
+def fracture_face_nodes(mesh: dict[str, Any]) -> npt.NDArray[np.int64]:
+    """Matrix nodes on the positive and negative face at each fracture element node, (ne_f, nne_f, 2).
+
+    Taken element by element from `matrix_conn`, which also resolves junctions. Tip nodes are unsplit
+    and appear on both faces. Cached on the fracture mesh.
+    """
+    fmesh = mesh["fracture_mesh"]
+    if "face_nodes" in fmesh:
+        cached: npt.NDArray[np.int64] = fmesh["face_nodes"]
+        return cached
+
+    nodes_m = mesh["nodes"]
+    nodes_f = fmesh["nodes"]
+    conn_f = np.asarray(fmesh["conn"])
+    face_nodes = np.empty((conn_f.shape[0], conn_f.shape[1], 2), dtype=np.int64)
+    for e, enodes_f in enumerate(conn_f):
+        sides = fmesh["matrix_conn"][e]
+        if len(sides) != 2:
+            raise ValueError(
+                f"Fracture element {e} has a matrix element on only one side; "
+                "fractures with mechanics must lie inside the matrix."
+            )
+        for s, e_m in enumerate(sides):
+            enodes_m = np.asarray(mesh["conn"][e_m])
+            distance = np.linalg.norm(nodes_m[enodes_m][None, :, :] - nodes_f[enodes_f][:, None, :], axis=2)
+            face_nodes[e, :, s] = enodes_m[np.argmin(distance, axis=1)]
+    fmesh["face_nodes"] = face_nodes
+    return face_nodes
+
+
+def element_penalty(
+    mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any]
+) -> npt.NDArray[np.float64]:
+    """Contact penalty eps_N = c_N E / h per fracture element, (ne_f,).
+
+    E is the mean Young's modulus of the two adjacent matrix elements and h the mean element length of
+    the fracture. A per-fracture h keeps the penalty uniform where the cutter leaves uneven segments.
+    """
+    fmesh = mesh["fracture_mesh"]
+    nodes_f = fmesh["nodes"]
+    conn_f = np.asarray(fmesh["conn"])
+    youngs = material["solid"]["youngs_mod"]
+    regions = mesh["regions"]
+    factor = controls["mechanics_controls"]["penalty_factor"]
+
+    lengths = np.linalg.norm(nodes_f[conn_f[:, -1]] - nodes_f[conn_f[:, 0]], axis=1)
+    h = np.empty(conn_f.shape[0])
+    for elems in fmesh["region_lists"]:
+        h[elems] = lengths[elems].mean()
+
+    penalty = np.empty(conn_f.shape[0])
+    for e in range(conn_f.shape[0]):
+        E = np.mean([_get_region_value(youngs, regions[e_m]) for e_m in fmesh["matrix_conn"][e]])
+        penalty[e] = factor * E / h[e]
+    return penalty
+
+
+def integrate_fracture_interface(
+    mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any]
+) -> tuple[FractureInterface, csc_matrix, npt.NDArray[np.float64]]:
+    """Fracture face operators, the fracture pressure coupling K_upf, (nsd*nn, nn_total), and the in-situ
+    stress face load F_fracture_0, (nsd*nn, 1).
+
+    K_upf p_f - F_fracture_0 = -int [[N_u]]^T (p_f n + sigma_0 . n), with K_upf = -int [[N_u]]^T n N_f.
+    """
+    nsd = mesh["nsd"]
+    nn = mesh["nn"]
+    axisymmetric = bool(controls["axisymmetric_on"])
+    fmesh = mesh["fracture_mesh"]
+    mesh_data = _get_region_mesh_data(mesh, is_fracture=True, is_well=False)
+    nodes_f = fmesh["nodes"]
+    sigma_0 = material["sigma_0"]
+    penalty_e = element_penalty(mesh, material, controls)
+
+    rows_G: list[npt.NDArray[np.int64]] = []
+    cols_G: list[npt.NDArray[np.int64]] = []
+    vals_G: list[npt.NDArray[np.float64]] = []
+    rows_N: list[npt.NDArray[np.int64]] = []
+    cols_N: list[npt.NDArray[np.int64]] = []
+    vals_N: list[npt.NDArray[np.float64]] = []
+    weights: list[npt.NDArray[np.float64]] = []
+    penalty: list[npt.NDArray[np.float64]] = []
+    element: list[npt.NDArray[np.int64]] = []
+    normals: list[npt.NDArray[np.float64]] = []
+    traction_0: list[npt.NDArray[np.float64]] = []
+
+    k = 0  # first Gauss point of the current element
+    for r in range(mesh_data.num_regions):
+        n = np.asarray(fmesh["fracture_normal"][r], dtype=np.float64).ravel()[:nsd]
+        tangent = np.asarray(fmesh["fracture_tangent"][r], dtype=np.float64).reshape(-1, 1)[:nsd]
+        elem_type_counter = -1  # force an update on the first element
+        for e in mesh_data.region_lists[r]:
+            new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
+            if new_type_idx != elem_type_counter:
+                W, nq, N_q, GN_q = _get_quad_points_and_shape_functions(
+                    mesh_data.nq_list[new_type_idx], mesh_data.nsd, mesh_data.etype_list[new_type_idx]
+                )
+                elem_type_counter = new_type_idx
+
+            enodes_f = np.asarray(mesh_data.conn[e])
+            _, detJ = getB(GN_q, nodes_f[enodes_f, :] @ tangent, mesh_data.nsd)
+            wJ = W * detJ
+            if axisymmetric:
+                wJ = wJ * (N_q[:, 0, :] @ nodes_f[enodes_f, 0])
+
+            matches = list(_iter_fracture_matrix_matches(e, list(enodes_f), nodes_f, N_q, mesh))
+            if len(matches) != 2:
+                raise ValueError(
+                    f"Fracture element {e} has a matrix element on only one side; "
+                    "fractures with mechanics must lie inside the matrix."
+                )
+            (_, enodes_pos, _, N_pos), (_, enodes_neg, _, N_neg) = matches
+
+            # jump rows: positive-side shape functions minus negative-side ones, per component
+            points = k + np.arange(nq)
+            side_nodes = np.concatenate([enodes_pos, enodes_neg])
+            side_values = np.hstack([N_pos[:, 0, :], -N_neg[:, 0, :]])
+            for d in range(nsd):
+                rows_G.append(np.repeat(nsd * points + d, side_nodes.size))
+                cols_G.append(np.tile(nsd * side_nodes + d, nq))
+                vals_G.append(side_values.ravel())
+            rows_N.append(np.repeat(points, enodes_f.size))
+            cols_N.append(np.tile(nn + enodes_f, nq))
+            vals_N.append(N_q[:, 0, :].ravel())
+
+            # in-situ stress face traction sigma_0 . n at the Gauss points
+            sigma_0_q = N_pos[:, 0, :] @ sigma_0[enodes_pos]
+            traction_0.append(np.array([_voigt_traction(sigma_0_q[q], n) for q in range(nq)]))
+            weights.append(np.asarray(wJ, dtype=np.float64).ravel())
+            penalty.append(np.full(nq, penalty_e[e]))
+            element.append(np.full(nq, e, dtype=np.int64))
+            normals.append(np.tile(n, (nq, 1)))
+            k += nq
+
+    n_q = k
+    jump = csc_matrix(
+        (np.concatenate(vals_G), (np.concatenate(rows_G), np.concatenate(cols_G))),
+        shape=(nsd * n_q, nsd * nn),
+    )
+    normal = np.vstack(normals)
+    # normal jump: n . [[u]] at each Gauss point
+    jump_normal = csc_matrix(diags(normal[:, 0]) @ jump[0::nsd, :])
+    for d in range(1, nsd):
+        jump_normal = csc_matrix(jump_normal + diags(normal[:, d]) @ jump[d::nsd, :])
+    shape_f = csc_matrix(
+        (np.concatenate(vals_N), (np.concatenate(rows_N), np.concatenate(cols_N))),
+        shape=(n_q, mesh["nn_total"]),
+    )
+    w = np.concatenate(weights)
+
+    K_upf = csc_matrix(-(jump_normal.T @ diags(w) @ shape_f))
+    F_fracture_0 = np.asarray(jump.T @ (w[:, None] * np.vstack(traction_0)).ravel()).reshape(-1, 1)
+    interface = FractureInterface(jump, jump_normal, w, np.concatenate(penalty), np.concatenate(element))
+    return interface, K_upf, F_fracture_0
+
+
+def fracture_contact(
+    interface: FractureInterface, u: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], csc_matrix]:
+    """Penalty contact residual -int [[N_u]]^T sigma_c n, (nsd*nn, 1), and its tangent at displacement u."""
+    g_n = interface.jump_normal @ u
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.penalty)
+    residual = -(interface.jump_normal.T @ (interface.weights * sigma_c)).reshape(-1, 1)
+    tangent = csc_matrix(
+        interface.jump_normal.T @ diags(-interface.weights * dsigma_c_dg) @ interface.jump_normal
+    )
+    return residual, tangent

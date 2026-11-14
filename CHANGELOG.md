@@ -14,7 +14,7 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   (`initial_conditions.stress`) and a drained `poisson_ratio`. Mechanics
   boundary conditions (`mechanics` blocks) prescribe displacement (component
   lists, `fixed`, `roller`) or traction increments. `Matrix.vtk` gains
-  displacement and stress. Fractures are not yet supported with mechanics on.
+  displacement and stress.
 - **Poroelastic coupling** — with `flow` and `mechanics` on, displacement and
   pressure are solved monolithically with Biot's storage and strain coupling.
 - **Thermal stress** — `heat` can now run with `mechanics` on, adding thermal
@@ -25,6 +25,23 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   the output stress: `element` (default), the element-mean stress written per
   cell; `average`, the stress at each element's nodes averaged over the
   elements sharing the node; or a consistent `L2` projection.
+- **Fracture contact** — with `mechanics` on, fractures load the matrix
+  through their faces: fracture pressure, the in-situ stress, and normal
+  penalty contact (`mechanics_controls.penalty_factor`). `BC_compatible`
+  initial conditions now include the force balance, so the fractures start
+  closed under the in-situ stress; other assignments start undeformed and the
+  coupled solver carries the closure. `Fracture.vtk` now shows each fracture as a strip of its two
+  faces, separated by the aperture, with the normal jump and contact pressure
+  when mechanics is on.
+
+### Changed
+
+- **Newton solve scaling** — each field's rows of the coupled tangent are
+  scaled to a common magnitude before the solve, which removes the round-off
+  that badly scaled displacement-pressure systems left in the pressure update.
+- **Stagnated Newton acceptance** — a Newton solve whose residual has reached
+  no new minimum in 10 iterations is accepted when it is within 10 times the
+  tolerance, so round-off near zero flux no longer fails the step.
 
 ### Fixed
 

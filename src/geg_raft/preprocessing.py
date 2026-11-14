@@ -104,6 +104,7 @@ DEFAULTS: dict[str, Any] = {
         "mechanics_controls": {
             "plane": "strain",  # 2D mechanics: "strain" or "stress"
             "stress_recovery": "element",  # stress output: "element" (cells), "average" or "L2" (nodes)
+            "penalty_factor": 10.0,  # c_N in the fracture contact penalty eps_N = c_N E / h
         },
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
@@ -244,8 +245,8 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Mechanics
     if controls["physics"].solves("mechanics"):
-        if controls["fracture_on"]:
-            raise NotImplementedError("physics.matrix.mechanics with fractures is not implemented yet")
+        if controls["mechanics_controls"]["penalty_factor"] <= 0:
+            raise ValueError("mechanics_controls.penalty_factor must be positive")
         plane = controls["mechanics_controls"]["plane"]
         if plane not in ("strain", "stress"):
             raise ValueError(f"mechanics_controls.plane = {plane!r}; expected 'strain' or 'stress'")

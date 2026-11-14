@@ -94,6 +94,23 @@ def _consolidation_figures() -> None:
     _save_open_figures("thermoporoelastic", ["T", "p", "u"])
 
 
+def _fracture_contact_figures() -> None:
+    """Fracture face loading and contact after one time step."""
+    for prefix, config, check, test_name in (
+        ("sneddon", "config_test_sneddon.yaml", test_checks.check_sneddon, "Sneddon Pressurized Fracture"),
+        (
+            "fracture_closure",
+            "config_test_fracture_closure.yaml",
+            test_checks.check_fracture_closure,
+            "Fracture Closure",
+        ),
+    ):
+        plt.close("all")
+        results, mesh = main(config_name=config, config_dir=CASE_DIR, verbosity="quiet")
+        check(config, CASE_DIR, results, mesh, test_name, True)
+        _save_open_figures(prefix, ["opening" if prefix == "sneddon" else "contact"])
+
+
 def main_figures() -> None:
     """Run each case with plotting on and save its figures."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -103,6 +120,7 @@ def main_figures() -> None:
         check(config, CASE_DIR, results, mesh, test_name, True)
         _save_open_figures(prefix, suffixes)
     _consolidation_figures()
+    _fracture_contact_figures()
 
 
 if __name__ == "__main__":

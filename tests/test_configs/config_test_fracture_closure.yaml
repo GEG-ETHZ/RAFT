@@ -1,0 +1,72 @@
+mesh:
+  file: fracture_closure2D.msh
+  dimensions: 2
+  domain:  # outer boundary, used by scripts/raft_to_geo.py
+      shape: "box"
+      values: [[-40, -40], [40, 40]]
+  sizing:  # element sizes, used by scripts/raft_to_geo.py
+      outer: 2.0
+      frac: [[0.02, 0.02], [0.3, 6]]
+      quads: true
+  fractures:
+      - values: [[0.0, 0.0, 0.0], [1.0], [0]]
+      - values: [[0.31, 0.013, 0.0], [0.6], [90]]   # crosses the first, forming a junction
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      permeability: 1.0e-18     # m^2
+      therm_expansion: 0.0      # 1/K
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 0.0    # 1/K
+      viscosity: 1.0e-3       # Pa-s
+
+  # Fracture parameters
+  fracture:
+    aperture: [1.0e-4, 1.0e-4]
+    heat_transfer_factor: [0.634115, 0.634115]
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 9.0e+6               # fracture pressure: 1 MPa below the closure stress
+  stress:
+    values: {Sxx: -10.0e+6, Syy: -10.0e+6, Sxy: 0.0}
+
+boundary_conditions:
+  # distant boundaries on rollers
+  - faces: [x_min, x_max, y_min, y_max]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+
+physics:
+  matrix:
+    flow: off
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 1.0
+  timestep: 1.0
+  timestep_min: 1.0
+  timestep_max: 1.0
+  solver_type: monolithic
+
+  # Output
+  output_frequency: 1
+  output_vtk: 1       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

@@ -15,13 +15,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for timestep control."""
+"""Unit tests for timestep and Newton-Raphson control."""
 
 from typing import Any
 
 import numpy as np
 import pytest
 
+from geg_raft.solvers import _stagnated
 from geg_raft.subsurface import TimestepError, _clamp_to_critical, _update_time
 
 
@@ -50,3 +51,17 @@ def test_clamp_to_critical(t_prev: float, dt0: float, expected_t: float, expecte
     t, dt = _clamp_to_critical(t_prev, [dt0, 1.0, 1.0], np.array([10.0, 20.0]))
     assert t == expected_t
     assert dt[0] == expected_dt
+
+
+@pytest.mark.parametrize(
+    ("history", "expected"),
+    [
+        ([1.0, 1.0e-2, 1.0e-5] + [1.5e-5, 1.2e-5] * 5, True),  # noise floor within 10x tolerance
+        ([1.0, 1.0e-2, 1.0e-4] + [1.5e-4, 1.2e-4] * 5, False),  # noise floor beyond 10x tolerance
+        ([1.0, 1.0e-2] + [1.0e-4 / 2**k for k in range(10)], False),  # still decreasing
+        ([1.0, 1.0e-5] + [1.5e-5, 1.2e-5] * 4, False),  # fewer iterations than the window
+    ],
+)
+def test_stagnated(history: list[float], expected: bool) -> None:
+    """A Newton solve stuck near tolerance is accepted; a converging or far-off one is not."""
+    assert _stagnated(np.array(history), len(history) - 1, 2.0e-6) is expected
