@@ -324,7 +324,7 @@ Each boundary condition group must specify nodes using one or a combination of t
 
 * **`nodes`** *(list of integers, or string)*: Direct node IDs where the boundary condition is applied. The string `"all"` is also accepted to fix all nodes in the mesh, or `"matrix"` to fix all nodes in the reservoir while leaving fracture and wellbore nodes unconstrained.
 * **`coords`** *(list of coordinates)*: List of coordinate points; the mesh node closest to each point will be selected. Each coordinate should be a list matching the spatial dimensions (e.g., `[x, y, z]` for 3D, `[x, y]` for 2D).
-* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included. Fluxes are integrated over the face.
+* **`faces`** *(list of strings)*: Named boundary faces from preprocessing. Supported face identifiers: `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"`, `"z_min"`, `"z_max"`. All nodes on the specified faces will be included, including fracture nodes where a fracture meets the face (mechanics uses only the matrix nodes). Fluxes are integrated over the face.
   * Fluid fluxes: Specify `values` as mass flux in $(\text{kg}/\text{s})/\text{m}^2$.
   * Temperature fluxes: Specify `values` in $\text{W} / \text{m}^2$.
 * **`lines`** *(list of float `[start, end]` point pairs)*: Each pair defines a line segment (points matching the spatial dimensions, as in `coords`). The nodes and connectivity are found by snapping to the path of existing mesh edges closest to that segment. The line is snipped to the domain boundaries. If the exact path does not exist among the element edges, the line snaps to the shortest edge path connecting the start and end node. This throws a warning and reports the true vs. prescribed line lengths. You can view the nodes with `line` boundary conditions in `domain.vtk` under the `line_BC_nodes` field. Fluxes are integrated over the prescribed line.
@@ -426,7 +426,7 @@ physics:
 
 An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
 
-Fracture/well-matrix coupling is assembled for a field if either side solves it, and includes advective exchange if either side has advection on.
+Fracture/well-matrix coupling is assembled for a field if either side solves it, and each side takes the advective exchange only if it has advection on.
 
 ### `simulation`
  Simulation controls

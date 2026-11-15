@@ -2443,7 +2443,8 @@ def _integrate_fracture_coupling_residual(  # noqa
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
-    advection_on: bool,
+    submesh_advection: bool,  # fracture/well side takes the leak-off enthalpy
+    matrix_advection: bool,  # matrix side takes the leak-off enthalpy
     T_flow_lagged: bool,
 ) -> tuple[dict[str, npt.NDArray[np.float64]], list[tuple[int, dict[str, npt.NDArray[np.float64]]]]]:
     """Integrate the fracture-matrix leak-off/convective-exchange flux into residual vectors.
@@ -2467,6 +2468,7 @@ def _integrate_fracture_coupling_residual(  # noqa
 
     for _e_m, enodes_m, nne_m, N_qm in _iter_fracture_matrix_matches(e, enodes_f, nodes_f, N_q, mesh):
         matrix_vectors: dict[str, npt.NDArray[np.float64]] = {}
+        advection_on = submesh_advection or matrix_advection
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
             flux_p_q, _, _, _, _ = _evaluate_fracture_leakoff_flux(
@@ -2505,8 +2507,12 @@ def _integrate_fracture_coupling_residual(  # noqa
                     N_q,
                     T_flow_lagged=T_flow_lagged,
                 )
-                Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
-                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_qm, flux_adv_T_q, wJe_q, True)
+                if submesh_advection:
+                    Rf_Tadv = Rf_Tadv + _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+                if matrix_advection:
+                    matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(
+                        N_qm, flux_adv_T_q, wJe_q, True
+                    )
 
         matches.append((nne_m, matrix_vectors))
 
@@ -2514,12 +2520,12 @@ def _integrate_fracture_coupling_residual(  # noqa
         fracture_vectors["F_Pdiffusion"] = Rf_p
     if thermal_coupling:
         fracture_vectors["F_Tdiffusion"] = Rf_T
-        if advection_on:
+        if submesh_advection:
             fracture_vectors["F_Tadvection"] = Rf_Tadv
     return fracture_vectors, matches
 
 
-def _integrate_fracture_coupling_tangent(
+def _integrate_fracture_coupling_tangent(  # noqa: C901
     e: int,
     enodes_f: list[int],
     nodes_f: npt.NDArray[np.float64],
@@ -2543,7 +2549,8 @@ def _integrate_fracture_coupling_tangent(
     pressure_coupling: bool,
     thermal_coupling: bool,
     monolithic: bool,
-    advection_on: bool,
+    submesh_advection: bool,  # fracture/well side takes the leak-off enthalpy
+    matrix_advection: bool,  # matrix side takes the leak-off enthalpy
     T_flow_lagged: bool,
 ) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
     """Integrate one fracture element's coupling tangent contribution to its neighboring matrix elements."""
@@ -2559,6 +2566,7 @@ def _integrate_fracture_coupling_tangent(
         mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
 
+        advection_on = submesh_advection or matrix_advection
         if pressure_coupling or advection_on:
             p_m_q = N_qm @ p[enodes_m]  # matrix pressure
             flux_p_q, dfluxp_dpf, dfluxp_dpm, dfluxp_dTf, dfluxp_dTm = _evaluate_fracture_leakoff_flux(
@@ -2614,11 +2622,14 @@ def _integrate_fracture_coupling_tangent(
                     T_flow_lagged=T_flow_lagged,
                 )
 
-                # fm/mf coefficients use the derivative wrt the column's temperature
-                RTT_ff = RTT_ff + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTf, wJe_q, False)
-                RTT_fm = RTT_fm + _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dTf, wJe_q, False)
-                RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
-                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
+                # fm/mf coefficients use the derivative wrt the column's temperature; ff/mf rows are
+                # the fracture's, fm/mm rows the matrix's
+                if submesh_advection:
+                    RTT_ff = RTT_ff + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTf, wJe_q, False)
+                    RTT_mf = RTT_mf + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_qm, wJe_q, True)
+                if matrix_advection:
+                    RTT_fm = RTT_fm + _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dTf, wJe_q, False)
+                    RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_qm, -dqadv_dTm, N_qm, wJe_q, True)
 
                 if monolithic:
                     ff_matrices["KpT_ff"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dTf, wJe_q, False)
@@ -2628,12 +2639,16 @@ def _integrate_fracture_coupling_tangent(
                         N_qm, -dfluxp_dTm, N_qm, wJe_q, True
                     )
 
-                    ff_matrices["KTp_ff"] = _vctrzd_qp_vctr_integrate(N_q, dqadv_dpf, wJe_q, False)
-                    fm_matrices["KTp_fm"] = _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dpf, wJe_q, False)
-                    mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_qm, wJe_q, True)
-                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
-                        N_qm, -dqadv_dpm, N_qm, wJe_q, True
-                    )
+                    if submesh_advection:
+                        ff_matrices["KTp_ff"] = _vctrzd_qp_vctr_integrate(N_q, dqadv_dpf, wJe_q, False)
+                        mf_matrices["KTp_mf"] = _vctrzd_quad_point_integration(
+                            N_q, dqadv_dpm, N_qm, wJe_q, True
+                        )
+                    if matrix_advection:
+                        fm_matrices["KTp_fm"] = _vctrzd_qp_vctr_integrate(N_qm, -dqadv_dpf, wJe_q, False)
+                        mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(
+                            N_qm, -dqadv_dpm, N_qm, wJe_q, True
+                        )
 
             ff_matrices["KTT_ff"] = RTT_ff
             fm_matrices["KTT_fm"] = RTT_fm
@@ -2668,7 +2683,8 @@ def _integrate_well_coupling_residual(
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
-    advection_on: bool,
+    submesh_advection: bool,  # fracture/well side takes the leak-off enthalpy
+    matrix_advection: bool,  # matrix side takes the leak-off enthalpy
     T_flow_lagged: bool,
 ) -> tuple[dict[str, npt.NDArray[np.float64]], dict[str, npt.NDArray[np.float64]]]:
     """Integrate the well-matrix exchange flux into well and matrix residual vectors.
@@ -2686,6 +2702,7 @@ def _integrate_well_coupling_residual(
     p_m_q = N_q @ p[enodes_m]
 
     # Leak-off mass flux
+    advection_on = submesh_advection or matrix_advection
     if pressure_coupling or advection_on:
         flux_p_q, _, _, _, _ = _evaluate_well_leakoff_flux(
             rhof_q, perforation_conductance, radius, mu_q, p_w_q, p_m_q, N_q
@@ -2732,8 +2749,10 @@ def _integrate_well_coupling_residual(
                 N_q,
                 T_flow_lagged=T_flow_lagged,
             )
-            well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
-            matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
+            if submesh_advection:
+                well_vectors["F_Tadvection"] = _vctrzd_qp_vctr_integrate(N_q, -flux_adv_T_q, wJe_q, True)
+            if matrix_advection:
+                matrix_vectors["F_Tadvection_mm"] = _vctrzd_qp_vctr_integrate(N_q, flux_adv_T_q, wJe_q, True)
 
     return well_vectors, matrix_vectors
 
@@ -2765,7 +2784,8 @@ def _integrate_well_coupling_tangent(  # noqa
     pressure_coupling: bool,
     thermal_coupling: bool,
     monolithic: bool,
-    advection_on: bool,
+    submesh_advection: bool,  # fracture/well side takes the leak-off enthalpy
+    matrix_advection: bool,  # matrix side takes the leak-off enthalpy
     T_flow_lagged: bool,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Integrate one well element's coupling tangent contribution to its coincident matrix nodes."""
@@ -2780,6 +2800,7 @@ def _integrate_well_coupling_tangent(  # noqa
     p_m_q = N_q @ p[enodes_m]
 
     # Leak-off mass flux and tangents
+    advection_on = submesh_advection or matrix_advection
     if pressure_coupling or advection_on:
         flux_p_q, dfluxp_dpw, dfluxp_dpm, dfluxp_dTw, dfluxp_dTm = _evaluate_well_leakoff_flux(
             rhof_q,
@@ -2851,10 +2872,13 @@ def _integrate_well_coupling_tangent(  # noqa
                 want_tangent=True,
                 T_flow_lagged=T_flow_lagged,
             )
-            RTT_ww = RTT_ww + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTw, wJe_q, False)
-            RTT_wm = RTT_wm + _vctrzd_qp_vctr_integrate(N_q, -dqadv_dTw, wJe_q, False)
-            RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
-            RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
+            # ww/mw rows are the well's, wm/mm rows the matrix's
+            if submesh_advection:
+                RTT_ww = RTT_ww + _vctrzd_qp_vctr_integrate(N_q, dqadv_dTw, wJe_q, False)
+                RTT_mw = RTT_mw + _vctrzd_quad_point_integration(N_q, dqadv_dTm, N_q, wJe_q, True)
+            if matrix_advection:
+                RTT_wm = RTT_wm + _vctrzd_qp_vctr_integrate(N_q, -dqadv_dTw, wJe_q, False)
+                RTT_mm = RTT_mm + _vctrzd_quad_point_integration(N_q, -dqadv_dTm, N_q, wJe_q, True)
 
             # Off-diagonal pressure/temperature coupling
             if monolithic:
@@ -2863,10 +2887,12 @@ def _integrate_well_coupling_tangent(  # noqa
                 mw_matrices["KpT_mw"] = _vctrzd_quad_point_integration(N_q, dfluxp_dTm, N_q, wJe_q, True)
                 mm_matrices["KpT_mm"] = _vctrzd_quad_point_integration(N_q, -dfluxp_dTm, N_q, wJe_q, True)
 
-                ww_matrices["KTp_ww"] += _vctrzd_qp_vctr_integrate(N_q, dqadv_dpw, wJe_q, False)
-                wm_matrices["KTp_wm"] += _vctrzd_qp_vctr_integrate(N_q, -dqadv_dpw, wJe_q, False)
-                mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
-                mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
+                if submesh_advection:
+                    ww_matrices["KTp_ww"] += _vctrzd_qp_vctr_integrate(N_q, dqadv_dpw, wJe_q, False)
+                    mw_matrices["KTp_mw"] = _vctrzd_quad_point_integration(N_q, dqadv_dpm, N_q, wJe_q, True)
+                if matrix_advection:
+                    wm_matrices["KTp_wm"] += _vctrzd_qp_vctr_integrate(N_q, -dqadv_dpw, wJe_q, False)
+                    mm_matrices["KTp_mm"] = _vctrzd_quad_point_integration(N_q, -dqadv_dpm, N_q, wJe_q, True)
 
         ww_matrices["KTT_ww"] = RTT_ww
         wm_matrices["KTT_wm"] = RTT_wm
@@ -2908,7 +2934,6 @@ def integrate_residuals(  # noqa
     # matrix coupling is assembled for a field if either side solves (or advects) it
     pressure_coupling = solve_p or physics.matrix.solve_flow
     thermal_coupling = solve_T or physics.matrix.solve_heat
-    coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
     mechanics_on = bool(mechanics.nodal_strain) and not on_submesh  # solved strain, matrix pass only
     steady_pres = float(domain.steady_flow)
@@ -2945,7 +2970,7 @@ def integrate_residuals(  # noqa
         coupling_flux_names = (["F_Pdiffusion_mm"] if pressure_coupling else []) + (
             ["F_Tdiffusion_mm"] if thermal_coupling else []
         )
-        if thermal_coupling and coupling_advection:
+        if thermal_coupling and physics.matrix.advection:
             coupling_flux_names = coupling_flux_names + ["F_Tadvection_mm"]
 
         vec_flux_m = {name: np.zeros(row_vec_flux_m.size) for name in coupling_flux_names}
@@ -3169,7 +3194,8 @@ def integrate_residuals(  # noqa
                     flow.w0,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
-                    advection_on=coupling_advection,
+                    submesh_advection=advection_on,
+                    matrix_advection=physics.matrix.advection,
                     T_flow_lagged=T_flow_lagged,
                 )
                 _accumulate_element_matrices(element_vectors, fracture_flux_vectors)
@@ -3204,7 +3230,8 @@ def integrate_residuals(  # noqa
                     hf,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
-                    advection_on=coupling_advection,
+                    submesh_advection=advection_on,
+                    matrix_advection=physics.matrix.advection,
                     T_flow_lagged=T_flow_lagged,
                 )
                 _accumulate_element_matrices(element_vectors, well_flux_vectors)
@@ -3320,6 +3347,7 @@ def integrate_tangent_matrices(  # noqa
     pressure_coupling = solve_p or physics.matrix.solve_flow
     thermal_coupling = solve_T or physics.matrix.solve_heat
     coupling_cross = pressure_coupling and thermal_coupling
+    # leak-off advection, computed when either side advects; each side takes it only if it advects
     coupling_advection = advection_on or physics.matrix.advection
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
     steady_pres = float(domain.steady_flow)
@@ -3756,7 +3784,8 @@ def integrate_tangent_matrices(  # noqa
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
                     monolithic=coupling_cross,
-                    advection_on=coupling_advection,
+                    submesh_advection=advection_on,
+                    matrix_advection=physics.matrix.advection,
                     T_flow_lagged=T_flow_lagged,
                 )
 
@@ -3802,7 +3831,8 @@ def integrate_tangent_matrices(  # noqa
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
                     monolithic=coupling_cross,
-                    advection_on=coupling_advection,
+                    submesh_advection=advection_on,
+                    matrix_advection=physics.matrix.advection,
                     T_flow_lagged=T_flow_lagged,
                 )
                 # Direct node coupling: every block is nne x nne
@@ -4175,6 +4205,12 @@ def integrate_boundary_flux_matrices(
     matrices = _assemble_global_matrices(
         vec, conn_face_local, nn_face, nne_list, elem_indx, np.arange(0, ne, dtype=np.int32)
     )
-    # Map local ordering back to global ordering using the input node_order
-    local_idx = np.searchsorted(face_node_ids, np.asarray(node_order, dtype=np.int32))
-    return {name: mat[local_idx, :][:, local_idx] for name, mat in matrices.items()}
+    # Map local ordering back to global ordering using the input node_order; nodes off the
+    # faces (fracture nodes on a boundary) take no weight
+    order = np.asarray(node_order, dtype=np.int32)
+    on_face = np.isin(order, face_node_ids)
+    select = csc_matrix(
+        (np.ones(on_face.sum()), (np.flatnonzero(on_face), np.searchsorted(face_node_ids, order[on_face]))),
+        shape=(order.size, nn_face),
+    )  # (n_order, nn_face)
+    return {name: csc_matrix(select @ mat @ select.T) for name, mat in matrices.items()}

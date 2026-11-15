@@ -538,7 +538,8 @@ def _build_boundary_group_scalars(mesh: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         label = "boundary_" + name
         data = np.zeros(mesh["nn"])
-        data[np.asarray(list(BCgroups[name]))] = 1
+        group_nodes = np.asarray(list(BCgroups[name]), dtype=int)
+        data[group_nodes[group_nodes < mesh["nn"]]] = 1  # matrix nodes only
         scalardata_point.append({"name": label, "data": data})
 
     return scalardata_point

@@ -45,6 +45,18 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ### Fixed
 
+- **Fractures reaching the domain boundary** — the exterior faces of the
+  matrix elements next to such a fracture stay in the boundary face sets, so
+  boundary conditions apply at the nodes where the fracture meets the boundary.
+  A fracture tip outside the domain is no longer moved onto the node where the
+  fracture crosses the boundary, so that node is split instead of left as a tip.
+  The fracture nodes on a boundary face join its node set, so fluid leaves
+  through the fracture at a pressure boundary.
+- **Leak-off enthalpy with matrix advection off** — each side of the
+  fracture/well-matrix exchange takes the advected enthalpy only if it has
+  advection on. The matrix no longer accumulates the enthalpy of leaked fluid
+  that its Darcy flow cannot carry away, which heated the matrix near
+  fractures and at outflow boundaries.
 - **Multi-face flux boundary conditions** — a `flux` group spanning several
   faces or lines counted nodes shared between them twice, overestimating the
   applied flux near shared corners and edges.
