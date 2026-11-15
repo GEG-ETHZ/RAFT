@@ -580,6 +580,13 @@ _MECHANICS_TYPES = ("displacement", "traction")
 _MECHANICS_COMPONENT_KEYWORDS = ("fixed", "roller")
 
 
+def _mechanics_nodes(group: dict[str, Any], mesh: dict[str, Any]) -> list[int]:
+    """A group's nodes for mechanics; faces drop their fracture nodes, which carry no displacement."""
+    if "faces" in group:
+        return [n for n in group["nodes"] if n < mesh["nn"]]
+    return list(group["nodes"])
+
+
 def _mechanics_dofs(group: dict[str, Any], mesh: dict[str, Any], where: str) -> npt.NDArray[np.int64]:
     """Displacement DoFs constrained or loaded by a group's "mechanics" components.
 
@@ -590,6 +597,7 @@ def _mechanics_dofs(group: dict[str, Any], mesh: dict[str, Any], where: str) -> 
     nsd = mesh["nsd"]
     allowed = COMPONENTS[:nsd]
     components = spec.get("components", [])
+    nodes = _mechanics_nodes(group, mesh)
 
     # keywords: displacement only
     if isinstance(components, str):
@@ -601,18 +609,21 @@ def _mechanics_dofs(group: dict[str, Any], mesh: dict[str, Any], where: str) -> 
         if spec["type"] != "displacement":
             raise ValueError(f"{where}: components {components!r} applies to displacement only")
         if components == "fixed":
-            return component_dofs(group["nodes"], nsd, allowed)
+            return component_dofs(nodes, nsd, allowed)
         # roller: normal component of each face
         if "faces" not in group:
             raise ValueError(f"{where}: components 'roller' requires 'faces'")
         return np.concatenate(
-            [component_dofs(sorted(mesh["boundaries"][face]), nsd, [face[0]]) for face in group["faces"]]
+            [
+                component_dofs(sorted(n for n in mesh["boundaries"][face] if n < mesh["nn"]), nsd, [face[0]])
+                for face in group["faces"]
+            ]
         )
 
     # explicit list of components
     if not components or any(c not in allowed for c in components):
         raise ValueError(f"{where} has components {components!r}; expected a non-empty subset of {allowed}")
-    return component_dofs(group["nodes"], nsd, components)
+    return component_dofs(nodes, nsd, components)
 
 
 def _preprocess_mechanics_group(
@@ -629,7 +640,7 @@ def _preprocess_mechanics_group(
         raise NotImplementedError(f"{where}: external mechanics boundary conditions are not implemented yet")
 
     # displacement lives on matrix nodes only
-    if np.any(np.asarray(group["nodes"], dtype=int) >= mesh["nn"]):
+    if np.any(np.asarray(_mechanics_nodes(group, mesh), dtype=int) >= mesh["nn"]):
         raise ValueError(f"{where} includes fracture or well nodes; mechanics applies to matrix nodes only")
 
     # DoFs, unique nodes, and each DoF's row in the node list (faces share corner nodes)

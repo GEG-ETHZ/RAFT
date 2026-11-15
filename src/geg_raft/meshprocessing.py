@@ -414,20 +414,27 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
 
     # Remove fracture faces from exterior sets
     if "fracture_mesh" in mesh:
-        matrix_conn = mesh["fracture_mesh"]["matrix_conn"]
+        fmesh = mesh["fracture_mesh"]
         # Find the fracture node faces by sorted node tuple so they can
         # be matched against what's already in `boundaries`.
         fracture_faces: set[tuple[int, ...]] = set()
         faces_by_nne = {n: _get_element_face_lists(n, nsd) for n in set(nne)}
 
-        for conn_fm in matrix_conn:
+        for conn_f, conn_fm in zip(fmesh["conn"], fmesh["matrix_conn"]):
+            # A fracture face has every node coincident with a node of the fracture element, which
+            # keeps the exterior faces of the adjacent matrix elements
+            nodes_f = fmesh["nodes"][np.asarray(conn_f)]
+            tol = 1.0e-8 * np.linalg.norm(nodes_f[-1] - nodes_f[0])
             for elem in conn_fm:
                 if elem is None:
                     continue
                 elem_conn = conn[elem]
                 for face_local in faces_by_nne[len(elem_conn)].values():
-                    sorted_face = tuple(sorted(elem_conn[i] for i in face_local))
-                    if face_tracker.get(sorted_face, [0])[0] == 1:
+                    face = [elem_conn[i] for i in face_local]
+                    sorted_face = tuple(sorted(face))
+                    distance = np.linalg.norm(nodes[face][:, None, :] - nodes_f[None, :, :], axis=2)
+                    on_fracture = bool(np.all(distance.min(axis=1) <= tol))
+                    if on_fracture and face_tracker.get(sorted_face, [0])[0] == 1:
                         fracture_faces.add(sorted_face)
 
         # Strip fracture faces from each boundary's connectivity, then rebuild
@@ -446,6 +453,19 @@ def _extract_exterior(mesh: dict[str, Any]) -> dict[str, Any]:  # noqa
                 boundaries[conn_key] = [face for face, _ in kept]
                 boundaries[elems_key] = [elem for _, elem in kept]
                 boundaries[f"{key}_{side}"] = {n for face in boundaries[conn_key] for n in face}
+
+        # Fracture nodes coincident with a face's matrix nodes join its node set (global numbering
+        # follows the matrix nodes); the face connectivity stays matrix-only
+        nodes_f = fmesh["nodes"]
+        tol_face = 1.0e-9 * float(np.ptp(nodes, axis=0).max())
+        for key in ("x", "y", "z"):
+            for side in ("min", "max"):
+                face_nodes = np.fromiter(boundaries[f"{key}_{side}"], dtype=int)
+                if not face_nodes.size:
+                    continue
+                distance = np.linalg.norm(nodes_f[:, None, :] - nodes[face_nodes][None, :, :], axis=2)
+                on_face = np.flatnonzero(distance.min(axis=1) <= tol_face)
+                boundaries[f"{key}_{side}"].update((mesh["nn"] + on_face).tolist())
 
     # Combine boundary sets
     mesh["boundaries"] = boundaries
@@ -796,7 +816,7 @@ def _create_fracture_nodes_conn(  # noqa
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
         nearest_indx = int(np.argmin(d))
-        if phi[nearest_indx] == 0.0 and psi[nearest_indx] < tol:
+        if phi[nearest_indx] == 0.0 and abs(psi[nearest_indx]) < tol:
             tip_coords = nodes[nearest_indx, :]
 
         # Check if fracture node at tip_coords already exists
