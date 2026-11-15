@@ -214,7 +214,31 @@ $$h_f^* =
 
 For evaluating the exchange direction, the pressure is lagged to the previous timestep to prevent intra-timestep oscillating.
 
+Each side takes the advective exchange only if it has advection on. With matrix advection off, the leaked fluid leaves the fracture with its enthalpy, but the matrix receives none of it, since its Darcy flow carries no enthalpy onward.
+
 $Nu$ is the Nusselt number based on the parallel-plate hydraulic diameter $2w$, $F$ is the heat transfer factor, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. Cubic-law flow is laminar, for which steady, fully-developed flow between parallel plates gives $Nu = 7.54$ at constant wall temperature and $Nu = 8.23$ at constant wall heat flux (Bejan, 2013). The coupled fracture-matrix problem fits neither boundary condition exactly, so their average, $Nu = 7.885$, is used. The factor $F$ scales the exchange: $F < 1$ reduces it, $F = 0$ insulates the fracture, and local thermal equilibrium can be approached with an arbitrarily large $F$.
+
+**Mechanical coupling.** With mechanics on, displacement may jump across the fracture. At each fracture Gauss point, the jump is taken between the positive and negative matrix elements of the fracture element, with the unit normal $\vec{n}$ pointing from the negative to the positive side:
+
+$$[\![\vec{u}]\!] = [\![\textbf{N}_u]\!]\,\textbf{u}, \qquad [\![\textbf{N}_u]\!] = \left[\,\textbf{N}_u^+\,,\,-\textbf{N}_u^-\,\right], \qquad g_n = \vec{n}\cdot[\![\vec{u}]\!]$$
+
+so $g_n$ is the opening. Tip nodes are not split, so the jump vanishes at the tips. The fracture fluid pressure, the in-situ stress carried across the cut, and the contact pressure $\sigma_c$ (compression positive) load the two faces equally and oppositely:
+
+$$\textbf{R}_u \mathrel{+}= -\int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\left[(p_f + \sigma_c)\,\vec{n} + \boldsymbol{\sigma}_0\cdot\vec{n}\right]d\Gamma$$
+
+The full pressure acts on the face and partitioning between the pressure and stress happens internally. Normal contact is enforced by a penalty, which keeps the faces from interpenetrating beyond a small, numerical penetration:
+
+$$\sigma_c = \epsilon_N\langle -g_n\rangle, \qquad \epsilon_N = c_N\frac{\bar{E}}{h}$$
+
+with $\bar{E}$ the mean Young's modulus of the two adjacent matrix elements, $h$ the mean element length of the fracture, and $c_N$ is the `penalty_factor`. Scaling with $E/h$ keeps the contact stiffness a fixed multiple of the local rock stiffness, so the penetration $\sigma_c h/(c_N\bar{E})$ vanishes under mesh refinement and the solution converges to rigid contact. The penalty acts normally only, so a debonded fracture is frictionless.
+
+The pressure and in-situ terms are linear and integrated once with the other force-balance matrices. The fracture pressure term adds to the fracture columns of $\textbf{K}_{up}$, and the in-situ load is a constant force. Only the contact term is nonlinear, with the tangent
+
+$$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\epsilon_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
+
+The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
+
+**Initial state.** The initial displacement is zero and it is assumed that the specified initial forces (pressure and in-situ stress) are in equilibrium. If not, the system moves dynamically to equilibrium from the unbalanced initial condition. Only `BC_compatible` starts in equilibrium: its steady-state solve includes the force balance, with the fractures in contact at $\sigma_{c,0} = -\vec{n}\cdot\boldsymbol{\sigma}_0\cdot\vec{n} - p_{f,0}$. The solved $\textbf{u}$, $p$ and $T$ become the references $\textbf{u}_0$, $p_0$ and $T_0$. The strain in the porosity and the stress use $\textbf{u} - \textbf{u}_0$; the displacement output is the total $\textbf{u}$. 
 
 ![Conceptual Coupling Diagram](figures/couplingdiagram.png)
 _Process coupling and idealizations between rock, fracture, and well domains. The true pressure/temperature distributions are illustrated compared against the discontinuous distributions at the interfaces with wells and fractures. As lower-dimensional bodies, temperature and pressure fields in the fracture and wells represent the average pressure and temperature over their respective cross-sections. Fractures permit a discontinuity across the fracture plane ($T_m^+ \neq T_m^-$), while wells do not permit discontinuities ($T_m^+ = T_m^- = T_m$)._
