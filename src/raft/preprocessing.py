@@ -80,7 +80,7 @@ DEFAULTS: dict[str, Any] = {
     "boundary_conditions": [],
     # ---- physics: fractures/wells inherit unset fields from matrix -----------
     "physics": {
-        "matrix": {"flow": "transient", "heat": "transient", "advection": 0},
+        "matrix": {"flow": "transient", "heat": "transient", "advection": 1},
     },
     # ---- simulation ----------------------------------------------------------
     "simulation": {

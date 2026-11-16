@@ -41,7 +41,7 @@ def _parse(physics_yaml: str) -> Physics:
 
 def test_inheritance_and_yaml_booleans() -> None:
     physics = _parse("matrix: {heat: steady}\nwells: {advection: on}")
-    assert physics.matrix == DomainPhysics(heat="steady", advection=False)
+    assert physics.matrix == DomainPhysics(heat="steady", advection=True)
     assert physics.fractures == physics.matrix
     assert physics.wells == DomainPhysics(heat="steady", advection=True)
     assert physics.as_steady().wells == DomainPhysics(flow="steady", heat="steady", advection=True)
@@ -88,7 +88,7 @@ def test_single_physics_matches_coupled(tmp_path: Path, solver_type: str, off: s
     holds itself at its *_ini value apart from its Dirichlet BCs, ignoring the BC_compatible seed.
     BC_compatible also covers the time step that follows, as a constant start would."""
     config_name = "config_test_patchX.yaml"
-    steady = {"flow": "steady", "heat": "steady"}
+    steady = {"flow": "steady", "heat": "steady", "advection": False}
     full, mesh = _run(tmp_path, config_name, {"matrix": steady}, "BC_compatible", solver_type=solver_type)
     single, _ = _run(
         tmp_path, config_name, {"matrix": {**steady, off: "off"}}, "BC_compatible", solver_type=solver_type

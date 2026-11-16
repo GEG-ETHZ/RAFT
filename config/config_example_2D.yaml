@@ -76,7 +76,7 @@ initial_conditions:
 boundary_conditions:
         # Inlet/outlet example: a rate-controlled well, switching to a pressure
         # limit if it would otherwise exceed the given bounds.
-        - lines: [[[43.4, 20.0], [45, 30]]]
+        - lines: [[[43.4, 20.0], [45, 30]]] # change from lines to coords to represent point injection
           label: "inlet"
           hydraulics:
               type: "flux"
@@ -118,9 +118,9 @@ boundary_conditions:
 
 physics:
   matrix:
-    flow: steady
-    heat: steady
-    advection: off
+    flow: transient
+    heat: transient
+    advection: on
 
 simulation:
   # Time
@@ -128,7 +128,7 @@ simulation:
   t_end: 3.0e+7
   timestep: 10.0
   timestep_min: 1.0
-  timestep_max: 1.0e+4
+  timestep_max: 1.0e+6
 
   # Output
   output_frequency: 1

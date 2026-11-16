@@ -3,3 +3,9 @@ mesh:
   dimensions: 2
   fractures:
       - values: [[20.0, 20.0, 0.0], [10.0], [35]]
+
+physics:
+  matrix:
+    flow: steady
+    heat: steady
+    advection: off
