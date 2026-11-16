@@ -354,6 +354,7 @@ def check_thermoelastic_cooling(
     nodes = analysis["points"]
     cells = analysis["cells"]
     x = np.array([np.mean(nodes[cell, 0]) for cell in cells])
+    x_nodes = nodes[:, 0]
     L = float(np.max(nodes[:, 0]) - np.min(nodes[:, 0]))
 
     p0 = float(config["initial_conditions"]["p_ini"])
@@ -387,6 +388,11 @@ def check_thermoelastic_cooling(
     pressure = p0 + (y0 + b_bb * drained_bulk_modulus * thermal_expansion * (temperature - T0) - y) / (
         b_bb * biot_coefficient
     )
+    temperature_nodes = Tin + (Tout - Tin) * x_nodes / L
+    y_nodes = np.sqrt(C1 / C2) * np.tan(np.arctan(np.sqrt(C2 / C1) * yL) + np.sqrt(C1 * C2) * (x_nodes - L))
+    pressure_nodes = p0 + (
+        y0 + b_bb * drained_bulk_modulus * thermal_expansion * (temperature_nodes - T0) - y_nodes
+    ) / (b_bb * biot_coefficient)
     stress = (
         stress_init
         + drained_bulk_modulus * thermal_expansion * (temperature - T0)
@@ -398,34 +404,34 @@ def check_thermoelastic_cooling(
     actual_stress = analysis["scalars"]["effective_stress"]
     actual_aperture = analysis["scalars"]["aperture"]
     actual_permeability = analysis["scalars"]["permeability"]
-    actual_pressure = np.array([np.mean(results["scalars"]["p"][cell]) for cell in cells])
+    actual_pressure = results["scalars"]["p"]
     actual_temperature = np.array([np.mean(results["scalars"]["T"][cell]) for cell in cells])
 
     comparison_data = [
-        ("Temperature (K)", temperature, actual_temperature),
-        ("Pressure (Pa)", pressure, actual_pressure),
-        ("Effective stress (Pa)", stress, actual_stress),
-        ("Aperture (m)", aperture, actual_aperture),
-        ("Permeability (m^2)", permeability, actual_permeability),
+        ("Temperature (K)", x, temperature, actual_temperature),
+        ("Pressure (Pa)", x_nodes, pressure_nodes, actual_pressure),
+        ("Effective stress (Pa)", x, stress, actual_stress),
+        ("Aperture (m)", x, aperture, actual_aperture),
+        ("Permeability (m^2)", x, permeability, actual_permeability),
     ]
     relative_errors = [
         float(np.sum((expected - actual) ** 2) / np.sum(expected**2))
-        for _, expected, actual in comparison_data
+        for _, _, expected, actual in comparison_data
     ]
     relative_error = sum(relative_errors)
 
     if plot_on:
-        plot_order = np.argsort(x)
-        sorted_x = x[plot_order]
-        unique_x, unique_indices = np.unique(sorted_x, return_index=True)
         figure, axes = plt.subplots(3, 2, figsize=(12, 12))
         figure.subplots_adjust(hspace=0.5, wspace=0.3)
-        for axis, (label, expected, actual), error in zip(
+        for axis, (label, coordinates, expected, actual), error in zip(
             axes.ravel()[: len(comparison_data)], comparison_data, relative_errors, strict=True
         ):
+            plot_order = np.argsort(coordinates)
+            sorted_coordinates = coordinates[plot_order]
+            unique_x, unique_indices = np.unique(sorted_coordinates, return_index=True)
             sorted_expected = expected[plot_order]
             axis.plot(unique_x, sorted_expected[unique_indices], "r-", label="Analytical")
-            axis.plot(x, actual, "ko", markersize=3, linestyle="none", label="RAFT")
+            axis.plot(coordinates, actual, "ko", markersize=3, linestyle="none", label="RAFT")
             axis.set_xlabel("x (m)", fontsize=14)
             axis.set_ylabel(label, fontsize=14)
             axis.set_title(label, fontsize=15)
