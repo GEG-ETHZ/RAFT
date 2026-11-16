@@ -45,19 +45,20 @@ class TimestepError(RuntimeError):
     """Raised when the solver fails to converge at the minimum timestep."""
 
 
-def _analyze_permeability_outputs(controls: dict[str, Any]) -> None:
+def _analyze_permeability_outputs(controls: dict[str, Any]) -> bool:
     """Analyze permeability outputs when both law parameters are explicitly configured."""
     config_path = Path(controls["config_dir"]) / controls["config_name"]
     with config_path.open() as file:
         source_config = yaml.safe_load(file) or {}
     solid = source_config.get("material", {}).get("solid", {})
     if "b_BB" not in solid or "stress_init" not in solid:
-        return
+        return False
 
     from scripts.analyze_permeability_outputs import analyze
 
     output_dir = Path(controls["output_directory_full"])
     analyze(config_path, output_dir, output_dir / "permeability_analysis")
+    return True
 
 
 # Console output: nothing, one line per timestep attempt, or full detail
@@ -986,7 +987,10 @@ def initialize_simulation(
 
 # -------------------------------- Main simulation run function -------------
 def main(  # noqa
-    config_name: str | None = None, config_dir: Path | None = None, verbosity: Verbosity = "full"
+    config_name: str | None = None,
+    config_dir: Path | None = None,
+    verbosity: Verbosity = "full",
+    run_thermoelastic_test: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Main simulation run."""
     # Full detail goes through the usual verbose flag; lite only adds the per-step line
@@ -1023,7 +1027,11 @@ def main(  # noqa
             print(f"     {err}")
             sys.exit(1)
 
-        _analyze_permeability_outputs(controls)
+        analysis_ran = _analyze_permeability_outputs(controls)
+        if analysis_ran and run_thermoelastic_test:
+            from tests.test_simulation import test_thermoelastic_cooling
+
+            test_thermoelastic_cooling()
 
         if detailed:
             print("Simulation complete. Output files are stored in: \n" + controls["output_directory_full"])

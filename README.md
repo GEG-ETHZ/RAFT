@@ -155,6 +155,13 @@ and writes the comparison plot to
 uv run pytest tests/test_simulation.py::test_thermoelastic_cooling -q
 ```
 
+When permeability analysis runs successfully, the thermoelastic cooling comparison
+runs automatically after the simulation when using:
+
+```bash
+uv run -m raft <config>
+```
+
 ## Theory
 RAFT idealizes the subsurface as a continuous, fully-saturated, single-phase porous medium and solves a coupled thermo-hydraulic (pressure/temperature) finite element problem with a compressible, pressure- and temperature-dependent fluid equation of state. The governing equations, fluid EOS, finite element discretization, fracture coupling, mesh cutting algorithm, stabilization, and time-integration schemes are documented in [theory.md](theory.md).
 

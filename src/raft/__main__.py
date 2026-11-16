@@ -77,6 +77,7 @@ def main() -> None:
             config_name=args.config,
             config_dir=args.config_dir,
             verbosity="quiet" if args.quiet else args.verbosity,
+            run_thermoelastic_test=True,
         )
     else:
         parser.print_help()
