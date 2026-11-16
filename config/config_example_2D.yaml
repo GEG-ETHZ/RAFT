@@ -5,10 +5,12 @@ mesh:
         shape: "box"
         values: [[-51, -50], [102, 75]]
   sizing:  # element sizes, used by scripts/raft_to_geo.py
-      outer: 20
+      outer: 10
   # removing discrete fractures to better see re-alignment of flow field
   #     frac: [[1, 1, 2], [1, 5, 20]]
       bc: [[0.5, 2], [1, 10]]
+      region_max: 5
+      quads: true
 
   regions:
       - shape: "sphere"
