@@ -31,6 +31,7 @@ from typing import Any, Literal, get_args
 
 import numpy as np
 import numpy.typing as npt
+import yaml
 
 from .logging_utils import RunLogger
 from .matprops import get_EOS
@@ -42,6 +43,21 @@ from .solvers import fully_coupled_time_integration, lin_extrap_time_integration
 
 class TimestepError(RuntimeError):
     """Raised when the solver fails to converge at the minimum timestep."""
+
+
+def _analyze_permeability_outputs(controls: dict[str, Any]) -> None:
+    """Analyze permeability outputs when both law parameters are explicitly configured."""
+    config_path = Path(controls["config_dir"]) / controls["config_name"]
+    with config_path.open() as file:
+        source_config = yaml.safe_load(file) or {}
+    solid = source_config.get("material", {}).get("solid", {})
+    if "b_BB" not in solid or "stress_init" not in solid:
+        return
+
+    from scripts.analyze_permeability_outputs import analyze
+
+    output_dir = Path(controls["output_directory_full"])
+    analyze(config_path, output_dir, output_dir / "permeability_analysis")
 
 
 # Console output: nothing, one line per timestep attempt, or full detail
@@ -1006,6 +1022,8 @@ def main(  # noqa
         except TimestepError as err:
             print(f"     {err}")
             sys.exit(1)
+
+        _analyze_permeability_outputs(controls)
 
         if detailed:
             print("Simulation complete. Output files are stored in: \n" + controls["output_directory_full"])

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from scripts.analyze_permeability_outputs import _read_vtk, _timestep_files, analyze
+from scripts.analyze_permeability_outputs import _read_vtk, _timestep_files
 
 import tests.test_checks as test_checks
 from raft.preprocessing import preprocessing
@@ -206,7 +206,6 @@ def test_thermoelastic_cooling() -> None:
 
     output_dir = output_root / config_path.stem
     analysis_dir = output_dir / "permeability_analysis"
-    analyze(config_path, output_dir, analysis_dir)
     _, analysis_path = _timestep_files(analysis_dir)[-1]
     analysis = _read_vtk(analysis_path)
     _, results_path = _timestep_files(output_dir)[-1]
