@@ -31,6 +31,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-4]
+    normal_stiffness: [1.0e+7]
     heat_transfer_factor: [0.634115]
 
 initial_conditions:
@@ -69,3 +70,10 @@ simulation:
 
   # Physical controls
   gravity: 0.0    # m/s^2
+
+  # Numerical controls
+  iterative_controls:
+      NR_tol: 1.0e-6
+      iter_max: 100
+      NR_step: 1
+      aitken_relaxation: 0   # the fracture opens in one step from contact; a secant across that switch reverses the step

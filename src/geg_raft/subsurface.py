@@ -937,7 +937,17 @@ def advance(  # noqa
         if write_steps:
             if verbose:
                 print("     Postprocessing...")
-            postprocessing(n_step, mesh, controls, material, BC_config, primary_variables, t_solved, verbose)
+            postprocessing(
+                n_step,
+                mesh,
+                controls,
+                material,
+                BC_config,
+                primary_variables,
+                t_solved,
+                verbose,
+                setup.mechanics,
+            )
 
         if t_solved >= t_target:
             dt_hist = [dt[0], *dt_step]  # dt[0] is the unclamped proposal
@@ -1024,7 +1034,7 @@ def initialize_simulation(
     # --- Export initial condition
     if verbose:
         print("Export initial condition")
-    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose)
+    postprocessing(n, mesh, controls, material, BC_config, primary_variables, t, verbose, mechanics)
 
     setup = SimSetup(mesh, material, controls, BC_config, critical_times, mechanics)
     state = snapshot_state(t, n, n, [dt[0], *dt], primary_variables, BC_config, {})

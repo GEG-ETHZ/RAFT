@@ -15,8 +15,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Constitutive laws of the solid: matrix elasticity and fracture contact, returning values with their
-derivatives where the solve needs a tangent.
+"""Constitutive laws of the solid: matrix elasticity, fracture contact, and fracture aperture, returning
+values with their derivatives where the solve needs a tangent.
 """
 
 import numpy as np
@@ -61,9 +61,28 @@ def penalty_contact(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Normal contact pressure sigma_c = eps_N <-g_n> (compression positive) and d(sigma_c)/d(g_n).
 
-    Open at g_n = 0.
+    Closed at g_n = 0.
     """
-    closed = g_n < 0.0
+    closed = g_n <= 0.0
     sigma_c = np.where(closed, -penalty * g_n, 0.0)
     dsigma_c_dg = np.where(closed, -penalty, 0.0)
     return sigma_c, dsigma_c_dg
+
+
+def bandis_barton_aperture(
+    g_n: npt.NDArray[np.float64],
+    sigma_c: npt.NDArray[np.float64],
+    dsigma_c_dg: npt.NDArray[np.float64],
+    w_m: npt.NDArray[np.float64],
+    K_w: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Hydraulic aperture w and dw/dg_n from the normal jump g_n and contact pressure sigma_c.
+
+    In contact: w = w_m K_w / (K_w + sigma_c) == w_m (1 - (sigma_c/K_w) / (1 + (sigma_c/K_w)) )
+    Open: w = w_m + g_n
+    """
+    closed = sigma_c > 0.0
+    w_closed = w_m * K_w / (K_w + sigma_c)
+    w = np.where(closed, w_closed, w_m + g_n)
+    dw_dg = np.where(closed, -w_closed / (K_w + sigma_c) * dsigma_c_dg, 1.0)
+    return w, dw_dg

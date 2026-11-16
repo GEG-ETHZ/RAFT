@@ -47,8 +47,8 @@ from .matrixassembly import (
     _pad_sparse,
     _vctrzd_quad_point_integration,
 )
-from .mechanicsdata import FractureInterface, MechanicsMatrices
-from .mechconstitutive import elasticity_matrix, penalty_contact
+from .mechanicsdata import FractureAperture, FractureInterface, MechanicsMatrices
+from .mechconstitutive import bandis_barton_aperture, elasticity_matrix, penalty_contact
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 
 # Stress component names in Voigt order, for output
@@ -504,6 +504,10 @@ def integrate_fracture_interface(
     nodes_f = fmesh["nodes"]
     sigma_0 = material["sigma_0"]
     penalty_e = element_penalty(mesh, material, controls)
+    w_m_e = material["fracture"]["w_m"]
+    ne_f, nne_f = np.asarray(fmesh["conn"]).shape
+    points_e = np.zeros((ne_f, 0), dtype=np.int64)
+    projection = np.zeros((ne_f, nne_f, 0))
 
     rows_G: list[npt.NDArray[np.int64]] = []
     cols_G: list[npt.NDArray[np.int64]] = []
@@ -514,6 +518,8 @@ def integrate_fracture_interface(
     weights: list[npt.NDArray[np.float64]] = []
     penalty: list[npt.NDArray[np.float64]] = []
     element: list[npt.NDArray[np.int64]] = []
+    w_m: list[npt.NDArray[np.float64]] = []
+    K_w: list[npt.NDArray[np.float64]] = []
     normals: list[npt.NDArray[np.float64]] = []
     traction_0: list[npt.NDArray[np.float64]] = []
 
@@ -521,6 +527,7 @@ def integrate_fracture_interface(
     for r in range(mesh_data.num_regions):
         n = np.asarray(fmesh["fracture_normal"][r], dtype=np.float64).ravel()[:nsd]
         tangent = np.asarray(fmesh["fracture_tangent"][r], dtype=np.float64).reshape(-1, 1)[:nsd]
+        K_w_r = _get_region_value(material["fracture"]["normal_stiffness"], r)
         elem_type_counter = -1  # force an update on the first element
         for e in mesh_data.region_lists[r]:
             new_type_idx = bisect.bisect_left(mesh_data.elem_indx, e)
@@ -529,6 +536,9 @@ def integrate_fracture_interface(
                     mesh_data.nq_list[new_type_idx], mesh_data.nsd, mesh_data.etype_list[new_type_idx]
                 )
                 elem_type_counter = new_type_idx
+                if points_e.shape[1] != nq:  # size the per-element Gauss-point arrays
+                    points_e = np.zeros((ne_f, nq), dtype=np.int64)
+                    projection = np.zeros((ne_f, nne_f, nq))
 
             enodes_f = np.asarray(mesh_data.conn[e])
             _, detJ = getB(GN_q, nodes_f[enodes_f, :] @ tangent, mesh_data.nsd)
@@ -562,6 +572,12 @@ def integrate_fracture_interface(
             weights.append(np.asarray(wJ, dtype=np.float64).ravel())
             penalty.append(np.full(nq, penalty_e[e]))
             element.append(np.full(nq, e, dtype=np.int64))
+            w_m.append(np.full(nq, w_m_e[e]))
+            K_w.append(np.full(nq, K_w_r))
+            # lumped projection of Gauss values to the element nodes: N_a w_q / sum_q N_a w_q
+            weighted = N_q[:, 0, :].T * np.asarray(wJ, dtype=np.float64).ravel()  # (nne, nq)
+            projection[e] = weighted / weighted.sum(axis=1, keepdims=True)
+            points_e[e] = points
             normals.append(np.tile(n, (nq, 1)))
             k += nq
 
@@ -583,7 +599,17 @@ def integrate_fracture_interface(
 
     K_upf = csc_matrix(-(jump_normal.T @ diags(w) @ shape_f))
     F_fracture_0 = np.asarray(jump.T @ (w[:, None] * np.vstack(traction_0)).ravel()).reshape(-1, 1)
-    interface = FractureInterface(jump, jump_normal, w, np.concatenate(penalty), np.concatenate(element))
+    interface = FractureInterface(
+        jump,
+        jump_normal,
+        w,
+        np.concatenate(penalty),
+        np.concatenate(element),
+        np.concatenate(w_m),
+        np.concatenate(K_w),
+        points_e,
+        projection,
+    )
     return interface, K_upf, F_fracture_0
 
 
@@ -598,3 +624,17 @@ def fracture_contact(
         interface.jump_normal.T @ diags(-interface.weights * dsigma_c_dg) @ interface.jump_normal
     )
     return residual, tangent
+
+
+def fracture_aperture(interface: FractureInterface, u: npt.NDArray[np.float64]) -> FractureAperture:
+    """Bandis-Barton aperture at the Gauss points and element nodes for every column of u, and dw/du."""
+    g_n = interface.jump_normal @ u  # (nq, n_levels)
+    penalty = interface.penalty[:, None]
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, penalty)
+    w, dw_dg = bandis_barton_aperture(
+        g_n, sigma_c, dsigma_c_dg, interface.w_m[:, None], interface.K_w[:, None]
+    )
+    gauss = w[interface.points]  # (ne_f, nq_e, n_levels)
+    element_nodal = interface.projection @ gauss  # (ne_f, nne_f, n_levels)
+    D_w = csc_matrix(diags(dw_dg[:, 0]) @ interface.jump_normal)
+    return FractureAperture(gauss, element_nodal, D_w, interface.points)

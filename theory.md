@@ -236,7 +236,23 @@ The pressure and in-situ terms are linear and integrated once with the other for
 
 $$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\epsilon_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
 
+with $H(0) = 1$.
+
 The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
+
+**Aperture.** With mechanics on, the hydraulic aperture follows the contact state through the Bandis–Barton closure law, written with the unstressed aperture $w_m$ (the `aperture` input / the maximum aperture) and the normal stiffness $K_w$ (`normal_stiffness`):
+
+$$w = \begin{cases} w_m \left( 1 -  \frac{\frac{\sigma_c}{K_w}}{1 + \frac{\sigma_c}{K_w}} \right)& \sigma_c > 0 \ \ (\text{in contact}) \\[2ex] w_m + g_n & \text{open}\end{cases}$$
+
+$K_w$ is the normal stress that halves the aperture, and the contact pressure $\sigma_c$ is the effective normal stress. The aperture is evaluated at the fracture Gauss points, where it sets the cubic-law conductance $w^3/12$, the leak-off coefficient $w/12$, the conduction $w\lambda_f$, and the heat transfer coefficient $h_c \propto 1/(2w)$. The lumped storage uses the per-element lumped projection of the Gauss values to the element nodes:
+
+$$\bar{w}_{a} = \frac{\sum_q N_a(\xi_q)\,W_q\lvert J\rvert\,w_q}{\sum_q N_a(\xi_q)\,W_q\lvert J\rvert}$$
+
+The earlier time levels of $\partial(w\rho_f)/\partial t$ and $\partial(w\rho_f u_f)/\partial t$ apply the same law to the displacement of each time level. The displacement enters the fracture flow and heat only through $w$, with the Jacobian
+
+$$\frac{\partial \textbf{R}}{\partial \textbf{u}} = \frac{\partial \textbf{R}}{\partial \textbf{w}}\,\text{diag}\!\left(\frac{\partial w}{\partial g_n}\right)\textbf{G}_n, \qquad \frac{\partial w}{\partial g_n} = \begin{cases}\dfrac{\epsilon_N\,w^2}{w_m K_w} & \text{in contact} \\[1ex] 1 & \text{open}\end{cases}$$
+
+with $\textbf{G}_n$ the normal jump at the Gauss points. The tangent omits the aperture dependence of the SUPG stabilization. With mechanics off, $w$ is the constant `aperture`, $w_m$.
 
 **Initial state.** The initial displacement is zero and it is assumed that the specified initial forces (pressure and in-situ stress) are in equilibrium. If not, the system moves dynamically to equilibrium from the unbalanced initial condition. Only `BC_compatible` starts in equilibrium: its steady-state solve includes the force balance, with the fractures in contact at $\sigma_{c,0} = -\vec{n}\cdot\boldsymbol{\sigma}_0\cdot\vec{n} - p_{f,0}$. The solved $\textbf{u}$, $p$ and $T$ become the references $\textbf{u}_0$, $p_0$ and $T_0$. The strain in the porosity and the stress use $\textbf{u} - \textbf{u}_0$; the displacement output is the total $\textbf{u}$. 
 

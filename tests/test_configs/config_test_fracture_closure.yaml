@@ -32,6 +32,7 @@ material:
   # Fracture parameters
   fracture:
     aperture: [1.0e-4, 1.0e-4]
+    normal_stiffness: [1.0e+7, 1.0e+7]
     heat_transfer_factor: [0.634115, 0.634115]
 
 initial_conditions:

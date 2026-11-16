@@ -461,6 +461,30 @@ def _calculate_mechanics_properties(mesh: dict[str, Any], material: dict[str, An
         solid["shear_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu) / (2.0 * (1.0 + nu))
         solid["youngs_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu)
 
+    if "fracture_mesh" in mesh:
+        _calculate_fracture_aperture_properties(mesh, material)
+
+
+def _calculate_fracture_aperture_properties(mesh: dict[str, Any], material: dict[str, Any]) -> None:
+    """Validate the Bandis-Barton inputs and store the unstressed aperture w_m per fracture element."""
+    fracture = material["fracture"]
+    if "normal_stiffness" not in fracture:
+        raise ValueError(
+            "material.fracture.normal_stiffness is required when physics.matrix.mechanics is on "
+            "with fractures"
+        )
+    region_lists = mesh["fracture_mesh"]["region_lists"]
+    w_m = np.zeros(mesh["fracture_mesh"]["ne"])
+    for r, elems in enumerate(region_lists):
+        aperture = _get_region_value(fracture["aperture"], r)
+        K_w = _get_region_value(fracture["normal_stiffness"], r)
+        if aperture <= 0.0 or K_w <= 0.0:
+            raise ValueError(
+                f"Fracture {r}: aperture = {aperture} and normal_stiffness = {K_w} must be positive"
+            )
+        w_m[elems] = aperture
+    fracture["w_m"] = w_m  # (ne_f,)
+
 
 def _resolve_group_geometry(
     mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool

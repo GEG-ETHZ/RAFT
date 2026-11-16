@@ -40,7 +40,7 @@ from .matprops import (
     get_porosity_lagrangian,
     get_viscosity,
 )
-from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
+from .mechanicsdata import _NO_APERTURE, _NO_MECHANICS, FractureAperture, MechanicsMatrices
 from .physics import Physics
 from .shapefunctions import (
     GNMATRIX_FUNCS,
@@ -101,6 +101,15 @@ class PropertyState:
     def q_n(self) -> PropertyResult:
         """Current-iterate (column 0) slice of the quadrature-point value."""
         return PropertyResult(self.q.value[:, :, 0:1], self.q.dp[:, :, 0:1], self.q.dT[:, :, 0:1])
+
+
+@dataclass(frozen=True, slots=True)
+class FracturePointFluxes:
+    """Exchange fluxes of one fracture element with one matched matrix element at the Gauss points."""
+
+    enodes_m: list[int]  # matched matrix element nodes
+    N_qm: npt.NDArray[np.float64]  # (nq, 1, nne_m) matrix shape functions at the fracture Gauss points
+    fluxes: dict[str, npt.NDArray[np.float64]]  # "p" leak-off, "hc" conduction, "adv" advection, (nq, 1, 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +209,63 @@ def _get_gravity(nsd: int, magnitude: float) -> npt.NDArray[np.float64]:
     ng = np.zeros((nsd, 1))
     ng[nsd - 1] = 1.0  # gravity normal
     return magnitude * ng
+
+
+def _append_entries(
+    entries: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]],
+    rows: Sequence[int] | npt.NDArray[np.int64],
+    cols: Sequence[int] | npt.NDArray[np.int64],
+    block: npt.NDArray[np.float64],
+) -> None:
+    """Queue a dense (len(rows), len(cols)) block as sparse triplets."""
+    rows_a = np.asarray(rows, dtype=np.int64)
+    cols_a = np.asarray(cols, dtype=np.int64)
+    entries.append((np.repeat(rows_a, cols_a.size), np.tile(cols_a, rows_a.size), block.ravel()))
+
+
+def _assemble_entries(
+    entries: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]],
+    shape: tuple[int, int],
+) -> csc_matrix:
+    """Sum queued triplets into a sparse matrix."""
+    if not entries:
+        return csc_matrix(shape)
+    rows, cols, vals = (np.concatenate(part) for part in zip(*entries, strict=True))
+    return csc_matrix((vals, (rows, cols)), shape=shape)
+
+
+def _append_exchange_sensitivity(
+    sens_p: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]],
+    sens_T: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]],
+    side: FracturePointFluxes,
+    N_q: npt.NDArray[np.float64],
+    wJe_q: npt.NDArray[np.float64],
+    w_q: float | npt.NDArray[np.float64],
+    enodes_f: Sequence[int],
+    points: npt.NDArray[np.int64],
+    *,
+    submesh_advection: bool,
+    matrix_advection: bool,
+) -> None:
+    """Queue the aperture sensitivity of the fracture-matrix exchange with one matched side."""
+    # leak-off and advection scale with w, conduction with 1/w: sensitivity = +-flux/w
+    scale = np.ravel(wJe_q) / np.ravel(w_q)
+    N_f = N_q[:, 0, :].T * scale  # (nne_f, nq)
+    N_m = side.N_qm[:, 0, :].T * scale  # (nne_m, nq)
+    if "p" in side.fluxes:
+        flux_p = side.fluxes["p"][:, 0, 0]
+        _append_entries(sens_p, enodes_f, points, N_f * flux_p)
+        _append_entries(sens_p, side.enodes_m, points, -N_m * flux_p)
+    if "hc" in side.fluxes:
+        flux_hc = side.fluxes["hc"][:, 0, 0]
+        _append_entries(sens_T, enodes_f, points, -N_f * flux_hc)
+        _append_entries(sens_T, side.enodes_m, points, N_m * flux_hc)
+    if "adv" in side.fluxes:
+        flux_adv = side.fluxes["adv"][:, 0, 0]
+        if submesh_advection:
+            _append_entries(sens_T, enodes_f, points, N_f * flux_adv)
+        if matrix_advection:
+            _append_entries(sens_T, side.enodes_m, points, -N_m * flux_adv)
 
 
 def _make_sparse(
@@ -1138,12 +1204,12 @@ def _evaluate_fracture_leakoff_flux(
 
 
 def _evaluate_fracture_heat_transfer_coefficient(
-    heat_transfer_factor: float, lambda_f: float, aperture: float
-) -> float:
+    heat_transfer_factor: float, lambda_f: float, aperture: float | npt.NDArray[np.float64]
+) -> float | npt.NDArray[np.float64]:
     """Fracture-matrix heat transfer coefficient h = factor * Nu * lambda_f / (2w)."""
     # Cubic-law flow is laminar: the dummy Re = 1 (and Pr = 1) always evaluates the laminar Nu
     Nu, _, _ = get_nusselt_number(np.ones(1), np.ones(1), 0.0, parallel_plates=True)
-    return float(heat_transfer_factor * Nu.item() * lambda_f / (2.0 * aperture))  # hydraulic diameter 2w
+    return heat_transfer_factor * Nu.item() * lambda_f / (2.0 * aperture)  # hydraulic diameter 2w
 
 
 def _evaluate_well_heat_transfer_coefficient(
@@ -1163,7 +1229,7 @@ def _evaluate_well_heat_transfer_coefficient(
 def _evaluate_fracture_conduction_flux(
     heat_transfer_factor: float,
     lambda_f: float,
-    aperture: float,
+    aperture: float | npt.NDArray[np.float64],
     T_f_q: npt.NDArray[np.float64],
     T_m_q: npt.NDArray[np.float64],
     *,
@@ -1658,6 +1724,17 @@ def _evaluate_flow_and_storage_state(
     return kf, mu_q, rho_f, phi_L, u_f, hf
 
 
+def _fracture_aperture_state(
+    aperture: FractureAperture, e: int, N_q: npt.NDArray[np.float64], n_levels: int
+) -> tuple[NodalPropertyState, npt.NDArray[np.float64]]:
+    """Fracture element's nodal aperture as storage porosity, and its Gauss-point aperture (nq, 1, 1)."""
+    w_e = aperture.element_nodal[e, :, :n_levels]
+    zeros = np.zeros_like(w_e)
+    phi_e = PropertyResult(w_e, zeros, zeros)
+    phi_q = PropertyResult(N_q @ w_e, N_q @ zeros[:, 0:1], N_q @ zeros[:, 0:1])
+    return NodalPropertyState(q=phi_q, e=phi_e), aperture.gauss[e, :, 0].reshape(-1, 1, 1)
+
+
 def _evaluate_darcy_flux(
     N_q: npt.NDArray[np.float64],
     B_q: npt.NDArray[np.float64],
@@ -2036,7 +2113,7 @@ def _evaluate_energy_storage_integrands(
 def _evaluate_effective_conductivity(
     phi_L: PropertyState,
     solid: RegionSolidData,
-    w0: float,
+    w0: float | npt.NDArray[np.float64],
     lambda_f: float,
     nsd: int,
     *,
@@ -2439,7 +2516,7 @@ def _integrate_fracture_coupling_residual(  # noqa
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
     heat_transfer_factor: float,  # heat transfer coefficient multiplier
     lambda_f: float,  # fluid thermal conductivity
-    aperture: float,
+    aperture: float | npt.NDArray[np.float64],  # constant, or (nq, 1, 1) at the Gauss points
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -2544,7 +2621,7 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
     rho_f: PropertyState,  # fluid density; `.q_n` is the current-iterate value used here
     heat_transfer_factor: float,  # heat transfer coefficient multiplier
     lambda_f: float,  # fluid thermal conductivity
-    aperture: float,
+    aperture: float | npt.NDArray[np.float64],  # constant, or (nq, 1, 1) at the Gauss points
     *,
     pressure_coupling: bool,
     thermal_coupling: bool,
@@ -2552,9 +2629,11 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
     submesh_advection: bool,  # fracture/well side takes the leak-off enthalpy
     matrix_advection: bool,  # matrix side takes the leak-off enthalpy
     T_flow_lagged: bool,
-) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]]:
-    """Integrate one fracture element's coupling tangent contribution to its neighboring matrix elements."""
-    entries: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+) -> list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], FracturePointFluxes]]:
+    """Integrate one fracture element's coupling tangent and point fluxes per neighboring matrix element."""
+    entries: list[
+        tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], FracturePointFluxes]
+    ] = []
 
     rhof_q = rho_f.q_n
     p_f_q = N_q @ kin_n.pe  # fracture pressure
@@ -2565,6 +2644,7 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
         fm_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mf_matrices: dict[str, npt.NDArray[np.float64]] = {}
         mm_matrices: dict[str, npt.NDArray[np.float64]] = {}
+        fluxes: dict[str, npt.NDArray[np.float64]] = {}
 
         advection_on = submesh_advection or matrix_advection
         if pressure_coupling or advection_on:
@@ -2579,6 +2659,7 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
                 want_tangent_dp=True,
                 want_tangent_dT=thermal_coupling,
             )  # Mass flux; fracture-side tangents are rows over the fracture nodes
+            fluxes["p"] = flux_p_q
 
         if pressure_coupling:
             ff_matrices["Kpp_ff"] = _vctrzd_qp_vctr_integrate(N_q, dfluxp_dpf, wJe_q, False)
@@ -2589,7 +2670,7 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
         if thermal_coupling:
             T_f_q = N_q @ kin_n.Te
             T_m_q = N_qm @ T[enodes_m]
-            _, dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
+            fluxes["hc"], dfluxc_dTf, dfluxc_dTm = _evaluate_fracture_conduction_flux(
                 heat_transfer_factor, lambda_f, aperture, T_f_q, T_m_q, want_tangent_dT=True
             )  # convection contribution
 
@@ -2603,7 +2684,7 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
                 T_flow_mq = N_qm @ T_flow[enodes_m]
                 p_m_q_lag = N_qm @ p_lag[enodes_m]  # upwind decision only
 
-                _, dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm = _evaluate_fracture_advection_flux(
+                fluxes["adv"], dqadv_dTf, dqadv_dTm, dqadv_dpf, dqadv_dpm = _evaluate_fracture_advection_flux(
                     p_f_q,
                     p_m_q,
                     p_f_q_lag,
@@ -2654,7 +2735,16 @@ def _integrate_fracture_coupling_tangent(  # noqa: C901
             fm_matrices["KTT_fm"] = RTT_fm
             mf_matrices["KTT_mf"] = RTT_mf
             mm_matrices["KTT_mm"] = RTT_mm
-        entries.append((nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices))
+        entries.append(
+            (
+                nne_m,
+                ff_matrices,
+                fm_matrices,
+                mf_matrices,
+                mm_matrices,
+                FracturePointFluxes(enodes_m, N_qm, fluxes),
+            )
+        )
 
     return entries
 
@@ -2915,6 +3005,7 @@ def integrate_residuals(  # noqa
     physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
     mechanics: MechanicsMatrices = _NO_MECHANICS,
+    aperture: FractureAperture = _NO_APERTURE,  # Bandis-Barton aperture; empty for the constant input
 ) -> dict[str, Any]:
     """Integrate residual vectors for conservation of mass and energy."""
     p = primary_variables["p"]
@@ -2936,6 +3027,7 @@ def integrate_residuals(  # noqa
     thermal_coupling = solve_T or physics.matrix.solve_heat
     volumetric_strain_on = bool(controls["volumetric_strain_on"])
     mechanics_on = bool(mechanics.nodal_strain) and not on_submesh  # solved strain, matrix pass only
+    aperture_on = is_fracture and aperture.gauss.size > 0  # aperture from the contact state
     steady_pres = float(domain.steady_flow)
     steady_temp = float(domain.steady_heat)
 
@@ -3089,6 +3181,13 @@ def integrate_residuals(  # noqa
                 want_energy=thermal_coupling,
                 want_flow=need_flow_props,
             )
+            # Aperture: the constant input, or Bandis-Barton from the contact state
+            w_e: float | npt.NDArray[np.float64] = flow.w0
+            kf_perp = flow.kf_perp
+            if aperture_on:
+                phi_L, w_e = _fracture_aperture_state(aperture, e, N_q, p_nodes.shape[1])
+                kf = PropertyResult(w_e**3 / 12, kf.dp, kf.dT)  # cubic law
+                kf_perp = PropertyResult(w_e / 12, np.zeros_like(w_e), np.zeros_like(w_e))
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear
                 mu_c = get_viscosity(_N_MID_L2 @ kin_n.Te_flow, _N_MID_L2 @ kin_n.pe, fluid, T_flow_lagged)
@@ -3123,7 +3222,7 @@ def integrate_residuals(  # noqa
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
                     solid,
-                    flow.w0,
+                    w_e,
                     lambda_f,
                     mesh_data.nsd,
                     no_solid=on_submesh,
@@ -3186,12 +3285,12 @@ def integrate_residuals(  # noqa
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    flow.kf_perp,
+                    kf_perp,
                     mu_q,
                     rho_f,
                     heat_transfer_factor,
                     lambda_f,
-                    flow.w0,
+                    w_e,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
                     submesh_advection=advection_on,
@@ -3276,6 +3375,7 @@ def integrate_residuals(  # noqa
             is_fracture=True,
             physics=physics,
             T_flow_lagged=T_flow_lagged,
+            aperture=aperture,
         )
         # Fold the matrix-side "_mm" flux from the fracture pass into the matrix residual.
         for name in ("F_Pdiffusion", "F_Tdiffusion", "F_Tadvection"):
@@ -3322,6 +3422,7 @@ def integrate_tangent_matrices(  # noqa
     physics: Physics,  # fields solved in this call; `off` fields are not assembled
     T_flow_lagged: bool = False,
     mechanics: MechanicsMatrices = _NO_MECHANICS,
+    aperture: FractureAperture = _NO_APERTURE,  # Bandis-Barton aperture; empty for the constant input
 ) -> dict[str, Any]:
     """Integrate tangent matrices.
 
@@ -3361,6 +3462,7 @@ def integrate_tangent_matrices(  # noqa
     if physics.solves("heat"):
         list_of_matrices = ["KTT", "KpT", "KTp"] + list_of_matrices
     mechanics_on = bool(mechanics.nodal_strain) and not on_submesh  # solved strain, matrix pass only
+    aperture_on = is_fracture and aperture.gauss.size > 0  # aperture from the contact state
     solve_u = mechanics_on and physics.matrix.solve_mechanics
     solve_Tu = solve_u and solve_T  # energy balance wrt displacement
     # ----- mesh data: bulk (matrix) mesh, or the fracture/well mesh on the recursive passes
@@ -3411,6 +3513,10 @@ def integrate_tangent_matrices(  # noqa
         vec_counter_fm = 0
         vec_counter_mf = 0
         vec_counter_mm = 0
+
+        # dR/dw at the Gauss points: rows on all nodes, columns on the interface Gauss points
+        sens_p: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]] = []
+        sens_T: list[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.float64]]] = []
 
     if is_well:
         wmesh = mesh_data.submesh
@@ -3577,6 +3683,13 @@ def integrate_tangent_matrices(  # noqa
                 want_energy=thermal_coupling,
                 want_flow=need_flow_props,
             )
+            # Aperture: the constant input, or Bandis-Barton from the contact state
+            w_e: float | npt.NDArray[np.float64] = flow.w0
+            kf_perp = flow.kf_perp
+            if aperture_on:
+                phi_L, w_e = _fracture_aperture_state(aperture, e, N_q, p_nodes.shape[1])
+                kf = PropertyResult(w_e**3 / 12, kf.dp, kf.dT)  # cubic law
+                kf_perp = PropertyResult(w_e / 12, np.zeros_like(w_e), np.zeros_like(w_e))
             if is_well:
                 # Element flow from the midpoint state: L2 gradients are constant and T is linear.
                 # dT tangents whenever temperature is solved: conduction h depends on Re.
@@ -3647,7 +3760,7 @@ def integrate_tangent_matrices(  # noqa
                 lambda_e = _evaluate_effective_conductivity(
                     phi_L,
                     solid,
-                    flow.w0,
+                    w_e,
                     lambda_f,
                     mesh_data.nsd,
                     no_solid=on_submesh,
@@ -3759,6 +3872,28 @@ def integrate_tangent_matrices(  # noqa
                     )
                     element_matrices["KTp"] += _vctrzd_qp_vctr_integrate(B_q, integrand_SUPG_dp, wJe_q, False)
 
+            # ----- Residual sensitivity to the Gauss-point aperture, for the displacement coupling
+            if aperture_on:
+                w_flat = np.ravel(w_e)
+                wJ_flat = np.ravel(wJe_q)
+                N_w = N_q[:, 0, :].T * wJ_flat  # (nne, nq)
+                B_w = B_q[:, 0, :].T * wJ_flat  # (nne, nq), local fracture coordinate
+                dRp_dw = np.zeros((nne, nq))
+                dRT_dw = np.zeros((nne, nq))
+                if solve_p:
+                    # storage through the projected nodal aperture; Darcy flux scales with w^3
+                    dRp_dw += (1 - steady_pres) * cv[0] * rho_f.e.value[:, 0:1] * N_w
+                    dRp_dw -= B_w * (3.0 * q_D[:, 0, 0] / w_flat)
+                if solve_T:
+                    stored = rho_f.e.value[:, 0:1] * u_f.e.value[:, 0:1]
+                    dRT_dw += (1 - steady_temp) * cv[0] * stored * N_w
+                    dRT_dw += B_w * (lambda_f * kin.gradT[:, 0, 0])  # fracture conduction scales with w
+                    if advection_on:
+                        dRT_dw -= B_w * (3.0 * q_D[:, 0, 0] * hf.q.value[:, 0, 0] / w_flat)
+                points_e = aperture.points[e]
+                _append_entries(sens_p, enodes_dof, points_e, dRp_dw)
+                _append_entries(sens_T, enodes_dof, points_e, dRT_dw)
+
             # ----- Fracture-matrix leak-off/convective-exchange coupling
             if is_fracture:
                 coupling_entries = _integrate_fracture_coupling_tangent(
@@ -3775,12 +3910,12 @@ def integrate_tangent_matrices(  # noqa
                     p[:, 1:2],
                     T[:, 0:1],
                     T_flow[:, 0:1],
-                    flow.kf_perp,
+                    kf_perp,
                     mu_q,
                     rho_f,
                     heat_transfer_factor,
                     lambda_f,
-                    flow.w0,
+                    w_e,
                     pressure_coupling=pressure_coupling,
                     thermal_coupling=thermal_coupling,
                     monolithic=coupling_cross,
@@ -3789,7 +3924,20 @@ def integrate_tangent_matrices(  # noqa
                     T_flow_lagged=T_flow_lagged,
                 )
 
-                for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices in coupling_entries:
+                for nne_m, ff_matrices, fm_matrices, mf_matrices, mm_matrices, side in coupling_entries:
+                    if aperture_on:
+                        _append_exchange_sensitivity(
+                            sens_p,
+                            sens_T,
+                            side,
+                            N_q,
+                            wJe_q,
+                            w_e,
+                            enodes_dof,
+                            aperture.points[e],
+                            submesh_advection=advection_on,
+                            matrix_advection=physics.matrix.advection,
+                        )
                     stop = vec_counter_ff + nne * nne  # vectorized index count end
                     _store_vctrzd_element_matrix(vec_ff, ff_matrices, vec_counter_ff, stop)
                     vec_counter_ff = stop
@@ -3890,6 +4038,10 @@ def integrate_tangent_matrices(  # noqa
             integrated_matrices[name] = _make_sparse(vec_mf[name], row_vec_mf, col_vec_mf, nn, nn_m)
         for name in vec_mm:
             integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
+        if aperture_on:
+            sens_shape = (mesh["nn_total"], aperture.D_w.shape[0])
+            integrated_matrices["S_p"] = _assemble_entries(sens_p, sens_shape)
+            integrated_matrices["S_T"] = _assemble_entries(sens_T, sens_shape)
         return integrated_matrices
 
     if is_well:
@@ -3905,6 +4057,7 @@ def integrate_tangent_matrices(  # noqa
             integrated_matrices[name] = _make_sparse(vec_mm[name], row_vec_mm, col_vec_mm, nn_m, nn_m)
         return integrated_matrices
 
+    Ku_aperture: dict[str, csc_matrix] = {}
     if fracture_on:
         # Recursion call
         integrated_fracture_matrices = integrate_tangent_matrices(
@@ -3917,7 +4070,14 @@ def integrate_tangent_matrices(  # noqa
             is_fracture=True,
             physics=physics,
             T_flow_lagged=T_flow_lagged,
+            aperture=aperture,
         )
+        # Aperture tangent dR/du = dR/dw dw/du, folded into the displacement columns below
+        if aperture.gauss.size:
+            Ku_aperture = {
+                "p": integrated_fracture_matrices["S_p"] @ aperture.D_w,
+                "T": integrated_fracture_matrices["S_T"] @ aperture.D_w,
+            }
         # Combine fracture and matrix matrices into one
         integrated_matrices = _stack_fracture_matrices(
             integrated_matrices, integrated_fracture_matrices, mesh_data.nn, mesh["fracture_mesh"]["nn"]
@@ -3948,8 +4108,12 @@ def integrate_tangent_matrices(  # noqa
         rho_nodes = nodal_fluid.rho_f.value[:, 0]
         Kpu = -(1 - steady_pres) * cv[0] * diags(rho_nodes) @ mechanics.K_up.T[: mesh_data.nn, :]
         integrated_matrices["Kpu"] = _pad_sparse(csc_matrix(Kpu), coupling_shape)
+        if "p" in Ku_aperture:
+            integrated_matrices["Kpu"] = csc_matrix(integrated_matrices["Kpu"] + Ku_aperture["p"])
     if solve_Tu:
         integrated_matrices["KTu"] = _pad_sparse(KTu, coupling_shape)
+        if "T" in Ku_aperture:
+            integrated_matrices["KTu"] = csc_matrix(integrated_matrices["KTu"] + Ku_aperture["T"])
 
     return integrated_matrices
 

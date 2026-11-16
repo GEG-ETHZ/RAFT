@@ -33,6 +33,13 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   coupled solver carries the closure. `Fracture.vtk` now shows each fracture as a strip of its two
   faces, separated by the aperture, with the normal jump and contact pressure
   when mechanics is on.
+- **Stress-dependent fracture aperture** — with `mechanics` on, the fracture
+  aperture follows the contact state through the Bandis–Barton law, with
+  `material.fracture.aperture` as the unstressed aperture and the new
+  `normal_stiffness` as the stress that halves it. The aperture sets fracture
+  storage, conductance, leak-off, and heat exchange, and the displacement is
+  coupled to fracture flow and heat in the Newton system. `Fracture.vtk`
+  writes the aperture and separates the faces by it.
 
 ### Changed
 

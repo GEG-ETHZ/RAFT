@@ -28,6 +28,7 @@ import numpy.typing as npt
 
 from .matprops import get_EOS, get_porosity, get_porosity_lagrangian, get_viscosity
 from .matrixassembly import _get_quad_points_and_shape_functions, _get_region_value
+from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
 from .mechconstitutive import penalty_contact
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 from .solidmechanics import (
@@ -35,10 +36,13 @@ from .solidmechanics import (
     element_penalty,
     element_stress,
     element_volumetric_strain,
+    fracture_aperture,
     fracture_face_nodes,
     nodal_stress,
 )
 from .writevtk import write_mesh2vtk
+
+_EMPTY_APERTURE = np.empty((0, 0))  # constant input aperture
 
 # Default output directory: /main_folder/outputs/
 # (two levels up from /main_folder/src/postprocessing.py)
@@ -158,10 +162,12 @@ def compute_fluid_flux(  # noqa
     T: npt.NDArray[np.float64],
     isfracture: bool,
     gravity: float = 0.0,
+    aperture: npt.NDArray[np.float64] = _EMPTY_APERTURE,
 ) -> npt.NDArray[np.float64]:
     """Computes fluid flux at each node using nodal averaging.
 
-    Returns nsd x nn array of fluxes at each node.
+    Returns nsd x nn array of fluxes at each node. `aperture`, (ne_f, nne_f), holds the fracture
+    aperture at the element nodes; empty for the constant input.
     """
     from .matrixassembly import _get_gravity
     from .shapefunctions import GNMATRIX_FUNCS
@@ -230,6 +236,8 @@ def compute_fluid_flux(  # noqa
 
             pe = p[enodes]  # element nodal pressures
             Te = T[enodes]
+            if isfracture and aperture.size:
+                kf = (aperture[e] ** 3 / 12)[:, None] * u  # cubic law at each element node
             if mu_nonlinear:
                 mu = get_viscosity(Te, pe, fluid).value
                 mu = mu[:, None]
@@ -624,12 +632,15 @@ def _build_initial_cell_data(
 
 
 def _build_fracture_cell_data(
-    mesh_fracture: dict[str, Any], material: dict[str, Any]
+    mesh_fracture: dict[str, Any],
+    material: dict[str, Any],
+    aperture_gauss: npt.NDArray[np.float64] = _EMPTY_APERTURE,
 ) -> list[dict[str, Any]]:
-    """Build per-element aperture and heat transfer coefficient fields for the fracture VTK output.
+    """Build the per-element heat transfer coefficient field for the fracture VTK output.
 
     Each fracture region (indexed the same way as in compute_fluid_flux) has a scalar aperture
-    and heat transfer factor; h is evaluated as in the fracture-matrix conduction coupling.
+    and heat transfer factor; h is evaluated as in the fracture-matrix conduction coupling. With the
+    Bandis-Barton aperture, `aperture_gauss` (ne_f, nq_e), h is the Gauss-point mean per element.
     """
     from .matrixassembly import _evaluate_fracture_heat_transfer_coefficient
 
@@ -640,22 +651,15 @@ def _build_fracture_cell_data(
     heat_transfer_factors = material["fracture"]["heat_transfer_factor"]
     lambda_f = material["fluid"]["therm_cond"]
 
-    nelem = len(mesh_fracture["conn"])
-    aperture_cell = np.zeros(nelem)
-    h_cell = np.zeros(nelem)
+    h_cell = np.zeros(len(mesh_fracture["conn"]))
 
     for r in range(num_regions):
-        w = apertures[r]
-        h = _evaluate_fracture_heat_transfer_coefficient(heat_transfer_factors[r], lambda_f, w)
-
         elems = region_lists[r]
-        aperture_cell[elems] = w
-        h_cell[elems] = h
+        w = aperture_gauss[elems] if aperture_gauss.size else apertures[r]
+        h = _evaluate_fracture_heat_transfer_coefficient(heat_transfer_factors[r], lambda_f, w)
+        h_cell[elems] = np.mean(h, axis=-1) if aperture_gauss.size else h
 
-    return [
-        {"name": "aperture", "data": _sanitize(aperture_cell)},
-        {"name": "heat_transfer_coefficient", "data": _sanitize(h_cell)},
-    ]
+    return [{"name": "heat_transfer_coefficient", "data": _sanitize(h_cell)}]
 
 
 def _build_well_cell_data(mesh_well: dict[str, Any], material: dict[str, Any]) -> list[dict[str, Any]]:
@@ -935,13 +939,14 @@ def _write_fracture_output(
     material: dict[str, Any],
     primary_variables: dict[str, Any],
     verbose: bool,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> None:
     """Compute fluxes and write one solution to VTK for the fractures, each as a strip of its two faces.
 
     Every fracture element becomes a cell [i+, j+, j-, i-] at the fracture nodes, with point data copied
     to both faces. The `displacement` vector moves each face with the rock on its side and separates the
     faces by the aperture: u_side +- w/2 n, with u_side the total face displacement (zero without
-    mechanics).
+    mechanics). The aperture is written per strip node.
     """
     if verbose:
         print("     Writing fractures to output file...")
@@ -957,11 +962,6 @@ def _write_fracture_output(
     T = primary_variables["T"][nn:nn_f, 0]
     T_flow = _flow_temperature(primary_variables, controls)[nn:nn_f]  # flow property temperature
 
-    # --- Calculate fluxes
-    flux = compute_fluid_flux(fmesh, material, p, T_flow, True, controls["gravity"])
-    scalardata_node = _build_point_scalars(controls, fmesh, material, p, T)
-    scalardata_cell = _build_fracture_cell_data(fmesh, material)
-
     # ----- Strip mesh: four nodes per element at the fracture nodes
     conn_f = np.asarray(fmesh["conn"])
     ne_f = conn_f.shape[0]
@@ -971,13 +971,26 @@ def _write_fracture_output(
     strip_nodes = fmesh["nodes"][index]
     strip_conn = np.arange(4 * ne_f).reshape(ne_f, 4).tolist()
 
-    # Face separation by the aperture along each element's normal
-    offset = np.empty((ne_f, nsd))
+    # ----- Aperture at each strip node: Bandis-Barton with mechanics, else the constant input
+    normal = np.empty((ne_f, nsd))
+    strip_aperture = np.empty((ne_f, 4))
     for r, elems in enumerate(fmesh["region_lists"]):
-        normal = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
-        offset[elems] = 0.5 * _get_region_value(material["fracture"]["aperture"], r) * normal
+        normal[elems] = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
+        strip_aperture[elems] = _get_region_value(material["fracture"]["aperture"], r)
+    aperture_nodal = aperture_gauss = _EMPTY_APERTURE
+    if mechanics.interface.weights.size:
+        aperture = fracture_aperture(mechanics.interface, primary_variables["u"][:, 0:1])
+        aperture_nodal, aperture_gauss = aperture.element_nodal[:, :, 0], aperture.gauss[:, :, 0]
+        strip_aperture = aperture_nodal[:, _STRIP_NODE]
+
+    # --- Calculate fluxes
+    flux = compute_fluid_flux(fmesh, material, p, T_flow, True, controls["gravity"], aperture_nodal)
+    scalardata_node = _build_point_scalars(controls, fmesh, material, p, T)
+    scalardata_cell = _build_fracture_cell_data(fmesh, material, aperture_gauss)
+
+    # Face separation by the aperture along each element's normal
     sign = np.where(strip_side == 0, 1.0, -1.0)
-    displacement = sign[:, :, None] * offset[:, None, :]
+    displacement = (sign * 0.5 * strip_aperture)[:, :, None] * normal[:, None, :]
 
     if controls["physics"].solves("mechanics"):
         # total displacement of the face on each strip node's side
@@ -991,6 +1004,7 @@ def _write_fracture_output(
         )
 
     scalardata_point = [{"name": f["name"], "data": f["data"][index]} for f in scalardata_node]
+    scalardata_point.append({"name": "aperture", "data": _sanitize(strip_aperture.ravel())})
     vectordata_point = [
         {"name": "flux", "data": _sanitize(flux.T[index])},
         {"name": "displacement", "data": _sanitize(displacement.reshape(-1, nsd))},
@@ -1131,6 +1145,7 @@ def postprocessing(
     primary_variables: dict[str, Any],
     t: float,
     verbose: bool,
+    mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> dict[str, Any]:
     """Postprocessing of FEM data.
 
@@ -1143,7 +1158,7 @@ def postprocessing(
         _write_matrix_output(n, io_path, mesh, controls, material, primary_variables, verbose)
 
     if output_now and controls["output_vtk"] and controls["fracture_on"]:
-        _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, verbose)
+        _write_fracture_output(n, io_path, mesh, controls, material, primary_variables, verbose, mechanics)
 
     if output_now and controls["output_vtk"] and controls["wells_on"]:
         _write_well_output(n, io_path, mesh, controls, material, primary_variables, verbose)

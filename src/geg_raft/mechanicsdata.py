@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Constant matrices of the linear force balance and the fracture face operators."""
+"""Constant matrices of the linear force balance, the fracture face operators, and the fracture aperture."""
 
 from __future__ import annotations
 
@@ -39,6 +39,10 @@ class FractureInterface:
     weights: npt.NDArray[np.float64]  # (nq,) Gauss weight * face measure (* r axisymmetric)
     penalty: npt.NDArray[np.float64]  # (nq,) contact penalty stiffness eps_N
     element: npt.NDArray[np.int64]  # (nq,) fracture element of each Gauss point
+    w_m: npt.NDArray[np.float64]  # (nq,) unstressed aperture of the point's element
+    K_w: npt.NDArray[np.float64]  # (nq,) Bandis-Barton stiffness of the point's fracture
+    points: npt.NDArray[np.int64]  # (ne_f, nq_e) Gauss points of each fracture element
+    projection: npt.NDArray[np.float64]  # (ne_f, nne_f, nq_e) lumped projection to the element nodes
 
     @classmethod
     def empty(cls) -> FractureInterface:
@@ -49,7 +53,35 @@ class FractureInterface:
             np.empty(0),
             np.empty(0),
             np.empty(0, dtype=np.int64),
+            np.empty(0),
+            np.empty(0),
+            np.empty((0, 0), dtype=np.int64),
+            np.empty((0, 0, 0)),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class FractureAperture:
+    """Bandis-Barton aperture at every time level of the displacement, with its displacement tangent.
+
+    Columns follow the displacement history [k, n, n-1, n-2]. Element arrays are indexed by fracture
+    element; D_w = dw/du at the Gauss points for the current iterate.
+    """
+
+    gauss: npt.NDArray[np.float64]  # (ne_f, nq_e, n_levels) aperture at the Gauss points
+    element_nodal: npt.NDArray[np.float64]  # (ne_f, nne_f, n_levels) lumped projection to the nodes
+    D_w: csc_matrix  # (nq, nsd*nn), Gauss points in interface order
+    points: npt.NDArray[np.int64]  # (ne_f, nq_e) interface order of each element's Gauss points
+
+    @classmethod
+    def empty(cls) -> FractureAperture:
+        """Placeholder when the aperture is the constant input."""
+        return cls(
+            np.empty((0, 0, 0)), np.empty((0, 0, 0)), csc_matrix((0, 0)), np.empty((0, 0), dtype=np.int64)
+        )
+
+
+_NO_APERTURE = FractureAperture.empty()
 
 
 @dataclass(frozen=True, slots=True)

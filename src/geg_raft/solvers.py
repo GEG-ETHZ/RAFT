@@ -32,9 +32,9 @@ from .matrixassembly import (
     integrate_tangent_matrices,
     warn_nonmonotone_pressure_diffusion,
 )
-from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
+from .mechanicsdata import _NO_APERTURE, _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
-from .solidmechanics import fracture_contact, fracture_face_nodes, internal_force
+from .solidmechanics import fracture_aperture, fracture_contact, fracture_face_nodes, internal_force
 
 # Stagnation acceptance: no new minimum residual in this many iterations, within this factor of NR_tol
 STAGNATION_WINDOW = 10
@@ -467,6 +467,13 @@ def _newton_raphson_loop(  # noqa
         if verbose:
             print(f"\r     {label} NEWTON RAPHSON: ITERATION {iteration + 1}   ", end="", flush=True)
 
+        # Fracture aperture from the contact state of every displacement time level
+        aperture = (
+            fracture_aperture(mechanics.interface, primary_variables["u"])
+            if mechanics.interface.weights.size
+            else _NO_APERTURE
+        )
+
         # Integrate residual vectors
         F_vec: dict[str, Any] = {}
         if solve_p or solve_T:
@@ -480,6 +487,7 @@ def _newton_raphson_loop(  # noqa
                 physics=physics,
                 T_flow_lagged=T_flow_lagged,
                 mechanics=mechanics,
+                aperture=aperture,
             )
         # Force balance from the stored linear matrices
         if solve_u:
@@ -533,6 +541,7 @@ def _newton_raphson_loop(  # noqa
                     physics=physics,
                     T_flow_lagged=T_flow_lagged,
                     mechanics=mechanics,
+                    aperture=aperture,
                 )
 
             # Warnings for poor conditioning
