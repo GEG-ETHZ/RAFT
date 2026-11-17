@@ -429,6 +429,13 @@ def check_thermoelastic_cooling(
             axis.set_xlabel("x (m)", fontsize=14)
             axis.set_ylabel(label, fontsize=14)
             axis.set_title(label, fontsize=15)
+            if label == "Pressure (Pa)":
+                pressure_values = np.concatenate((expected, actual))
+                data_range = np.ptp(pressure_values)
+                minimum_range = 0.02 * max(abs(p0), np.max(np.abs(pressure_values)))
+                y_range = max(data_range, minimum_range)
+                midpoint = 0.5 * (np.min(pressure_values) + np.max(pressure_values))
+                axis.set_ylim(midpoint - 0.5 * y_range, midpoint + 0.5 * y_range)
             axis.text(
                 0.5,
                 0.04,
