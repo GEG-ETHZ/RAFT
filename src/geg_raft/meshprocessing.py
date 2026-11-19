@@ -761,9 +761,12 @@ def _build_fracture_level_set(
 
 
 def _create_fracture_nodes_conn(  # noqa
-    mesh: dict[str, Any], frac_ls: FractureLevelSet
+    mesh: dict[str, Any], frac_ls: FractureLevelSet, joined_ends: tuple[bool, bool]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], list[int]]:
-    """Create fracture nodes and connectivity."""
+    """Create fracture nodes and connectivity.
+
+    An end joined to another fracture (`joined_ends`, ordered -u then +u) is a fracture node but not a tip.
+    """
     conn = mesh["conn"]
     nodes = mesh["nodes"]
     nne = mesh["nne"]
@@ -811,7 +814,7 @@ def _create_fracture_nodes_conn(  # noqa
     # Now check tip elements
     tips = [-1.0, 1.0]
     tip_nodes = []  # Track which ones are tip nodes for special treatment
-    for i in tips:
+    for i, joined in zip(tips, joined_ends, strict=True):
         tip_coords = center_2d + half_length * u * i
         # Check if tip_coords already exists in mesh
         d = np.linalg.norm(nodes - tip_coords, axis=1)
@@ -822,8 +825,9 @@ def _create_fracture_nodes_conn(  # noqa
         # Check if fracture node at tip_coords already exists
         d = np.linalg.norm(frac_nodes - tip_coords, axis=1)
         if np.any(d < tol):
-            # Node already exists, track node
-            tip_nodes.append(int(np.argmin(d)))
+            # Node already exists, track node unless it joins another fracture
+            if not joined:
+                tip_nodes.append(int(np.argmin(d)))
             continue
 
         # Check if tip_coords is outside the bounds
@@ -1889,7 +1893,11 @@ def _insert_fracture_junctions(
             ux2 = u_2[0]
             uy2 = u_2[1]
 
-            s = ((Px2 - Px1) * uy1 - (Py2 - Py1) * ux1) / (uy2 * ux1 - uy1 * ux2)
+            denominator = uy2 * ux1 - uy1 * ux2
+            if abs(denominator) < 1.0e-12:
+                # Parallel fractures do not cross; collinear joins are handled when cutting
+                continue
+            s = ((Px2 - Px1) * uy1 - (Py2 - Py1) * ux1) / denominator
 
             junction = center_2 + u_2 * s
             L1 = np.linalg.norm(junction - center_1)
@@ -1949,6 +1957,50 @@ def _insert_fracture_junctions(
     return mesh
 
 
+def _snap_tolerance(
+    mesh: dict[str, Any], fracture: dict[str, Any], tol_domain: float, tol_floor: float
+) -> float:
+    """Node-snapping tolerance of a fracture: the domain tolerance, bounded by half the local edge length."""
+    center_2d, half_length, _, u, n = _get_fracture_geometry_2D(fracture)
+    h_local = _local_element_scale(mesh["nodes"], mesh["conn"], center_2d, half_length, u, n, pad=tol_domain)
+    tol = min(tol_domain, 0.5 * h_local) if h_local is not None else tol_domain
+    return max(tol, tol_floor)
+
+
+def _collinear_joins(
+    fracture_specs: list[dict[str, Any]], mesh: dict[str, Any], tol_domain: float, tol_floor: float
+) -> list[tuple[bool, bool]]:
+    """Ends (-u, +u) of each fracture that meet a collinear fracture at an existing mesh node.
+
+    Raises if two collinear fractures overlap inside the domain.
+    """
+    nodes = mesh["nodes"][:, :2]
+    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
+    geoms = [_get_fracture_geometry_2D(spec) for spec in fracture_specs]
+    joined = [[False, False] for _ in fracture_specs]
+    for i, (center_i, half_i, _, u_i, n_i) in enumerate(geoms):
+        tol = _snap_tolerance(mesh, fracture_specs[i], tol_domain, tol_floor)
+        for j, (center_j, half_j, _, u_j, _) in enumerate(geoms):
+            parallel = abs(u_i[0] * u_j[1] - u_i[1] * u_j[0]) < 1.0e-12
+            collinear = parallel and abs(float((center_j - center_i) @ n_i)) < tol_floor
+            if j == i or not collinear:
+                continue
+            # extent of fracture j along fracture i's tangent
+            s_j = float((center_j - center_i) @ u_i)
+            start, end = max(-half_i, s_j - half_j), min(half_i, s_j + half_j)
+            midpoint = center_i + 0.5 * (start + end) * u_i
+            if end - start > tol_floor and np.all((midpoint >= lo) & (midpoint <= hi)):
+                raise ValueError(
+                    f"Fractures {i} and {j} are collinear and overlap; make them meet at their tips"
+                )
+            for k, sign in enumerate((-1.0, 1.0)):
+                tip = center_i + sign * half_i * u_i
+                on_j = abs((tip - center_j) @ u_j) <= half_j + tol
+                at_node = np.min(np.linalg.norm(nodes - tip, axis=1)) < tol
+                joined[i][k] = joined[i][k] or bool(on_j and at_node)
+    return [(a, b) for a, b in joined]
+
+
 def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> dict[str, Any]:
     """Create mesh cutting for fracture elements."""
     fracture_specs = config_mesh["fractures"]
@@ -1977,6 +2029,9 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     mesh = _insert_fracture_junctions(mesh, fracture_specs, tol_domain)
     mesh = _extract_key_mesh_values(mesh)
 
+    # Ends joined to a collinear fracture are split like interior fracture nodes, not left as tips
+    joined_ends = _collinear_joins(fracture_specs, mesh, tol_domain, tol_floor)
+
     # Geometry (center_2d, n, tol) of every fracture processed so far -- used only to
     # evaluate phi_sign_history for brand-new nodes as they're created mid-cut.
     frac_geoms: list[FracGeom] = []
@@ -1987,19 +2042,14 @@ def _create_fracture_mesh(config_mesh: dict[str, Any], mesh: dict[str, Any]) -> 
     phi_sign_history = np.empty((mesh["nn"], 0))
 
     # Loop through each fracture specification
-    for fracture in fracture_specs:
-        center_2d, half_length, _, u, n = _get_fracture_geometry_2D(fracture)
-        h_local = _local_element_scale(
-            mesh["nodes"], mesh["conn"], center_2d, half_length, u, n, pad=tol_domain
-        )
-        tol = min(tol_domain, 0.5 * h_local) if h_local is not None else tol_domain
-        tol = max(tol, tol_floor)
+    for fracture, joined in zip(fracture_specs, joined_ends, strict=True):
+        tol = _snap_tolerance(mesh, fracture, tol_domain, tol_floor)
 
         # Compute fracture geometry and nodal level sets once, shared by both helpers below
         frac_ls = _build_fracture_level_set(mesh["nodes"], fracture, phi_sign_history, frac_geoms, tol)
 
         # Create fracture nodes and connectivity
-        frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls)
+        frac_nodes, frac_conn, tip_nodes = _create_fracture_nodes_conn(mesh, frac_ls, joined)
 
         # Loop through elements and check whether the new nodes lie within each element, then split
         mesh, frac_ls = _split_elements(mesh, frac_ls, frac_nodes, frac_conn, tip_nodes)
