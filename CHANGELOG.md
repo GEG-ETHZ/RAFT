@@ -45,8 +45,8 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   faces with a mixed-mode cohesive law (`linear`, `bilinear`, or `cubic`)
   that carries tension and shear until the bond breaks, with per-fracture
   tensile strength, shear strength, and fracture energy. Damage is
-  irreversible; `initial_conditions.fracture_damage` sets it per fracture, 1
-  for a debonded fracture. `mechanics_controls.damage_peak_smoothing_coefficient`
+  irreversible; `material.fracture.cohesive.initial_damage` sets it per
+  fracture, 1 for a debonded fracture. `mechanics_controls.damage_peak_smoothing_coefficient`
   smooths the traction where loading turns to unloading. `Fracture.vtk` gains
   the tangential jump and, with cohesion, the damage and the cohesive normal
   and shear tractions.

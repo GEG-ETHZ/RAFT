@@ -1861,7 +1861,7 @@ def write_cohesive_shear_config(case_dir: Path, out_dir: Path) -> str:
 def write_cohesive_debonded_config(case_dir: Path, out_dir: Path) -> str:
     """Write the cohesive opening case with initial damage 1 into `out_dir`, returning its config name."""
     config = yaml.safe_load((case_dir / COHESIVE_CONFIG).read_text())
-    config["initial_conditions"]["fracture_damage"] = [1.0]
+    config["material"]["fracture"]["cohesive"]["initial_damage"] = [1.0]
     (out_dir / COHESIVE_CONFIG).write_text(yaml.safe_dump(config))
     shutil.copy(case_dir / config["mesh"]["file"], out_dir)
     return COHESIVE_CONFIG

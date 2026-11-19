@@ -527,10 +527,9 @@ def _warn_cohesive_zone_length(
 def _calculate_cohesive_properties(
     mesh: dict[str, Any],
     material: dict[str, Any],
-    initial_conditions: dict[str, Any],
     controls: dict[str, Any],
 ) -> None:
-    """Validate the cohesive inputs and the initial damage, and store them per fracture element."""
+    """Validate the cohesive inputs and store them per fracture element."""
     cohesive = material["fracture"]["cohesive"]
     fmesh = mesh["fracture_mesh"]
     region_lists = fmesh["region_lists"]
@@ -553,12 +552,12 @@ def _calculate_cohesive_properties(
         if np.any(values[key] <= 0.0):
             raise ValueError(f"material.fracture.cohesive.{key} = {cohesive[key]} must be positive")
     D_0 = _per_fracture(
-        initial_conditions.get("fracture_damage", 0.0), num_fractures, "initial_conditions.fracture_damage"
+        cohesive.get("initial_damage", 0.0), num_fractures, "material.fracture.cohesive.initial_damage"
     )
     if np.any((D_0 < 0.0) | (D_0 > 1.0)):
-        raise ValueError(f"initial_conditions.fracture_damage = {D_0.tolist()} must lie in [0, 1]")
+        raise ValueError(f"material.fracture.cohesive.initial_damage = {D_0.tolist()} must lie in [0, 1]")
     if law == "linear" and np.any((D_0 > 0.0) & (D_0 < 1.0)):
-        raise ValueError("initial_conditions.fracture_damage must be 0 or 1 for the linear law")
+        raise ValueError("material.fracture.cohesive.initial_damage must be 0 or 1 for the linear law")
 
     # smoothing half-width within the softening branch
     c_eps = controls["mechanics_controls"]["damage_peak_smoothing_coefficient"]
@@ -938,14 +937,9 @@ def preprocessing(
         _calculate_mechanics_properties(mesh, config["material"])
 
     # Fracture cohesion
-    cohesive_on = "cohesive" in config["material"].get("fracture", {})
-    if "fracture_damage" in config["initial_conditions"] and not cohesive_on:
-        raise ValueError("initial_conditions.fracture_damage requires material.fracture.cohesive")
-    if cohesive_on:
+    if "cohesive" in config["material"].get("fracture", {}):
         if not mechanics_on or "fracture_mesh" not in mesh:
             raise ValueError("material.fracture.cohesive requires fractures with physics.matrix.mechanics on")
-        _calculate_cohesive_properties(
-            mesh, config["material"], config["initial_conditions"], config["simulation"]
-        )
+        _calculate_cohesive_properties(mesh, config["material"], config["simulation"])
 
     return config, mesh
