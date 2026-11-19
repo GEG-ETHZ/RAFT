@@ -29,6 +29,7 @@ from scipy.optimize import brentq
 
 from geg_raft.history import COHESIVE_HISTORY
 from geg_raft.matrixassembly import _get_quad_points_and_shape_functions
+from geg_raft.mechconstitutive import HISTORY_MARGIN
 from geg_raft.preprocessing import load_config, preprocessing
 from geg_raft.solidmechanics import (
     element_penalty,
@@ -1269,6 +1270,7 @@ TERZAGHI_TIMES = [0.5, 2.0, 8.0, 20.0]
 MANDEL_TIMES = [0.05, 0.5, 2.0, 8.0, 20.0]
 THERMAL_CONSOLIDATION_TIMES = [1.0e6, 3.0e6, 6.0e6]
 THERMAL_CONSOLIDATION_SPLIT_TIMES = [3.0e6, 6.0e6]
+ELASTIC_WAVE_TIMES = [float(t) for t in 5.0e-5 * np.arange(1, 1201)]  # every step to 4 periods
 
 
 def run_at_times(
@@ -1382,6 +1384,55 @@ def check_terzaghi(
         ax_u.set_ylabel("y / H")
         ax_u.set_title(test_name)
         ax_u.legend()
+
+    test_pass = bool(err_ex < tol)
+
+    return test_pass
+
+
+def check_elastic_wave(
+    config_name: str,
+    config_dir: Path,
+    results: list[dict[str, Any]],
+    mesh: dict[str, Any],
+    times: list[float],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Confined column under a step load at its free end: top displacement against the exact triangle wave."""
+    # Set tolerance, relative to the peak displacement
+    tol = 3.0e-2
+
+    # Load config
+    config = load_config(config_name, config_dir, verbose=False)
+    solid, fluid = config["material"]["solid"], config["material"]["fluid"]
+    K_d, G = _elastic_moduli(config)
+    M = K_d + 4.0 * G / 3.0  # constrained modulus
+    rho = (1.0 - solid["porosity"]) * solid["density"] + solid["porosity"] * fluid["density"]
+    c = np.sqrt(M / rho)
+
+    nodes = mesh["nodes"]
+    H = nodes[:, 1].max()
+    P = -_bc_value(config, "mechanics", "traction", 0)
+    u_static = -P * H / M
+    period = 4.0 * H / c
+
+    # the top rises at P / (rho c) to twice the static displacement at half a period, then returns
+    t = np.asarray(times)
+    phase = (t % period) / period
+    u_exact = 2.0 * u_static * np.where(phase < 0.5, 2.0 * phase, 2.0 - 2.0 * phase)
+    top = int(np.argmax(nodes[:, 1]))
+    u_top = np.array([result["u"][:, 0].reshape(-1, mesh["nsd"])[top, 1] for result in results])
+    err_ex = float(np.max(np.abs(u_top - u_exact)) / abs(2.0 * u_static))
+
+    if plot_on:
+        _, ax = plt.subplots()
+        ax.plot(t / period, u_exact / u_static, "-", label="Exact")
+        ax.plot(t / period, u_top / u_static, "--", label="RAFT")
+        ax.set_xlabel("t c / (4H)")
+        ax.set_ylabel("u_top / u_static")
+        ax.set_title(test_name)
+        ax.legend()
 
     test_pass = bool(err_ex < tol)
 
@@ -1752,6 +1803,17 @@ def _cubic_envelope(delta: npt.NDArray[np.float64], f_u: float, G_c: float) -> n
     return t_e
 
 
+def _cubic_history_traction(
+    delta: npt.NDArray[np.float64], delta_max: npt.NDArray[np.float64], f_u: float, G_c: float
+) -> npt.NDArray[np.float64]:
+    """Cubic traction with history: the envelope above h = HISTORY_MARGIN delta_max, its secant at h below."""
+    w_c = 16.0 * G_c / (9.0 * f_u)
+    h = HISTORY_MARGIN * delta_max
+    kappa = np.maximum(delta, h)
+    secant = _cubic_envelope(kappa, f_u, G_c) / np.where(kappa > 0.0, kappa, 1.0) * delta
+    return np.where(h > w_c / 3.0, secant, _cubic_envelope(delta, f_u, G_c))
+
+
 def _opening_traction(
     config_name: str, config_dir: Path, results: list[dict[str, Any]], mesh: dict[str, Any]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
@@ -1797,11 +1859,9 @@ def check_cohesive_opening(
     w_c = 16.0 * G_c / (9.0 * f_u)
     opening, traction, spread = _opening_traction(config_name, config_dir, results, mesh)
 
-    # loading on the envelope, unloading on the secant of the largest opening so far
+    # envelope down to the unloading point, secant below it
     delta_max = np.maximum.accumulate(opening)
-    loading = opening >= delta_max
-    secant = _cubic_envelope(delta_max, f_u, G_c) / delta_max * opening
-    expected = np.where(loading, _cubic_envelope(opening, f_u, G_c), secant)
+    expected = _cubic_history_traction(opening, delta_max, f_u, G_c)
     err_traction = np.abs(traction - expected).max() / f_u
     separated = np.abs(traction[delta_max >= w_c]).max() / f_u
 
@@ -1931,11 +1991,9 @@ def check_cohesive_shear(
     gamma = cohesive["shear_strength"][0] / f_u
     w_c = 16.0 * G_c / (9.0 * f_u)
 
-    # loading on the envelope, unloading on the secant of the largest slip so far
+    # envelope down to the unloading point, secant below it
     delta_max = np.maximum.accumulate(slip)
-    loading = slip >= delta_max
-    secant = _cubic_envelope(delta_max, f_u, G_c) / delta_max * slip
-    expected = gamma * np.where(loading, _cubic_envelope(slip, f_u, G_c), secant)
+    expected = gamma * _cubic_history_traction(slip, delta_max, f_u, G_c)
     err_traction = np.abs(force - expected).max() / (gamma * f_u)
     separated = np.abs(force[delta_max >= w_c]).max() / (gamma * f_u)
     err_energy = abs(np.trapezoid(np.r_[0.0, force], np.r_[0.0, slip]) / (gamma * G_c) - 1.0)

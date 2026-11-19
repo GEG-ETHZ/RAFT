@@ -1,0 +1,62 @@
+mesh:
+  file: column2D_Q4.msh
+  dimensions: 2
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      density: 2600.0           # kg/m^3
+      permeability: 1.0e-13     # m^2
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 0.0    # 1/K
+      viscosity: 1.0e-3       # Pa-s
+
+initial_conditions:
+  assignment: constant
+  T_ini: 300.0
+  p_ini: 1.0e+6
+
+boundary_conditions:
+  # step load on the free surface
+  - faces: [y_max]
+    mechanics:
+      type: traction
+      components: [y]
+      values: [-1.0e+6]
+  # lateral and basal confinement
+  - faces: [x_min, x_max, y_min]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+
+physics:
+  matrix:
+    flow: off
+    heat: off
+    mechanics: dynamic
+
+simulation:
+  # Time; the first-mode period 4H/c is 15.2 ms
+  t_start: 0.0
+  t_end: 0.06
+  timestep: 5.0e-5
+  timestep_min: 5.0e-5
+  timestep_max: 5.0e-5
+  rate_order: 2
+  solver_type: monolithic
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

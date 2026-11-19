@@ -25,7 +25,7 @@ import numpy as np
 import numpy.typing as npt
 
 FIELD_MODES = ("off", "steady", "transient")
-MECHANICS_MODES = ("off", "quasi_static")
+MECHANICS_MODES = ("off", "quasi_static", "dynamic")
 DOMAINS = ("matrix", "fractures", "wells")
 
 
@@ -52,6 +52,11 @@ class DomainPhysics:
     def solve_mechanics(self) -> bool:
         """Force balance assembled."""
         return self.mechanics != "off"
+
+    @property
+    def inertia(self) -> bool:
+        """Solid inertia in the force balance."""
+        return self.mechanics == "dynamic"
 
     @property
     def steady_flow(self) -> bool:

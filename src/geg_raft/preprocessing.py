@@ -26,7 +26,7 @@ import numpy.typing as npt
 import yaml
 
 from .dofmap import COMPONENTS, component_dofs
-from .matprops import create_abstract_state
+from .matprops import create_abstract_state, get_EOS
 from .matrixassembly import integrate_boundary_flux_matrices
 from .mechconstitutive import COHESIVE_LAWS
 from .meshprocessing import _build_edge_element_map, _find_lineBC_connectivity, load_mesh
@@ -447,8 +447,8 @@ def _calculate_derived_properties(mesh: dict[str, Any], material: dict[str, Any]
     return material
 
 
-def _calculate_mechanics_properties(mesh: dict[str, Any], material: dict[str, Any]) -> None:
-    """Validate the drained elastic inputs and derive the shear and Young's moduli per region."""
+def _calculate_mechanics_properties(mesh: dict[str, Any], material: dict[str, Any], inertia: bool) -> None:
+    """Validate the drained elastic inputs and derive the moduli and bulk density per region."""
     solid = material["solid"]
     if "poisson_ratio" not in solid:
         raise ValueError("material.solid.poisson_ratio is required when physics.matrix.mechanics is on")
@@ -469,8 +469,25 @@ def _calculate_mechanics_properties(mesh: dict[str, Any], material: dict[str, An
         solid["shear_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu) / (2.0 * (1.0 + nu))
         solid["youngs_mod"][r] = 3.0 * K_d * (1.0 - 2.0 * nu)
 
+    if inertia:
+        _calculate_bulk_density(num_regions, material)
     if "fracture_mesh" in mesh:
         _calculate_fracture_aperture_properties(mesh, material)
+
+
+def _calculate_bulk_density(num_regions: int, material: dict[str, Any]) -> None:
+    """Bulk density (1 - phi_0) rho_s + phi_0 rho_f per region, with rho_f at the fluid reference state."""
+    solid, fluid = material["solid"], material["fluid"]
+    T_ref = np.array([float(fluid["reference_temperature"])])
+    p_ref = np.array([float(fluid["reference_pressure"])])
+    rho_f, _, _ = get_EOS(T_ref, T_ref, p_ref, fluid, want_density=True)
+    solid["bulk_density"] = [0.0] * num_regions
+    for r in range(num_regions):
+        rho_s = _get_region_value(solid["density"], r)
+        if rho_s <= 0:
+            raise ValueError(f"Region {r}: solid density = {rho_s} must be positive with mechanics: dynamic")
+        phi_0 = _get_region_value(solid["porosity"], r)
+        solid["bulk_density"][r] = (1.0 - phi_0) * rho_s + phi_0 * float(rho_f.value[0])
 
 
 def _calculate_fracture_aperture_properties(mesh: dict[str, Any], material: dict[str, Any]) -> None:
@@ -495,39 +512,12 @@ def _calculate_fracture_aperture_properties(mesh: dict[str, Any], material: dict
 
 
 def _per_fracture(value: Any, num_fractures: int, name: str) -> npt.NDArray[np.float64]:
-    """Per-fracture values (num_fractures,) from a scalar or a list with one entry per fracture."""
+    """Per-fracture values (num_fractures,) from a scalar or a list indexed by fracture."""
     if isinstance(value, list):
-        if len(value) != num_fractures:
-            raise ValueError(f"{name} has {len(value)} entries; expected one per fracture ({num_fractures})")
-        return np.asarray(value, dtype=np.float64)
+        if len(value) < num_fractures:
+            raise ValueError(f"{name} has {len(value)} entries; expected at least {num_fractures}")
+        return np.asarray(value[:num_fractures], dtype=np.float64)
     return np.full(num_fractures, float(value))
-
-
-def _warn_cohesive_zone_length(
-    mesh: dict[str, Any], material: dict[str, Any], f_u: npt.NDArray[np.float64], G_c: npt.NDArray[np.float64]
-) -> None:
-    """Warn where the cohesive zone length E' G_c / f_u^2 spans fewer than three fracture elements."""
-    solid = material["solid"]
-    fmesh = mesh["fracture_mesh"]
-    conn_f = np.asarray(fmesh["conn"])
-    lengths = np.linalg.norm(fmesh["nodes"][conn_f[:, -1]] - fmesh["nodes"][conn_f[:, 0]], axis=1)
-    for r, elems in enumerate(fmesh["region_lists"]):
-        # plane-strain modulus of the adjacent matrix elements
-        E_plane = np.mean(
-            [
-                _get_region_value(solid["youngs_mod"], mesh["regions"][e_m])
-                / (1.0 - _get_region_value(solid["poisson_ratio"], mesh["regions"][e_m]) ** 2)
-                for e in elems
-                for e_m in fmesh["matrix_conn"][e]
-            ]
-        )
-        l_cz = E_plane * G_c[r] / f_u[r] ** 2
-        if l_cz < 3.0 * lengths[elems].mean():
-            warnings.warn(
-                f"Fracture {r}: cohesive zone length {l_cz:.3g} m spans fewer than three fracture elements "
-                f"(mean length {lengths[elems].mean():.3g} m)",
-                stacklevel=2,
-            )
 
 
 def _calculate_cohesive_properties(
@@ -574,7 +564,6 @@ def _calculate_cohesive_properties(
             f"(0, {c_eps_max:.4g}] for the {law} law"
         )
     f_u, G_c = values["tensile_strength"], values["fracture_energy"]
-    _warn_cohesive_zone_length(mesh, material, f_u, G_c)
 
     # per fracture element
     elements: dict[str, npt.NDArray[np.float64]] = {
@@ -940,7 +929,9 @@ def preprocessing(
     config["material"] = _calculate_derived_properties(mesh, config["material"])
     mechanics_on = config["simulation"]["physics"].solves("mechanics")
     if mechanics_on:
-        _calculate_mechanics_properties(mesh, config["material"])
+        _calculate_mechanics_properties(
+            mesh, config["material"], config["simulation"]["physics"].matrix.inertia
+        )
 
     # Fracture cohesion
     if "cohesive" in config["material"].get("fracture", {}):

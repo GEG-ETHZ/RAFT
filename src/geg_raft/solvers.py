@@ -35,6 +35,7 @@ from .matrixassembly import (
 )
 from .mechanicsdata import _NO_APERTURE, _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
+from .postprocessing import postprocessing, prepare_output_directory
 from .solidmechanics import fracture_aperture, fracture_face_nodes, fracture_interface_force, internal_force
 
 # Stagnation acceptance: no new minimum residual in this many iterations, within this factor of NR_tol
@@ -43,8 +44,10 @@ STAGNATION_WINDOW = 10
 STAGNATION_FACTOR = 10.0
 
 
-def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Calculate the rate of change coefficients."""
+def rate_coefficients(
+    dt: list[float], order: int
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Rate of change (3,), acceleration (4,) and extrapolation (3,) coefficients over the time levels."""
     # dt_nm0 = t_n - t_(n-1)
     # dt_nm1 = t_(n-1) - t_(n-2)
     # dt_nm2 = t_(n-2) - t_(n-3)
@@ -52,11 +55,17 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
     dt_nm1 = dt[1]
     dt_nm2 = dt[2]
     cv = np.ones(3)  # rate of change coefficients
+    ca = np.zeros(4)  # acceleration coefficients
     cx = np.ones(3)  # extrapolation coefficients
     if order > 1:
-        cv[0] = (2 * dt_nm0 + dt_nm1) / dt_nm0 / (dt_nm0 + dt_nm1)
+        cv[0] = (2*dt_nm0 + dt_nm1) / dt_nm0 / (dt_nm0 + dt_nm1)
         cv[1] = -(dt_nm0 + dt_nm1) / dt_nm0 / dt_nm1
         cv[2] = dt_nm0 / dt_nm1 / (dt_nm0 + dt_nm1)
+
+        ca[0] = 2*(3*dt_nm0 + 2*dt_nm1 + dt_nm2) / dt_nm0 / (dt_nm0 + dt_nm1) / (dt_nm0 + dt_nm1 + dt_nm2)
+        ca[1] = -2*(2*dt_nm0 + 2*dt_nm1 + dt_nm2) / dt_nm0 / dt_nm1 / (dt_nm1 + dt_nm2)
+        ca[2] = 2*(2*dt_nm0 + dt_nm1 + dt_nm2) / (dt_nm0 + dt_nm1) / dt_nm1 / dt_nm2
+        ca[3] = -2*(2*dt_nm0 + dt_nm1) / (dt_nm0 + dt_nm1 + dt_nm2) / (dt_nm1 + dt_nm2) / dt_nm2
 
         cx[0] = (dt_nm0 + dt_nm1 + dt_nm2) * (dt_nm0 + dt_nm1) / (dt_nm1 + dt_nm2) / dt_nm1
         cx[1] = -dt_nm0 * (dt_nm0 + dt_nm1 + dt_nm2) / dt_nm1 / dt_nm2
@@ -66,10 +75,14 @@ def rate_coefficients(dt: list[float], order: int) -> tuple[npt.NDArray[np.float
         cv[1] = -1 / dt_nm0
         cv[2] = 0
 
+        ca[0] = 2 / dt_nm0 / (dt_nm0 + dt_nm1)
+        ca[1] = -2 / dt_nm0 / dt_nm1
+        ca[2] = 2 / dt_nm1 / (dt_nm0 + dt_nm1)
+
         cx[0] = 1 + dt_nm0 / dt_nm1
         cx[1] = -dt_nm0 / dt_nm1
         cx[2] = 0
-    return cv, cx
+    return cv, ca, cx
 
 
 def _check_convergence_extrap(
@@ -372,6 +385,37 @@ def _reaction_flow_rates(
     return q
 
 
+def _export_iteration(
+    iteration: int,
+    controls: dict[str, Any],
+    material: dict[str, Any],
+    mesh: dict[str, Any],
+    BC_config: list[dict[str, Any]],
+    primary_variables: dict[str, Any],
+    mechanics: MechanicsMatrices,
+) -> None:
+    """Write the current Newton iterate as frame `iteration` in <output>/unconverged."""
+    io_path = prepare_output_directory(controls)
+    debug_controls = {
+        **controls,
+        "output_directory": io_path,
+        "config_name": "unconverged",
+        "output_frequency": 1,
+        "output_vtk": 1,
+    }
+    postprocessing(
+        iteration,
+        mesh,
+        debug_controls,
+        material,
+        BC_config,
+        primary_variables,
+        float(iteration),
+        False,
+        mechanics,
+    )
+
+
 def _newton_raphson_loop(  # noqa
     controls: dict[str, Any],
     material: dict[str, Any],
@@ -380,11 +424,13 @@ def _newton_raphson_loop(  # noqa
     BC_config: list[dict[str, Any]],
     T_flow: npt.NDArray[np.float64],
     cv: npt.NDArray[np.float64],  # rate coefficients
+    ca: npt.NDArray[np.float64],  # acceleration coefficients
     fixed_dofs: dict[str, Any],
     dirichlet_dofs: dict[str, Any],
     F_ext: dict[str, Any],
     verbose: bool,
     debug_plot_on: bool,
+    export_unconverged: bool,
     *,
     physics: Physics,
     T_flow_lagged: bool,
@@ -490,8 +536,10 @@ def _newton_raphson_loop(  # noqa
             )
         # Force balance from the stored linear matrices
         if solve_u:
-            F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material, mesh["nn"])
+            F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material, mesh["nn"], ca)
             K_uu = mechanics.K_uu
+            if mechanics.M_uu.shape[0]:
+                K_uu = sp.csc_matrix(K_uu + ca[0] * mechanics.M_uu)
             if mechanics.interface.weights.size:
                 # Fracture contact and cohesion, the only nonlinear terms of the force balance
                 history = primary_variables["history"]
@@ -517,6 +565,10 @@ def _newton_raphson_loop(  # noqa
 
         # Compuate residuals
         R = compute_residuals(F_vec, F_ext, keys)
+
+        # Debug output of the fields whose residual is checked this iteration
+        if export_unconverged:
+            _export_iteration(iteration, controls, material, mesh, BC_config, primary_variables, mechanics)
 
         # Check convergence
         converged, iteration_error = _check_convergence_NR(
@@ -770,6 +822,7 @@ def operator_split_time_integration(  # noqa
     """
     debug_pressure_plot_on = False
     debug_temperature_plot_on = False
+    export_unconverged = False  # write the fields every Newton iteration to <output>/unconverged
     # extract vectors of nodal dofs
     T = primary_variables["T"]
     u_orig = primary_variables["u"].copy()
@@ -779,7 +832,7 @@ def operator_split_time_integration(  # noqa
     physics = controls["physics"]
 
     # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
+    cv, ca, cx = rate_coefficients(dt, rate_order)
 
     # Apply fixed boundary conditions; off nodes hold their values
     fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
@@ -808,11 +861,13 @@ def operator_split_time_integration(  # noqa
             BC_config,
             T_flow,  # Extrapolated tempearture
             cv,
+            ca,
             fixed_dofs,
             dirichlet_dofs,
             F_ext,
             verbose,
             debug_pressure_plot_on,
+            export_unconverged,
             physics=physics.with_off("heat"),
             T_flow_lagged=False,
             mechanics=mechanics,
@@ -834,11 +889,13 @@ def operator_split_time_integration(  # noqa
             BC_config,
             T_flow,
             cv,
+            ca,
             fixed_dofs,
             dirichlet_dofs,
             F_ext,
             verbose,
             debug_temperature_plot_on,
+            export_unconverged,
             physics=physics.with_off("flow").with_off("mechanics"),
             T_flow_lagged=True,
             mechanics=mechanics,
@@ -880,11 +937,12 @@ def monolithic_time_integration(  # noqa
     and pressure monolithically.
     """
     debug_plot_on = False
+    export_unconverged = False  # write the fields every Newton iteration to <output>/unconverged
     rate_order = controls["rate_order"]
     physics = controls["physics"]
 
     # calculate rate coefficients
-    cv, cx = rate_coefficients(dt, rate_order)
+    cv, ca, cx = rate_coefficients(dt, rate_order)
 
     # Apply fixed boundary conditions; off nodes hold their values
     fixed_dofs, dirichlet_dofs, F_ext = _apply_boundary_conditions(
@@ -901,11 +959,13 @@ def monolithic_time_integration(  # noqa
         BC_config,
         primary_variables["T"],  # T_flow must alias primary_variables["T"] for monolithic
         cv,
+        ca,
         fixed_dofs,
         dirichlet_dofs,
         F_ext,
         verbose,
         debug_plot_on,
+        export_unconverged,
         physics=physics,
         T_flow_lagged=False,
         mechanics=mechanics,

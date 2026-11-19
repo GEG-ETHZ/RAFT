@@ -98,6 +98,12 @@ $$du_f = \left(c_{pf}-\frac{\alpha_f}{\rho_f}p\right)dT + \frac{1}{\rho_f}\left(
 Displacement, $\vec{u}$ and stress $\boldsymbol{\sigma}$ are governed by the equilibrium of forces and thermo-poro-elasticity. The quasi-static equilibrium of forces is defined relative to the in-situ stress state and is given as:
 $$\nabla\cdot\left(\boldsymbol{\sigma} - \boldsymbol{\sigma}_0\right) = 0 \\ \boldsymbol{\sigma} = \boldsymbol{\sigma}_0 + \mathbb{C}:\boldsymbol{\varepsilon}(\vec{u}) - \beta(p-p_0)\textbf{I} - K_d\alpha_s(T-T_0)\textbf{I} \quad \forall \vec{X}\in\Omega$$
 
+With `mechanics: dynamic`, the solid inertia is added to the left-hand side:
+
+$$\rho_b\ddot{\vec{u}} = \nabla\cdot\left(\boldsymbol{\sigma} - \boldsymbol{\sigma}_0\right), \qquad \rho_b = (1-\phi_0)\rho_s + \phi_0\rho_{f,0}$$
+
+in which $\rho_b$ is the bulk density at the reference state, with $\rho_{f,0}$ the fluid density at the reference temperature and pressure. It is constant, so the term is linear.
+
 in which $\mathbb{C}$ is the drained elasticity tensor. Currently, isotropic properties are assumed. The strain tensor $\boldsymbol{\varepsilon}$ is a function of the displacement $\vec{u}$ and linear strains are assumed such that $\boldsymbol{\varepsilon} = \tfrac{1}{2}(\nabla\vec{u} + \nabla\vec{u}^\top)$. The elasticity in the rock mass is defined by two material constants, $K_d, \nu$, in which $\nu$ is the drained Poisson ratio. Together they define the shear modulus $G = 3K_d(1-2\nu)/(2(1+\nu))$. $\boldsymbol{\sigma}_0$ is the in-situ states which is assumed to include gravity. The sign convention dictactes positive stress as tension.
 
 Under poroelasticity, porosity is now a function of the volumetric strain solved directly from the displacement. The Lagrangian porosity becomes
@@ -167,11 +173,12 @@ The Voigt form matrices are further expanded when applied in 3D or axisymmetric 
 
 While the hydro-thermal residuals are non-linear, the poroelastic residuals are linear and can thus be defined as matrix products with their tangents. The mechanical equilibrium residual is
 
-$$\textbf{R}_u = \textbf{F}_{disp} + \textbf{F}_{bp} + \textbf{F}_{eT} - \textbf{F}_{ext,u}$$
+$$\textbf{R}_u = \textbf{F}_{a} + \textbf{F}_{disp} + \textbf{F}_{bp} + \textbf{F}_{eT} - \textbf{F}_{ext,u}$$
 
 | Term | Definition | Description |
 |---|---|---|
 | $\textbf{F}_{disp}$ | $\textbf{K}_{uu}\textbf{u}$ | Internal force vector from mechanical deformation |
+| $\textbf{F}_{a}$ | $\textbf{M}_{uu}\sum_j c_{a,j}\textbf{u}^{n-j}$ | Inertial force, with `mechanics: dynamic` |
 | $\textbf{F}_{bp}$ | $\textbf{K}_{up}(\textbf{p}-\textbf{p}_0)$ | Pressure body force vector |
 | $\textbf{F}_{eT}$ | $\textbf{K}_{uT}(\textbf{T}-\textbf{T}_0) $ | Thermal strain vector |
 | $\textbf{F}_{ext,u}$ | Prescribed Neumann tractions | External/source forcing |
@@ -392,7 +399,11 @@ $$\tau = \left[\left(\frac{2\lVert\vec{a}\rVert}{\ell^e}\right)^2\left(1 + \frac
 where $\ell^e$ is a flow-direction-weighted effective element length, $(\rho c)_e = (1-\phi)\rho_s c_s + \phi\rho_f c_{pf}$ is the volumetric heat capacity, $c_{v0}$ is the leading rate coefficient ($1/\Delta t$ for first order, zero for steady temperature), and $\mathcal{R}(T^h)$ is the strong-form residual of the discretized temperature field, built from the same storage/advection/conduction terms as $\textbf{R}_T$ above.
 
 ## Time Discretization and Solution Scheme
-Time derivatives use a general multistep discretization backwards Euler time discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified. RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation), both of which are implicit time integration schemes.
+Time derivatives use a general backwards Euler time discretization $\dot{\textbf{p}} = \sum_{i=0}^k c_{vi}\textbf{p}^{n-i}$ (and analogously for $\textbf{T}$). For first-order ($k=1$, the default [`rate_order`](README.md#simulation)), $c_{v0} = 1/\Delta t$, $c_{v1} = -1/\Delta t$. Second-order backwards difference time discretization can also be specified.
+
+Inertia in the equilibrium equation uses acceleration ($\ddot{\textbf{u}}$) rather than the rate of change. A similar scheme is adopted using a general multistep backwards Euler time discretization such that $\ddot{\textbf{u}} = \sum_{j=0}^{k+1} c_{a,j}\textbf{u}^{n-j}$. As a second-order derivative, acceleration needs one more time level than the rate of change. First and second order backwards derivatives are supported.
+
+RAFT implements two time-integration solvers, selected via [`solver_type`](README.md#simulation), both of which are implicit time integration schemes.
 
 ### `"operator_split"` (default) — pressure-first, extrapolated-temperature splitting, each field solved to full nonlinear convergence.
 A temperature $\hat{\textbf{T}}^n$ is extrapolated from previously-solved states (order matching the time-discretization order; for the linear case $\hat{\textbf{T}}^n = (1+\frac{\Delta t^n}{\Delta t^{n-1}})\textbf{T}^{n-1} - \frac{\Delta t^n}{\Delta t^{n-1}}\textbf{T}^{n-2}$ and frozen as $T_{flow}$ for the whole step. The solver then solves 2 non-linear iterative Newton-Raphson loops, first solving the conservation of mass with fixed temperature then solving the conservation of energy with fixed pressure. With the Boussinesq approximation, this decouples the problem into two linear solves. With the real non-linear EOS, this is two non-linear subproblems.

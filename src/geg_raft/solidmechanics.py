@@ -177,13 +177,17 @@ def integrate_mechanics_matrices(
     plane = controls["mechanics_controls"]["plane"]
     m = identity_voigt(nsd, axisymmetric)
 
+    inertia = bool(controls["physics"].matrix.inertia)
+    eye_nsd = np.eye(nsd)
+
     # element matrices, raveled in element order
-    entries: dict[str, list[npt.NDArray[np.float64]]] = {"K_uu": [], "K_up": [], "K_uT": []}
+    entries: dict[str, list[npt.NDArray[np.float64]]] = {"K_uu": [], "K_up": [], "K_uT": [], "M_uu": []}
     nodal_strain: list[csc_matrix] = []
 
     for r in range(mesh_data.num_regions):
         E, nu, biot, thermal = _region_elastic_data(material, r)
         D = elasticity_matrix(E, nu, nsd, plane, axisymmetric)
+        rho_b = material["solid"]["bulk_density"][r] if inertia else 0.0
         strain_entries: list[npt.NDArray[np.float64]] = []
         lumped_mass = np.zeros(mesh_data.nn)
 
@@ -207,6 +211,11 @@ def integrate_mechanics_matrices(
             BtmN = _vctrzd_quad_point_integration(B_u, m.reshape(-1, 1), N_q, wJ, False)
             entries["K_up"].append((-biot * BtmN).ravel())
             entries["K_uT"].append((-thermal * BtmN).ravel())
+            # M_uu = int rho_b N_u^T N_u, the scalar mass repeated on each component
+            if inertia:
+                mass = _vctrzd_quad_point_integration(N_q, 1.0, N_q, wJ, True)
+                M_e = np.asarray(rho_b * np.kron(mass, eye_nsd), dtype=np.float64)
+                entries["M_uu"].append(M_e.ravel())
             # int N m^T B and int N, for the region's nodal strain
             strain_entries.append(BtmN.T.ravel())
             np.add.at(lumped_mass, mesh_data.conn[e], _lumped_mass(N_q, wJ))
@@ -216,9 +225,12 @@ def integrate_mechanics_matrices(
     # assemble over node-interleaved displacement DoFs
     elem_order = np.concatenate(mesh_data.region_lists).astype(np.int32)
     args = (mesh_data.conn, mesh_data.nn, mesh_data.nne_list, mesh_data.elem_indx, elem_order)
-    K_uu = _assemble_global_matrices(
-        {"K_uu": np.concatenate(entries["K_uu"])}, *args, row_ndof=nsd, col_ndof=nsd
-    )["K_uu"]
+    square = ("K_uu", "M_uu") if inertia else ("K_uu",)
+    square_matrices = _assemble_global_matrices(
+        {name: np.concatenate(entries[name]) for name in square}, *args, row_ndof=nsd, col_ndof=nsd
+    )
+    K_uu = square_matrices["K_uu"]
+    M_uu = square_matrices["M_uu"] if inertia else csc_matrix((0, 0))
     coupling = _assemble_global_matrices(
         {name: np.concatenate(entries[name]) for name in ("K_up", "K_uT")}, *args, row_ndof=nsd, col_ndof=1
     )
@@ -235,14 +247,19 @@ def integrate_mechanics_matrices(
         K_up = csc_matrix(K_up + K_upf)
 
     return MechanicsMatrices(
-        K_uu, K_up, _pad_sparse(coupling["K_uT"], shape), tuple(nodal_strain), F_fracture_0, interface
+        K_uu, K_up, _pad_sparse(coupling["K_uT"], shape), tuple(nodal_strain), F_fracture_0, interface, M_uu
     )
 
 
 def internal_force(
-    matrices: MechanicsMatrices, primary_variables: dict[str, Any], material: dict[str, Any], nn: int
+    matrices: MechanicsMatrices,
+    primary_variables: dict[str, Any],
+    material: dict[str, Any],
+    nn: int,
+    ca: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
-    """Internal force K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 at the current iterate.
+    """Internal force M_uu sum_j ca_j u_(n-j) + K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 at the
+    current iterate, with ca the acceleration coefficients of the displacement levels.
 
     The matrix columns of K_up act on the change from p_0 and the fracture columns on the total
     fracture pressure, which loads the faces. Fracture contact and cohesion are added separately
@@ -255,6 +272,9 @@ def internal_force(
     force: npt.NDArray[np.float64] = (
         matrices.K_uu @ u + matrices.K_up @ dp + matrices.K_uT @ dT - matrices.F_fracture_0
     )
+    if matrices.M_uu.shape[0]:
+        acceleration = primary_variables["u"] @ ca.reshape(-1, 1)  # (nsd*nn, 4) @ (4, 1)
+        force = force + matrices.M_uu @ acceleration
     return force
 
 

@@ -94,6 +94,13 @@ def _consolidation_figures() -> None:
     )
     _save_open_figures("thermoporoelastic", ["T", "p", "u"])
 
+    plt.close("all")
+    config = "config_test_elastic_wave.yaml"
+    times = test_checks.ELASTIC_WAVE_TIMES
+    results, mesh = test_checks.run_at_times(config, CASE_DIR, times)
+    test_checks.check_elastic_wave(config, CASE_DIR, results, mesh, times, "Elastic Wave", True)
+    _save_open_figures("elastic", ["wave"])
+
 
 def _fracture_contact_figures() -> None:
     """Fracture face loading and contact after one time step."""

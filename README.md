@@ -430,7 +430,7 @@ physics:
 * **`flow`** *(string, default: `"transient"`)*: Pressure equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`heat`** *(string, default: `"transient"`)*: Temperature equation mode, `"off"`, `"steady"` or `"transient"`.
 * **`advection`** *(on/off, default: `off`)*: Heat advection. Enthalpy outflow at fluid boundaries without a thermal BC only applies on nodes in domains with advection on.
-* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"` or `"quasi_static"`. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`.
+* **`mechanics`** *(string, default: `"off"`, matrix only)*: Force balance mode, `"off"`, `"quasi_static"` or `"dynamic"`. `dynamic` adds solid inertia with the bulk density $(1-\phi_0)\rho_s + \phi_0\rho_f$ at the fluid reference state, using `material.solid.density`; the run starts at rest. Mechanics is solved over the matrix only; it cannot be set for `fractures` or `wells`.
 
 An `off` field holds its initial values in that domain, and its equations are not assembled, so it costs no solver time. Its values still enter property evaluations (e.g. density), so advection with `flow: off` transports heat with the Darcy flux of the frozen pressure field. A field that is `off` in every domain skips its solve entirely, giving a single-physics solver.
 

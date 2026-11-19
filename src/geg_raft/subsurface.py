@@ -294,7 +294,7 @@ def _no_wells_problem(
 
 
 def _steady_state_mechanics(mechanics: MechanicsMatrices, nn: int, nn_no_wells: int) -> MechanicsMatrices:
-    """Force-balance matrices for the steady-state initial condition, without wells.
+    """Force-balance matrices for the steady-state initial condition, without wells or inertia.
 
     The solved p and T become the reference p_0 and T_0, so the matrix carries no poro- or thermoelastic
     load relative to them; only the fracture pressure columns of K_up remain.
@@ -304,7 +304,7 @@ def _steady_state_mechanics(mechanics: MechanicsMatrices, nn: int, nn_no_wells: 
     fracture_columns = (np.arange(nn_no_wells) >= nn).astype(np.float64)
     K_up = csc_matrix(mechanics.K_up[:, :nn_no_wells] @ diags(fracture_columns))
     K_uT = csc_matrix((mechanics.K_uT.shape[0], nn_no_wells))
-    return dataclasses.replace(mechanics, K_up=K_up, K_uT=K_uT)
+    return dataclasses.replace(mechanics, K_up=K_up, K_uT=K_uT, M_uu=csc_matrix((0, 0)))
 
 
 def _assign_ic_bc_compatible(

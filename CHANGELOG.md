@@ -50,6 +50,10 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   smooths the traction where loading turns to unloading. `Fracture.vtk` gains
   the tangential jump and, with cohesion, the damage and the cohesive normal
   and shear tractions.
+- **Solid inertia** — `physics.matrix.mechanics: dynamic` adds the inertial
+  term to the force balance, with a consistent mass matrix from the bulk density
+  at the reference state, integrated once, and a backward-difference
+  acceleration that follows `rate_order`.
 - **Aitken bounds** — `iterative_controls.aitken_bounds` sets the minimum and
   maximum magnitude of the Aitken relaxation factor, `[0.01, 10.0]` by default.
 

@@ -493,6 +493,21 @@ def test_terzaghi() -> None:
     assert test_pass
 
 
+def test_elastic_wave() -> None:
+    """Check solid inertia: a confined column under a step load oscillates at its first-mode period."""
+    case_dir = _test_data_dir()
+    test_name = "Elastic Wave"
+    config_filename = "config_test_elastic_wave.yaml"
+    times = test_checks.ELASTIC_WAVE_TIMES
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, times)
+
+    plot_on = False
+    test_pass = test_checks.check_elastic_wave(
+        config_filename, case_dir, results, mesh, times, test_name, plot_on
+    )
+    assert test_pass
+
+
 def test_terzaghi_3D() -> None:
     """Check one-dimensional consolidation of a 3D column with B8 elements."""
     case_dir = _test_data_dir()

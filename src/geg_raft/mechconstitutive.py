@@ -25,6 +25,8 @@ import numpy.typing as npt
 from .mechanicsdata import CohesiveParameters
 
 COHESIVE_LAWS = ("linear", "bilinear", "cubic")
+# unloading leaves the envelope below this fraction of the maximum effective displacement
+HISTORY_MARGIN = 0.95
 
 
 def elasticity_matrix(
@@ -121,11 +123,14 @@ def cohesive_envelope(
 def cohesive_damage(
     delta_max: npt.NDArray[np.float64], params: CohesiveParameters
 ) -> npt.NDArray[np.float64]:
-    """Damage D = 1 - (t_e / delta)(delta_max) / (t_e / delta)(delta_p): 0 before the peak, 1 from w_c."""
-    _, _, secant = cohesive_envelope(delta_max, params)
+    """Damage D = 1 - (t_e / delta)(h) / (t_e / delta)(delta_p) of the unloading point h = HISTORY_MARGIN
+    delta_max: 0 before the peak, 1 from w_c.
+    """
+    h = HISTORY_MARGIN * delta_max
+    _, _, secant = cohesive_envelope(h, params)
     _, _, secant_p = cohesive_envelope(params.delta_p, params)
-    damage = np.where(delta_max > params.delta_p, 1.0 - secant / np.where(secant_p > 0.0, secant_p, 1.0), 0.0)
-    return np.where(delta_max >= params.w_c, 1.0, damage)
+    damage = np.where(h > params.delta_p, 1.0 - secant / np.where(secant_p > 0.0, secant_p, 1.0), 0.0)
+    return np.where(h >= params.w_c, 1.0, damage)
 
 
 def cohesive_initial_history(
@@ -144,7 +149,7 @@ def cohesive_initial_history(
     else:
         # linear: intact or debonded
         delta_max = D_0 * w_c
-    return np.where(D_0 > 0.0, delta_max, 0.0)
+    return np.where(D_0 > 0.0, delta_max / HISTORY_MARGIN, 0.0)
 
 
 def cohesive_traction(
@@ -157,8 +162,8 @@ def cohesive_traction(
     displacement delta (nq,) at the displacement jumps (nq, nsd).
 
     t_coh = t / delta (<g_n> n + gamma g_t), delta = sqrt(<g_n>^2 + g_t . g_t), from the envelope before
-    the peak and from the secant t_e(kappa) / kappa delta after it, with kappa = max(delta_max_c, delta)
-    smoothed in a band of half-width eps.
+    the peak and from the secant t_e(kappa) / kappa delta after it, with kappa = max(h, delta) smoothed in a
+    band of half-width eps about the unloading point h = HISTORY_MARGIN delta_max_c.
     """
     nsd = normal.shape[1]
     gamma = params.gamma
@@ -171,16 +176,17 @@ def cohesive_traction(
     # envelope branch: intact before the peak
     _, slope_env, secant_env = cohesive_envelope(delta, params)
     # secant branch: damaged, or debonded at w_c
-    x = delta - delta_max_c
+    h = HISTORY_MARGIN * delta_max_c
+    x = delta - h
     eps = params.eps
     in_band = np.abs(x) < eps
-    band = delta_max_c + (x + eps) ** 2 / (4.0 * eps)
-    kappa = np.where(x <= -eps, delta_max_c, np.where(x >= eps, delta, band))
+    band = h + (x + eps) ** 2 / (4.0 * eps)
+    kappa = np.where(x <= -eps, h, np.where(x >= eps, delta, band))
     dkappa = np.where(x <= -eps, 0.0, np.where(in_band, (x + eps) / (2.0 * eps), 1.0))
     _, slope_k, secant_k = cohesive_envelope(kappa, params)
-    # kappa >= delta_max_c > 0 wherever the secant branch is used
+    # kappa >= h > 0 wherever the secant branch is used
     dsecant_k = (slope_k - secant_k) / np.where(kappa > 0.0, kappa, 1.0)
-    damaged = (delta_max_c > params.delta_p) | (delta_max_c >= params.w_c)
+    damaged = (h > params.delta_p) | (h >= params.w_c)
     t_over_delta = np.where(damaged, secant_k, secant_env)
     dt_ddelta = np.where(damaged, secant_k + delta * dsecant_k * dkappa, slope_env)
 

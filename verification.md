@@ -15,6 +15,7 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Terzaghi Consolidation](#terzaghi-consolidation)
 - [Mandel's Problem](#mandels-problem)
 - [Thermo-poroelastic Consolidation](#thermo-poroelastic-consolidation)
+- [Elastic Wave](#elastic-wave)
 - [Sneddon Pressurized Fracture](#sneddon-pressurized-fracture)
 - [Fracture Closure](#fracture-closure)
 - [Cohesive Opening](#cohesive-opening)
@@ -320,6 +321,27 @@ _Thermo-poroelastic consolidation: displacement_
 **Error metric.** Relative $L_2$ error of the nodal temperature, pressure and displacement at each time. The stress errors use the nodes below the top metre, both relative to $\lVert\sigma_{xx}^{ex}\rVert_2$:
 
 $$e = \frac{\lVert x^{ex}-x \rVert_2}{\lVert x^{ex} \rVert_2} < 3\times10^{-2}$$
+
+## Elastic Wave
+
+**Test:** `test_elastic_wave`
+
+**Setup.** The Terzaghi column ($H = 10$ m, 40 Q4 elements) with flow and heat off and `mechanics: dynamic`: lateral and basal rollers, and a step load $P$ on the free top at $t = 0$. Run at `rate_order: 2` with $\Delta t = 50$ µs, about 300 steps per period, for four periods.
+
+**Assumptions.** Uniaxial strain, linear elasticity, small strain, no damping, no gravity.
+
+**Analytical solution.** A compression wave travels at $c = \sqrt{K_v/\rho_b}$, with the constrained modulus $K_v = K_d + \tfrac{4}{3}G$. It reflects from the fixed base and returns to the top after $2H/c$, so the top displacement is a triangle wave of period $4H/c$ between 0 and twice the static displacement $u_s = -PH/K_v$:
+
+$$u_{top}(t) = 2u_s\begin{cases} 2\theta & \theta < \tfrac{1}{2} \\ 2 - 2\theta & \theta \ge \tfrac{1}{2}\end{cases}, \qquad \theta = \frac{t \bmod (4H/c)}{4H/c}$$
+
+**Comparison.** Analytical (line) and finite element (RAFT, dashed) top displacement.
+
+![Elastic Wave](figures/verification/elastic_wave.png)
+_Elastic wave: top displacement_
+
+**Error metric.** Maximum error of the top displacement over the run, relative to the peak:
+
+$$e = \frac{\max_t|u_{top}^{ex} - u_{top}|}{2|u_s|} < 3\times10^{-2}$$
 
 ## Sneddon Pressurized Fracture
 

@@ -110,8 +110,9 @@ _NO_APERTURE = FractureAperture.empty()
 class MechanicsMatrices:
     """Constant force-balance matrices, nodal strain operators and fracture face operators.
 
-    R_u = K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 + R_interface(u) - F_ext, where the
-    fracture pressure columns of K_up carry the total fracture face pressure (p_0 taken as zero there).
+    R_u = M_uu sum_j c_a,j u_(n-j) + K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 + R_interface(u)
+    - F_ext, where the fracture pressure columns of K_up carry the total fracture face pressure (p_0 taken as
+    zero there). M_uu is empty without inertia.
     """
 
     K_uu: csc_matrix  # (nsd*nn, nsd*nn)
@@ -120,6 +121,7 @@ class MechanicsMatrices:
     nodal_strain: tuple[csc_matrix, ...]  # per region, (nn, nsd*nn): eps_v at nodes = nodal_strain[r] @ u
     F_fracture_0: npt.NDArray[np.float64]  # (nsd*nn, 1) face load of the in-situ stress
     interface: FractureInterface
+    M_uu: csc_matrix  # (nsd*nn, nsd*nn) consistent mass; (0, 0) without inertia
 
     @classmethod
     def empty(cls) -> MechanicsMatrices:
@@ -131,6 +133,7 @@ class MechanicsMatrices:
             (),
             np.empty((0, 1)),
             FractureInterface.empty(),
+            csc_matrix((0, 0)),
         )
 
 
