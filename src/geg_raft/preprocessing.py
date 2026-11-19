@@ -112,6 +112,7 @@ DEFAULTS: dict[str, Any] = {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
             "iter_max": 100,  # Maximum number of iterations
             "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
+            "aitken_bounds": [0.01, 10.0],  # [min, max] magnitude of the Aitken relaxation factor
             "NR_step": 1,  # Newton-Raphson line step size
         },
     },
@@ -244,6 +245,11 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Wells
     controls["wells_on"] = 1 if "wells" in config["mesh"] else 0
+
+    # Aitken relaxation
+    bounds = controls["iterative_controls"]["aitken_bounds"]
+    if len(bounds) != 2 or not 0.0 < bounds[0] <= bounds[1]:
+        raise ValueError(f"iterative_controls.aitken_bounds = {bounds}; expected [min, max], 0 < min <= max")
 
     # Mechanics
     if controls["physics"].solves("mechanics"):

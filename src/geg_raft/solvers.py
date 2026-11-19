@@ -257,8 +257,8 @@ def _aitken_relax(
     idx_sol: npt.NDArray[np.int64] | list[int],
     res_m: npt.NDArray[np.float64],
     delta_m: float | None,
+    bounds: tuple[float, float],
     max_init_relax: float = 1.0,
-    bounds: tuple[float, float] | None = None,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float, npt.NDArray[np.float64]]:
     """Apply Aitken delta^2 method with a limited range of relaxation parameters.
 
@@ -275,16 +275,12 @@ def _aitken_relax(
         Difference vector from the previous iteration.
     delta_m : float or None
         Damping coefficient from the previous iteration.
+    bounds : tuple
+        Bounds (min_relax, max_relax) on the magnitude of the relaxation parameter; its sign is kept.
     max_init_relax : float
         Control parameter flag (NaN: no relaxation, <1e-8: fixed factor, >=1e-8: Aitken).
-    bounds : tuple, optional
-        Relaxation parameter bounds (min_relax, max_relax). Defaults to (0.001, 1.0).
     """
-    if bounds is None:
-        min_relax = 0.01
-        max_relax = 10.0
-    else:
-        min_relax, max_relax = bounds
+    min_relax, max_relax = bounds
 
     # Residual of current iterate (defined as the difference between successive iterates)
     res_mp1 = sol_mp1 - sol_m
@@ -406,6 +402,7 @@ def _newton_raphson_loop(  # noqa
     NR_tol = controls["iterative_controls"]["NR_tol"]
     aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     NR_step = controls["iterative_controls"]["NR_step"]
+    aitken_bounds = tuple(controls["iterative_controls"]["aitken_bounds"])
     one_pass = controls["iterative_controls"]["one_pass"] and T_flow_lagged
     converged = False
 
@@ -712,6 +709,7 @@ def _newton_raphson_loop(  # noqa
                     aitken_state["relax_dofs"],
                     aitken_state["delta_variables_km1"],
                     aitken_state["aitken_coefficient"][iteration],
+                    aitken_bounds,
                 )
             else:
                 d_new = d_n

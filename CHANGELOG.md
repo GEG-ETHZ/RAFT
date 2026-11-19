@@ -50,6 +50,8 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   smooths the traction where loading turns to unloading. `Fracture.vtk` gains
   the tangential jump and, with cohesion, the damage and the cohesive normal
   and shear tractions.
+- **Aitken bounds** — `iterative_controls.aitken_bounds` sets the minimum and
+  maximum magnitude of the Aitken relaxation factor, `[0.01, 10.0]` by default.
 
 ### Changed
 
