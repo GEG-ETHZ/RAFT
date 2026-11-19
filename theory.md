@@ -218,7 +218,9 @@ Each side takes the advective exchange only if it has advection on. With matrix 
 
 $Nu$ is the Nusselt number based on the parallel-plate hydraulic diameter $2w$, $F$ is the heat transfer factor, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. Cubic-law flow is laminar, for which steady, fully-developed flow between parallel plates gives $Nu = 7.54$ at constant wall temperature and $Nu = 8.23$ at constant wall heat flux (Bejan, 2013). The coupled fracture-matrix problem fits neither boundary condition exactly, so their average, $Nu = 7.885$, is used. The factor $F$ scales the exchange: $F < 1$ reduces it, $F = 0$ insulates the fracture, and local thermal equilibrium can be approached with an arbitrarily large $F$.
 
-**Mechanical coupling.** With mechanics on, displacement may jump across the fracture. At each fracture Gauss point, the jump is taken between the positive and negative matrix elements of the fracture element, with the unit normal $\vec{n}$ pointing from the negative to the positive side:
+### Mechanics across fractures
+#### Contact
+With mechanics on, displacement may jump across the fracture. At each fracture Gauss point, the jump is taken between the positive and negative matrix elements of the fracture element, with the unit normal $\vec{n}$ pointing from the negative to the positive side:
 
 $$[\![\vec{u}]\!] = [\![\textbf{N}_u]\!]\,\textbf{u}, \qquad [\![\textbf{N}_u]\!] = \left[\,\textbf{N}_u^+\,,\,-\textbf{N}_u^-\,\right], \qquad g_n = \vec{n}\cdot[\![\vec{u}]\!]$$
 
@@ -232,7 +234,7 @@ $$\sigma_c = \epsilon_N\langle -g_n\rangle, \qquad \epsilon_N = c_N\frac{\bar{E}
 
 with $\bar{E}$ the mean Young's modulus of the two adjacent matrix elements, $h$ the mean element length of the fracture, and $c_N$ is the `penalty_factor`. Scaling with $E/h$ keeps the contact stiffness a fixed multiple of the local rock stiffness, so the penetration $\sigma_c h/(c_N\bar{E})$ vanishes under mesh refinement and the solution converges to rigid contact. The penalty acts normally only, so a debonded fracture is frictionless.
 
-The pressure and in-situ terms are linear and integrated once with the other force-balance matrices. The fracture pressure term adds to the fracture columns of $\textbf{K}_{up}$, and the in-situ load is a constant force. Only the contact term is nonlinear, with the tangent
+The pressure and in-situ terms are linear and integrated once with the other force-balance matrices. The fracture pressure term adds to the fracture columns of $\textbf{K}_{up}$, and the in-situ load is a constant force. Only the contact and cohesive terms are nonlinear. The contact tangent is
 
 $$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\epsilon_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
 
@@ -240,7 +242,47 @@ with $H(0) = 1$.
 
 The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
 
-**Aperture.** With mechanics on, the hydraulic aperture follows the contact state through the Bandis–Barton closure law, written with the unstressed aperture $w_m$ (the `aperture` input / the maximum aperture) and the normal stiffness $K_w$ (`normal_stiffness`):
+#### Cohesion
+A cemented fracture carries tension and shear across its faces until the bond breaks. The cohesive law acts on the effective displacement of the opening and the tangential jump:
+
+$$\vec{g}_t = \left(\textbf{I} - \vec{n}\vec{n}^\top\right)[\![\vec{u}]\!], \qquad \Delta = \sqrt{\langle g_n\rangle^2 + \vec{g}_t\cdot\vec{g}_t}$$
+
+in which $\Delta$ is the effective displacement, combining both shear and normal displacement. The envelope $t_e(\Delta)$, with tensile strength $f_u$, fracture energy $G_c$, and critical displacement $w_c$, is one of:
+
+$$t_e = \begin{cases} f_u\,\dfrac{\Delta}{w_c}, \quad w_c = \dfrac{2G_c}{f_u} & \text{linear} \\[2ex] f_u\,\dfrac{\Delta}{w_w} \ \ (\Delta < w_w), \quad f_u\,\dfrac{w_c - \Delta}{w_c - w_w} \ \ (\Delta \ge w_w), \quad w_w = a\,w_c, \quad w_c = \dfrac{2G_c}{f_u} & \text{bilinear} \\[2ex] \dfrac{27}{4}f_u\,\dfrac{\Delta}{w_c}\left(1 - \dfrac{\Delta}{w_c}\right)^2, \quad w_c = \dfrac{16G_c}{9f_u} & \text{cubic} \end{cases}$$
+
+and $t_e = 0$ for $\Delta \ge w_c$. Each dissipates $G_c$ in pure opening. The linear law is elastic up to $f_u$ and then fully debonded. The bilinear law adds a softening branch from the peak at $w_w$ for numerical robustness, and recovers the linear law as $a \to 1$. The cubic law peaks at $\Delta_p = w_c/3$  (Tvegaard 1990).
+
+The damage is irreversible. Each fracture Gauss point holds the largest effective displacement reached, $\Delta_{max}$, committed at the end of each accepted step. With $\Delta_{max}^{c}$ the committed value, the traction magnitude is the envelope before the peak, where the law is reversible, and a secant to the origin after it:
+
+$$t = \begin{cases} 
+t_e(\Delta) & \delta_{max}^{c} \le \Delta_p \\
+ \dfrac{t_e(\kappa)}{\kappa}\,\Delta & \delta_{max}^{c} > \Delta_p \end{cases}$$
+
+To prevent oscillations around the traction peak, the damage traction is smoothed using the damage driver $\kappa$ is $\max(\Delta_{max}^{c}, \Delta)$ in a band of half-width $\varepsilon = c_\varepsilon w_c$ (`damage_peak_smoothing_coefficient`) so that the tangent is continuous.
+
+$$\kappa = \begin{cases} \Delta_{max}^{c} & \Delta \le \Delta_{max}^{c} - \varepsilon \\[1ex] \Delta_{max}^{c} + \dfrac{\left(\Delta - \Delta_{max}^{c} + \varepsilon\right)^2}{4\varepsilon} & \lvert\Delta - \Delta_{max}^{c}\rvert < \varepsilon \\[2ex] \Delta & \Delta \ge \Delta_{max}^{c} + \varepsilon \end{cases}$$
+
+The smoothing introduces a smaller error in the dissipated fracture energy in cyclic loading cases proportional to $O(c_\varepsilon)$. The damage is
+
+$$D = 1 - \frac{t_e(\Delta_{max})/\Delta_{max}}{t_e(\Delta_p)/\Delta_p}$$
+
+such that damage before the peak traction is reversible. An initial damage $D_0$ sets the initial $\delta_{max}$ by inverting $D$; $D_0 = 1$ gives $\delta_{max} = w_c$ and no cohesive traction.
+
+The traction vector splits $t$ between the opening and the tangential jump, with the shear strength $s_u = \gamma f_u$:
+
+$$\vec{t}_{coh} = t\left( \frac{\langle g_n\rangle\vec{n}}{\Delta}  + \gamma\frac{\vec{g}_t}{\Delta}\right)$$
+
+so pure shear peaks at $s_u$ and dissipates $\gamma G_c$. Its tangent is
+
+$$\frac{\partial\vec{t}_{coh}}{\partial[\![\vec{u}]\!]} = \frac{t}{\Delta}\left(H(g_n)\,\vec{n}\vec{n}^\top + \gamma\left(\textbf{I} - \vec{n}\vec{n}^\top\right)\right) + \frac{1}{\Delta^2}\left(\frac{dt}{d\Delta} - \frac{t}{\Delta}\right)\left(\langle g_n\rangle\,\vec{n} + \gamma\,\vec{g}_t\right)\left(\langle g_n\rangle\,\vec{n} + \vec{g}_t\right)^\top$$
+
+with $H(0) = 0$, so the normal stiffness at $g_n = 0$ belongs to the contact. At $\Delta = 0$, $t/\Delta$ is the initial stiffness $t_e'(0)$ before the peak and the secant after it, and the second term vanishes. The tangent is non-symmetric for $\gamma \ne 1$. The cohesive traction resists the opening, so the face force combines it with the contact:
+
+$$\textbf{R}_u \mathrel{+}= \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\left(\vec{t}_{coh} - \sigma_c\,\vec{n}\right)d\Gamma$$
+
+### Aperture
+With mechanics on, the hydraulic aperture follows the contact state through the Bandis–Barton closure law, written with the unstressed aperture $w_m$ (the `aperture` input / the maximum aperture) and the normal stiffness $K_w$ (`normal_stiffness`):
 
 $$w = \begin{cases} w_m \left( 1 -  \frac{\frac{\sigma_c}{K_w}}{1 + \frac{\sigma_c}{K_w}} \right)& \sigma_c > 0 \ \ (\text{in contact}) \\[2ex] w_m + g_n & \text{open}\end{cases}$$
 

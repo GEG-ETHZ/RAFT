@@ -17,6 +17,8 @@ All tests solve a steady-state problem on a quasi-1D domain unless stated otherw
 - [Thermo-poroelastic Consolidation](#thermo-poroelastic-consolidation)
 - [Sneddon Pressurized Fracture](#sneddon-pressurized-fracture)
 - [Fracture Closure](#fracture-closure)
+- [Cohesive Opening](#cohesive-opening)
+- [Cohesive Shear](#cohesive-shear)
 
 ## Heterogeneous Conduction and Flow
 
@@ -362,4 +364,46 @@ _Fracture closure: contact pressure along both fractures_
 **Error metric.** At the Gauss points more than five of their element lengths from a tip or junction, and for the mean over each fracture:
 
 $$\left\lvert\frac{\sigma_c}{\sigma_c^{ex}} - 1\right\rvert < 5\times10^{-3}, \qquad \left\lvert\frac{\bar{\sigma}_c}{\sigma_c^{ex}} - 1\right\rvert < 1.5\times10^{-2}$$
+
+## Cohesive Opening
+
+**Test:** `test_cohesive_opening`
+
+**Setup.** A $0.2 \times 0.2$ m block cut along $y = 0$ by a cemented fracture longer than the block, so the fracture splits the boundary nodes and the two halves are joined only through it. The cubic cohesive law has $f_u = 1$ MPa and $G_c = 100$ J/m², so $w_c = 0.18$ mm. The left and bottom faces are on rollers, and the top is displaced upward past the peak, back down on the damaged branch, and up again to full separation. The in-situ stress and fracture pressure are zero, and flow and heat are off. The same run with an initial damage of 1 checks a debonded fracture.
+
+**Assumptions.** Plane strain, linear elasticity.
+
+**Analytical solution.** The fields are uniform, so the matrix stress $\sigma_{yy}$ is the cohesive traction at the opening $g_n$. It follows the envelope while the opening exceeds its previous maximum, and the secant to the origin otherwise:
+
+$$t = \begin{cases} \dfrac{27}{4}f_u\,\dfrac{g_n}{w_c}\left(1 - \dfrac{g_n}{w_c}\right)^2 & g_n \ge \delta_{max} \\[2ex] \dfrac{t_e(\delta_{max})}{\delta_{max}}\,g_n & g_n < \delta_{max} \end{cases}$$
+
+with zero traction once $\delta_{max} \ge w_c$, and the work $\int t\,dg_n$ over the whole path equal to $G_c$. The debonded fracture carries no traction.
+
+**Comparison.** Traction against opening through loading, unloading, reloading, and separation.
+
+![Cohesive Opening — Traction](figures/verification/cohesive_opening.png)
+_Cohesive opening: traction against opening_
+
+**Error metric.** The opening and stress are uniform to $10^{-6}$. Against the analytical traction, after full separation, and for the dissipated energy $W$:
+
+$$\frac{\max\lvert t - t^{ex}\rvert}{f_u} < 10^{-3}, \qquad \left\lvert\frac{W}{G_c} - 1\right\rvert < 10^{-2}$$
+
+The energy is within $5\times10^{-4}$, the shortfall of the smoothed maximum. With initial damage 1, $\lvert\sigma_{yy}\rvert < 10^{-6} f_u$.
+
+## Cohesive Shear
+
+**Test:** `test_cohesive_shear`
+
+**Setup.** The cohesive opening mesh and law with $s_u = 2$ MPa. Every node of the lower block is fixed, and every node of the upper block is held vertically and slid along the fracture by the opening's displacement table, so both blocks move rigidly and the slip is uniform.
+
+**Assumptions.** Rigid-body motion of both blocks, so the force on the upper block is the cohesive shear force alone.
+
+**Analytical solution.** In pure shear, $\delta$ is the slip and the shear traction is $\gamma = s_u/f_u$ times the opening traction above: it peaks at $s_u$, unloads on the secant, vanishes once debonded, and dissipates $\gamma G_c$.
+
+**Comparison.** Shear traction, the force on the upper block per unit fracture length, against slip.
+
+![Cohesive Shear — Traction](figures/verification/cohesive_shear.png)
+_Cohesive shear: shear traction against slip_
+
+**Error metric.** As for the cohesive opening, with $\gamma f_u$ and $\gamma G_c$ in place of $f_u$ and $G_c$.
 

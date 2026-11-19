@@ -98,11 +98,13 @@ def cohesive_envelope(
     f_u, w_c = params.f_u, params.w_c
     bonded = delta < w_c
     if params.law == "cubic":
+        # Cubic cohesive law - Tvegaard 1990
         x = np.minimum(delta / w_c, 1.0)
         secant = 6.75 * f_u / w_c * (1.0 - x) ** 2  # 6.75 = 27 / 4
         slope = 6.75 * f_u / w_c * (1.0 - x) * (1.0 - 3.0 * x)
         return secant * delta, np.where(bonded, slope, 0.0), secant
     if params.law == "bilinear":
+        # linear then softening
         w_w = params.weakening_ratio * w_c
         rising = delta < w_w
         k_soft = f_u / (w_c - w_w)
