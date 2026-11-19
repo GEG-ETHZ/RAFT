@@ -28,6 +28,7 @@ import yaml
 from .dofmap import COMPONENTS, component_dofs
 from .matprops import create_abstract_state
 from .matrixassembly import integrate_boundary_flux_matrices
+from .mechconstitutive import COHESIVE_LAWS
 from .meshprocessing import _build_edge_element_map, _find_lineBC_connectivity, load_mesh
 from .physics import DOMAINS, FIELD_MODES, MECHANICS_MODES, DomainPhysics, Physics
 
@@ -105,6 +106,7 @@ DEFAULTS: dict[str, Any] = {
             "plane": "strain",  # 2D mechanics: "strain" or "stress"
             "stress_recovery": "element",  # stress output: "element" (cells), "average" or "L2" (nodes)
             "penalty_factor": 10.0,  # c_N in the fracture contact penalty eps_N = c_N E / h
+            "damage_peak_smoothing_coefficient": 1.0e-3,  # c_eps in the smoothing half-width c_eps w_c
         },
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
@@ -486,6 +488,101 @@ def _calculate_fracture_aperture_properties(mesh: dict[str, Any], material: dict
     fracture["w_m"] = w_m  # (ne_f,)
 
 
+def _per_fracture(value: Any, num_fractures: int, name: str) -> npt.NDArray[np.float64]:
+    """Per-fracture values (num_fractures,) from a scalar or a list with one entry per fracture."""
+    if isinstance(value, list):
+        if len(value) != num_fractures:
+            raise ValueError(f"{name} has {len(value)} entries; expected one per fracture ({num_fractures})")
+        return np.asarray(value, dtype=np.float64)
+    return np.full(num_fractures, float(value))
+
+
+def _warn_cohesive_zone_length(
+    mesh: dict[str, Any], material: dict[str, Any], f_u: npt.NDArray[np.float64], G_c: npt.NDArray[np.float64]
+) -> None:
+    """Warn where the cohesive zone length E' G_c / f_u^2 spans fewer than three fracture elements."""
+    solid = material["solid"]
+    fmesh = mesh["fracture_mesh"]
+    conn_f = np.asarray(fmesh["conn"])
+    lengths = np.linalg.norm(fmesh["nodes"][conn_f[:, -1]] - fmesh["nodes"][conn_f[:, 0]], axis=1)
+    for r, elems in enumerate(fmesh["region_lists"]):
+        # plane-strain modulus of the adjacent matrix elements
+        E_plane = np.mean(
+            [
+                _get_region_value(solid["youngs_mod"], mesh["regions"][e_m])
+                / (1.0 - _get_region_value(solid["poisson_ratio"], mesh["regions"][e_m]) ** 2)
+                for e in elems
+                for e_m in fmesh["matrix_conn"][e]
+            ]
+        )
+        l_cz = E_plane * G_c[r] / f_u[r] ** 2
+        if l_cz < 3.0 * lengths[elems].mean():
+            warnings.warn(
+                f"Fracture {r}: cohesive zone length {l_cz:.3g} m spans fewer than three fracture elements "
+                f"(mean length {lengths[elems].mean():.3g} m)",
+                stacklevel=2,
+            )
+
+
+def _calculate_cohesive_properties(
+    mesh: dict[str, Any],
+    material: dict[str, Any],
+    initial_conditions: dict[str, Any],
+    controls: dict[str, Any],
+) -> None:
+    """Validate the cohesive inputs and the initial damage, and store them per fracture element."""
+    cohesive = material["fracture"]["cohesive"]
+    fmesh = mesh["fracture_mesh"]
+    region_lists = fmesh["region_lists"]
+    num_fractures = len(region_lists)
+
+    # global law
+    law = cohesive.get("law", "")
+    if law not in COHESIVE_LAWS:
+        raise ValueError(f"material.fracture.cohesive.law = {law!r}; expected one of {COHESIVE_LAWS}")
+    weakening_ratio = float(cohesive.get("weakening_ratio", 0.0))
+    if law == "bilinear" and not 0.0 < weakening_ratio < 1.0:
+        raise ValueError(f"material.fracture.cohesive.weakening_ratio = {weakening_ratio} must lie in (0, 1)")
+
+    # per-fracture parameters
+    values: dict[str, npt.NDArray[np.float64]] = {}
+    for key in ("tensile_strength", "shear_strength", "fracture_energy"):
+        if key not in cohesive:
+            raise ValueError(f"material.fracture.cohesive.{key} is required")
+        values[key] = _per_fracture(cohesive[key], num_fractures, f"material.fracture.cohesive.{key}")
+        if np.any(values[key] <= 0.0):
+            raise ValueError(f"material.fracture.cohesive.{key} = {cohesive[key]} must be positive")
+    D_0 = _per_fracture(
+        initial_conditions.get("fracture_damage", 0.0), num_fractures, "initial_conditions.fracture_damage"
+    )
+    if np.any((D_0 < 0.0) | (D_0 > 1.0)):
+        raise ValueError(f"initial_conditions.fracture_damage = {D_0.tolist()} must lie in [0, 1]")
+    if law == "linear" and np.any((D_0 > 0.0) & (D_0 < 1.0)):
+        raise ValueError("initial_conditions.fracture_damage must be 0 or 1 for the linear law")
+
+    # smoothing half-width within the softening branch
+    c_eps = controls["mechanics_controls"]["damage_peak_smoothing_coefficient"]
+    c_eps_max = {"linear": np.inf, "bilinear": weakening_ratio, "cubic": 1.0 / 3.0}[law]
+    if not 0.0 < c_eps <= c_eps_max:
+        raise ValueError(
+            f"mechanics_controls.damage_peak_smoothing_coefficient = {c_eps} must lie in "
+            f"(0, {c_eps_max:.4g}] for the {law} law"
+        )
+    f_u, G_c = values["tensile_strength"], values["fracture_energy"]
+    _warn_cohesive_zone_length(mesh, material, f_u, G_c)
+
+    # per fracture element
+    elements: dict[str, npt.NDArray[np.float64]] = {
+        name: np.zeros(fmesh["ne"]) for name in ("f_u", "gamma", "G_c", "D_0")
+    }
+    for r, elems in enumerate(region_lists):
+        elements["f_u"][elems] = f_u[r]
+        elements["gamma"][elems] = values["shear_strength"][r] / f_u[r]
+        elements["G_c"][elems] = G_c[r]
+        elements["D_0"][elems] = D_0[r]
+    material["fracture"]["cohesive_elements"] = elements  # (ne_f,) each
+
+
 def _resolve_group_geometry(
     mesh: dict[str, Any], group: dict[str, Any], controls: dict[str, Any], need_flux_integral: bool
 ) -> None:
@@ -836,7 +933,19 @@ def preprocessing(
 
     _check_region_properties(max(mesh["regions"]), config["material"]["solid"])
     config["material"] = _calculate_derived_properties(mesh, config["material"])
-    if config["simulation"]["physics"].solves("mechanics"):
+    mechanics_on = config["simulation"]["physics"].solves("mechanics")
+    if mechanics_on:
         _calculate_mechanics_properties(mesh, config["material"])
+
+    # Fracture cohesion
+    cohesive_on = "cohesive" in config["material"].get("fracture", {})
+    if "fracture_damage" in config["initial_conditions"] and not cohesive_on:
+        raise ValueError("initial_conditions.fracture_damage requires material.fracture.cohesive")
+    if cohesive_on:
+        if not mechanics_on or "fracture_mesh" not in mesh:
+            raise ValueError("material.fracture.cohesive requires fractures with physics.matrix.mechanics on")
+        _calculate_cohesive_properties(
+            mesh, config["material"], config["initial_conditions"], config["simulation"]
+        )
 
     return config, mesh

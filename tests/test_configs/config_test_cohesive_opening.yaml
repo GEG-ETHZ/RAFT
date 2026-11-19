@@ -1,0 +1,82 @@
+mesh:
+  file: cohesive_opening2D.msh
+  dimensions: 2
+  domain:  # outer boundary, used by scripts/raft_to_geo.py
+      shape: "box"
+      values: [[-0.1, -0.1], [0.1, 0.1]]
+  sizing:  # element sizes, used by scripts/raft_to_geo.py
+      outer: 0.02
+      frac: [[0.02], [0.1]]
+      quads: true
+  fractures:
+      - values: [[0.0, 0.0, 0.0], [0.2], [0]]   # longer than the domain, so it splits the boundary nodes
+
+material:
+  # Rock mass parameters
+  solid:
+      bulk_mod: 20.0e+9         # Pa
+      biot_coeff: 0.5           # -
+      poisson_ratio: 0.25       # -
+      porosity: 0.01            # -
+      permeability: 1.0e-18     # m^2
+      therm_expansion: 0.0      # 1/K
+
+  # Fluid parameters
+  fluid:
+      density: 1000           # kg/m^3
+      bulk_mod: 2.0e+9        # Pa
+      therm_expansion: 0.0    # 1/K
+      viscosity: 1.0e-3       # Pa-s
+
+  # Fracture parameters
+  fracture:
+    aperture: [1.0e-4]
+    normal_stiffness: [1.0e+7]
+    heat_transfer_factor: [0.634115]
+    cohesive:
+      law: "cubic"
+      tensile_strength: [1.0e+6]    # Pa
+      shear_strength: [2.0e+6]      # Pa
+      fracture_energy: [100.0]      # J/m^2
+
+initial_conditions:
+  assignment: BC_compatible
+  T_ini: 300.0
+  p_ini: 0.0                  # no fracture pressure on the faces
+
+boundary_conditions:
+  # rollers on the left and bottom
+  - faces: [x_min, y_min]
+    mechanics:
+      type: displacement
+      components: roller
+      values: [0.0]
+  # opening past the peak, unloading on the secant, and reloading to full separation
+  - faces: [y_max]
+    mechanics:
+      type: displacement
+      components: ["y"]
+      function: table
+      values: [[0.0, 10.0, 15.0, 25.0], [0.0, 1.0e-4, 3.0e-5, 2.5e-4]]
+
+physics:
+  matrix:
+    flow: off
+    heat: off
+    mechanics: quasi_static
+
+simulation:
+  # Time
+  t_start: 0.0
+  t_end: 25.0
+  timestep: 0.25
+  timestep_min: 0.25
+  timestep_max: 0.25
+  solver_type: monolithic
+
+  # Output
+  output_frequency: 1
+  output_vtk: 0       # turn vtk output on/off
+
+  # Physical controls
+  gravity: 0.0    # m/s^2

@@ -17,20 +17,24 @@
 
 """Check FEM test cases."""
 
+import shutil
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import yaml
 from scipy.optimize import brentq
 
+from geg_raft.history import COHESIVE_HISTORY
 from geg_raft.matrixassembly import _get_quad_points_and_shape_functions
 from geg_raft.preprocessing import load_config, preprocessing
 from geg_raft.solidmechanics import (
     element_penalty,
     element_stress,
     fracture_face_nodes,
+    fracture_interface_force,
     insitu_stress,
     nodal_stress,
 )
@@ -1739,3 +1743,222 @@ def check_fracture_closure(
         plt.legend()
 
     return test_pass
+
+
+def _cubic_envelope(delta: npt.NDArray[np.float64], f_u: float, G_c: float) -> npt.NDArray[np.float64]:
+    """Cubic cohesive envelope 27/4 f_u x (1 - x)^2, x = delta / w_c, with w_c = 16 G_c / (9 f_u)."""
+    x = np.clip(delta / (16.0 * G_c / (9.0 * f_u)), 0.0, 1.0)
+    t_e: npt.NDArray[np.float64] = 6.75 * f_u * x * (1.0 - x) ** 2
+    return t_e
+
+
+def _opening_traction(
+    config_name: str, config_dir: Path, results: list[dict[str, Any]], mesh: dict[str, Any]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+    """Mean opening and matrix stress sigma_yy at each result, and the largest spread of either."""
+    cfg, _ = preprocessing(config_name, config_dir, verbose=False)
+    material = cfg["material"]
+    material["sigma_0"] = np.zeros((mesh["nn"], 3))
+    material["u_0"] = np.zeros(2 * mesh["nn"])
+    opening, traction = np.zeros(len(results)), np.zeros(len(results))
+    spread = 0.0
+    for i, result in enumerate(results):
+        material["p_0"] = result["p"][:, 0]
+        material["T_0"] = result["T"][:, 0]
+        g = _fracture_normal_jump(mesh, result["u"][:, 0])
+        sigma_yy = element_stress(mesh, material, cfg["simulation"], result)[:, 1]
+        opening[i], traction[i] = g.mean(), sigma_yy.mean()
+        spread = max(spread, np.ptp(g) / g.mean(), np.ptp(sigma_yy) / max(abs(sigma_yy.mean()), 1.0))
+    return opening, traction, spread
+
+
+def check_cohesive_opening(
+    config_name: str,
+    config_dir: Path,
+    results: list[dict[str, Any]],
+    mesh: dict[str, Any],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Block opened across a cemented fracture: the traction follows the cubic envelope on loading and the
+    secant on unloading, vanishes once separated, and dissipates G_c.
+
+    The fields are uniform, so the matrix stress sigma_yy is the cohesive traction.
+    """
+    # Set tolerance
+    tol_uniform = 1.0e-6
+    tol_traction = 1.0e-3
+    tol_energy = 1.0e-2
+
+    # Load cohesive parameters
+    config = load_config(config_name, config_dir, verbose=False)
+    cohesive = config["material"]["fracture"]["cohesive"]
+    f_u, G_c = cohesive["tensile_strength"][0], cohesive["fracture_energy"][0]
+    w_c = 16.0 * G_c / (9.0 * f_u)
+    opening, traction, spread = _opening_traction(config_name, config_dir, results, mesh)
+
+    # loading on the envelope, unloading on the secant of the largest opening so far
+    delta_max = np.maximum.accumulate(opening)
+    loading = opening >= delta_max
+    secant = _cubic_envelope(delta_max, f_u, G_c) / delta_max * opening
+    expected = np.where(loading, _cubic_envelope(opening, f_u, G_c), secant)
+    err_traction = np.abs(traction - expected).max() / f_u
+    separated = np.abs(traction[delta_max >= w_c]).max() / f_u
+
+    # dissipated energy over the whole path from the unloaded state
+    work = np.trapezoid(np.r_[0.0, traction], np.r_[0.0, opening])
+    err_energy = abs(work / G_c - 1.0)
+
+    if plot_on:
+        plt.figure()
+        plt.plot(opening / w_c, traction / f_u, ".-", ms=3, label="RAFT")
+        delta = np.linspace(0.0, opening.max(), 200)
+        plt.plot(delta / w_c, _cubic_envelope(delta, f_u, G_c) / f_u, "--", label="envelope")
+        plt.xlabel("opening / w_c")
+        plt.ylabel("traction / f_u")
+        plt.title(test_name)
+        plt.legend()
+
+    return bool(
+        spread < tol_uniform
+        and err_traction < tol_traction
+        and separated < tol_traction
+        and err_energy < tol_energy
+    )
+
+
+def block_nodes(mesh: dict[str, Any]) -> tuple[list[int], list[int]]:
+    """Matrix nodes below and above a horizontal fracture at y = 0 that spans the domain."""
+    centroid_y = np.array([mesh["nodes"][enodes, 1].mean() for enodes in mesh["conn"]])
+    lower = {int(n) for e in np.flatnonzero(centroid_y < 0.0) for n in mesh["conn"][e]}
+    upper = {int(n) for e in np.flatnonzero(centroid_y > 0.0) for n in mesh["conn"][e]}
+    return sorted(lower), sorted(upper)
+
+
+COHESIVE_CONFIG = "config_test_cohesive_opening.yaml"
+COHESIVE_TIMES = [0.25 * (k + 1) for k in range(100)]
+
+
+def write_cohesive_shear_config(case_dir: Path, out_dir: Path) -> str:
+    """Write the cohesive opening case as a rigid shear case into `out_dir`, returning its config name.
+
+    The lower block is fixed and the upper block slid along the fracture by the opening table.
+    """
+    _, mesh = preprocessing(COHESIVE_CONFIG, case_dir, verbose=False)
+    lower, upper = block_nodes(mesh)
+    config = yaml.safe_load((case_dir / COHESIVE_CONFIG).read_text())
+    table = config["boundary_conditions"][1]["mechanics"]
+    config["boundary_conditions"] = [
+        {"nodes": lower, "mechanics": {"type": "displacement", "components": "fixed", "values": [0.0]}},
+        {"nodes": upper, "mechanics": {"type": "displacement", "components": ["y"], "values": [0.0]}},
+        {"nodes": upper, "mechanics": {**table, "components": ["x"]}},
+    ]
+    (out_dir / COHESIVE_CONFIG).write_text(yaml.safe_dump(config))
+    shutil.copy(case_dir / config["mesh"]["file"], out_dir)
+    return COHESIVE_CONFIG
+
+
+def write_cohesive_debonded_config(case_dir: Path, out_dir: Path) -> str:
+    """Write the cohesive opening case with initial damage 1 into `out_dir`, returning its config name."""
+    config = yaml.safe_load((case_dir / COHESIVE_CONFIG).read_text())
+    config["initial_conditions"]["fracture_damage"] = [1.0]
+    (out_dir / COHESIVE_CONFIG).write_text(yaml.safe_dump(config))
+    shutil.copy(case_dir / config["mesh"]["file"], out_dir)
+    return COHESIVE_CONFIG
+
+
+def run_cohesive_shear(
+    config_name: str, config_dir: Path, times: list[float]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Run a block slid rigidly over a fixed block, returning the slip and the face force per unit
+    length on the upper block at each of `times`.
+
+    The force is the fracture face force at the solved displacement and the history the step started
+    from, summed over the x DoFs of the upper block.
+    """
+    config, mesh = preprocessing(config_name, config_dir, verbose=False)
+    config["simulation"].update(config_name=config["config_name"], config_dir=config["config_dir"])
+    setup, state = initialize_simulation(config, mesh, config["simulation"]["t_start"], False)
+    interface = setup.mechanics.interface
+    _, upper = block_nodes(mesh)
+    length = interface.weights.sum()
+
+    slip, force = np.zeros(len(times)), np.zeros(len(times))
+    for i, t in enumerate(times):
+        delta_max_c = state.primary_variables["history"].committed[COHESIVE_HISTORY].copy()
+        state, _ = advance(setup, state, t, False)
+        u = state.primary_variables["u"][:, 0]
+        face_force, _, _ = fracture_interface_force(interface, u, delta_max_c)
+        jump_x = (interface.jump @ u)[0::2]
+        slip[i] = jump_x.mean()
+        # force driving the upper block, balancing the cohesive resistance
+        force[i] = face_force[2 * np.asarray(upper), 0].sum() / length
+        # accept the step as the next call's history
+        primary_variables = load_state(state, setup.BC_config)
+        _rollover(primary_variables, setup.BC_config, setup.controls["wellbore_check"])
+        state = snapshot_state(
+            state.t,
+            state.n_step,
+            state.n_out,
+            state.dt_hist,
+            primary_variables,
+            setup.BC_config,
+            state.ext_values,
+        )
+    return slip, force
+
+
+def check_cohesive_shear(
+    config_name: str,
+    config_dir: Path,
+    slip: npt.NDArray[np.float64],
+    force: npt.NDArray[np.float64],
+    test_name: str,
+    plot_on: bool,
+) -> bool:
+    """Rigid block slid over a cemented fracture: the shear traction is s_u / f_u times the cubic envelope
+    on loading and its secant on unloading, peaks at s_u, and vanishes once debonded, dissipating
+    s_u / f_u G_c.
+    """
+    # Set tolerance
+    tol_traction = 1.0e-3
+    tol_energy = 1.0e-2
+
+    # Load cohesive parameters
+    config = load_config(config_name, config_dir, verbose=False)
+    cohesive = config["material"]["fracture"]["cohesive"]
+    f_u, G_c = cohesive["tensile_strength"][0], cohesive["fracture_energy"][0]
+    gamma = cohesive["shear_strength"][0] / f_u
+    w_c = 16.0 * G_c / (9.0 * f_u)
+
+    # loading on the envelope, unloading on the secant of the largest slip so far
+    delta_max = np.maximum.accumulate(slip)
+    loading = slip >= delta_max
+    secant = _cubic_envelope(delta_max, f_u, G_c) / delta_max * slip
+    expected = gamma * np.where(loading, _cubic_envelope(slip, f_u, G_c), secant)
+    err_traction = np.abs(force - expected).max() / (gamma * f_u)
+    separated = np.abs(force[delta_max >= w_c]).max() / (gamma * f_u)
+    err_energy = abs(np.trapezoid(np.r_[0.0, force], np.r_[0.0, slip]) / (gamma * G_c) - 1.0)
+
+    if plot_on:
+        plt.figure()
+        plt.plot(slip / w_c, force / (gamma * f_u), ".-", ms=3, label="RAFT")
+        delta = np.linspace(0.0, slip.max(), 200)
+        plt.plot(delta / w_c, _cubic_envelope(delta, f_u, G_c) / f_u, "--", label="envelope")
+        plt.xlabel("slip / w_c")
+        plt.ylabel("shear traction / s_u")
+        plt.title(test_name)
+        plt.legend()
+
+    return bool(err_traction < tol_traction and separated < tol_traction and err_energy < tol_energy)
+
+
+def check_cohesive_debonded(
+    config_name: str, config_dir: Path, results: list[dict[str, Any]], mesh: dict[str, Any]
+) -> bool:
+    """Block opened across a fracture with initial damage 1: no traction at any opening."""
+    tol = 1.0e-6
+    config = load_config(config_name, config_dir, verbose=False)
+    f_u = config["material"]["fracture"]["cohesive"]["tensile_strength"][0]
+    opening, traction, _ = _opening_traction(config_name, config_dir, results, mesh)
+    return bool(opening.min() > 0.0 and np.abs(traction).max() / f_u < tol)

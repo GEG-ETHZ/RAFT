@@ -27,6 +27,24 @@ from scipy.sparse import csc_matrix
 
 
 @dataclass(frozen=True, slots=True)
+class CohesiveParameters:
+    """Cohesive law and its parameters at the fracture Gauss points."""
+
+    law: str  # "linear", "bilinear" or "cubic"; "" without cohesion
+    weakening_ratio: float  # a = w_w / w_c, bilinear only
+    f_u: npt.NDArray[np.float64]  # (nq,) tensile strength
+    gamma: npt.NDArray[np.float64]  # (nq,) shear to tensile strength ratio s_u / f_u
+    w_c: npt.NDArray[np.float64]  # (nq,) critical effective displacement
+    delta_p: npt.NDArray[np.float64]  # (nq,) effective displacement at the peak
+    eps: npt.NDArray[np.float64]  # (nq,) half-width of the smoothed-maximum band
+
+    @classmethod
+    def empty(cls) -> CohesiveParameters:
+        """Placeholder without cohesion."""
+        return cls("", 0.0, np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0))
+
+
+@dataclass(frozen=True, slots=True)
 class FractureInterface:
     """Fracture face operators at the fracture Gauss points, integrated once per run.
 
@@ -43,6 +61,8 @@ class FractureInterface:
     K_w: npt.NDArray[np.float64]  # (nq,) Bandis-Barton stiffness of the point's fracture
     points: npt.NDArray[np.int64]  # (ne_f, nq_e) Gauss points of each fracture element
     projection: npt.NDArray[np.float64]  # (ne_f, nne_f, nq_e) lumped projection to the element nodes
+    normal: npt.NDArray[np.float64]  # (nq, nsd) unit normal of the point's fracture
+    cohesive: CohesiveParameters
 
     @classmethod
     def empty(cls) -> FractureInterface:
@@ -57,6 +77,8 @@ class FractureInterface:
             np.empty(0),
             np.empty((0, 0), dtype=np.int64),
             np.empty((0, 0, 0)),
+            np.empty((0, 0)),
+            CohesiveParameters.empty(),
         )
 
 
@@ -88,7 +110,7 @@ _NO_APERTURE = FractureAperture.empty()
 class MechanicsMatrices:
     """Constant force-balance matrices, nodal strain operators and fracture face operators.
 
-    R_u = K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 + R_contact(u) - F_ext, where the
+    R_u = K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 + R_interface(u) - F_ext, where the
     fracture pressure columns of K_up carry the total fracture face pressure (p_0 taken as zero there).
     """
 

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+COHESIVE_HISTORY = "cohesive_delta_max"  # (nq,) maximum effective displacement per fracture Gauss point
+
 
 @dataclass(slots=True)
 class History:

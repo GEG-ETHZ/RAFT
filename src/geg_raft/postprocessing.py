@@ -26,10 +26,11 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from .history import COHESIVE_HISTORY, History
 from .matprops import get_EOS, get_porosity, get_porosity_lagrangian, get_viscosity
 from .matrixassembly import _get_quad_points_and_shape_functions, _get_region_value
-from .mechanicsdata import _NO_MECHANICS, MechanicsMatrices
-from .mechconstitutive import penalty_contact
+from .mechanicsdata import _NO_MECHANICS, FractureInterface, MechanicsMatrices
+from .mechconstitutive import bandis_barton_aperture, cohesive_damage, cohesive_traction, penalty_contact
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 from .solidmechanics import (
     STRESS_NAMES,
@@ -896,9 +897,21 @@ def _write_matrix_output(
     )
 
 
-# Strip cell [i+, j+, j-, i-] of each L2 fracture element: element node and face of each strip node
-_STRIP_NODE = (0, 1, 1, 0)
-_STRIP_SIDE = (0, 0, 1, 1)  # 0 positive face, 1 negative face
+def _fracture_node_aperture(
+    interface: FractureInterface, faces: npt.NDArray[np.int64], U: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Bandis-Barton aperture evaluated at each fracture element node from its face displacements,
+    (ne_f, nne_f).
+    """
+    first = interface.points[:, 0]  # a Gauss point of each element, for its element properties
+    normal = interface.normal[first]
+    # normal jump n . (u+ - u-) at each element node, (ne_f, nne_f)
+    g_n = np.sum((U[faces[:, :, 0]] - U[faces[:, :, 1]]) * normal[:, None, :], axis=2)
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.penalty[first][:, None])
+    w, _ = bandis_barton_aperture(
+        g_n, sigma_c, dsigma_c_dg, interface.w_m[first][:, None], interface.K_w[first][:, None]
+    )
+    return w
 
 
 def _fracture_contact_cell_data(
@@ -931,6 +944,34 @@ def _fracture_contact_cell_data(
     ]
 
 
+def _fracture_cohesive_cell_data(
+    interface: FractureInterface, u: npt.NDArray[np.float64], history: History
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Per-element means of the tangential jump and, with cohesion, the damage and the cohesive normal
+    and shear tractions at the solved displacement u: (scalar cell data, vector cell data).
+    """
+    normal = interface.normal
+    nq, nsd = normal.shape
+    jump = (interface.jump @ u).reshape(nq, nsd)
+    g_t = jump - np.sum(jump * normal, axis=1)[:, None] * normal
+    points = interface.points  # (ne_f, nq_e)
+    vectors = [{"name": "tangential_jump", "data": _sanitize(g_t[points].mean(axis=1))}]
+    if COHESIVE_HISTORY not in history.committed:
+        return [], vectors
+
+    # traction with the history of the solve, damage with the history it reached
+    t_coh, _, _ = cohesive_traction(jump, normal, history.committed[COHESIVE_HISTORY], interface.cohesive)
+    t_n = np.sum(t_coh * normal, axis=1)
+    damage = cohesive_damage(history.trial[COHESIVE_HISTORY], interface.cohesive)
+    scalars = [
+        {"name": "damage", "data": _sanitize(damage[points].mean(axis=1))},
+        {"name": "cohesive_normal_traction", "data": _sanitize(t_n[points].mean(axis=1))},
+    ]
+    t_shear = t_coh - t_n[:, None] * normal
+    vectors.append({"name": "cohesive_shear_traction", "data": _sanitize(t_shear[points].mean(axis=1))})
+    return scalars, vectors
+
+
 def _write_fracture_output(
     n: int,
     io_path: str,
@@ -943,10 +984,11 @@ def _write_fracture_output(
 ) -> None:
     """Compute fluxes and write one solution to VTK for the fractures, each as a strip of its two faces.
 
-    Every fracture element becomes a cell [i+, j+, j-, i-] at the fracture nodes, with point data copied
-    to both faces. The `displacement` vector moves each face with the rock on its side and separates the
-    faces by the aperture: u_side +- w/2 n, with u_side the total face displacement (zero without
-    mechanics). The aperture is written per strip node.
+    Every fracture element becomes a cell [i+, j+, j-, i-]. Neighbouring elements share strip nodes: one
+    positive and one negative node per fracture node of each fracture, split at junctions where a face
+    changes matrix node. The `displacement` vector moves each face with the rock on its side and
+    separates the faces by the aperture: u_side +- w/2 n, with u_side the total face displacement (zero
+    without mechanics). The aperture is evaluated at the nodes.
     """
     if verbose:
         print("     Writing fractures to output file...")
@@ -962,49 +1004,72 @@ def _write_fracture_output(
     T = primary_variables["T"][nn:nn_f, 0]
     T_flow = _flow_temperature(primary_variables, controls)[nn:nn_f]  # flow property temperature
 
-    # ----- Strip mesh: four nodes per element at the fracture nodes
+    # ----- Fracture of each element, normal and input aperture of each fracture
     conn_f = np.asarray(fmesh["conn"])
-    ne_f = conn_f.shape[0]
-    strip_node = conn_f[:, _STRIP_NODE]  # fracture node of each strip node, (ne_f, 4)
-    strip_side = np.tile(_STRIP_SIDE, (ne_f, 1))
-    index = strip_node.ravel()
-    strip_nodes = fmesh["nodes"][index]
-    strip_conn = np.arange(4 * ne_f).reshape(ne_f, 4).tolist()
-
-    # ----- Aperture at each strip node: Bandis-Barton with mechanics, else the constant input
-    normal = np.empty((ne_f, nsd))
-    strip_aperture = np.empty((ne_f, 4))
+    ne_f, nne_f = conn_f.shape
+    n_fractures = len(fmesh["region_lists"])
+    region = np.empty(ne_f, dtype=np.int64)
+    region_normal = np.empty((n_fractures, nsd))
+    region_aperture = np.empty(n_fractures)
     for r, elems in enumerate(fmesh["region_lists"]):
-        normal[elems] = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
-        strip_aperture[elems] = _get_region_value(material["fracture"]["aperture"], r)
+        region[elems] = r
+        region_normal[r] = np.asarray(fmesh["fracture_normal"][r]).ravel()[:nsd]
+        region_aperture[r] = _get_region_value(material["fracture"]["aperture"], r)
+
+    # ----- Strip mesh: a strip node pair [+, -] per (fracture, fracture node, positive face node,
+    # negative face node), shared by the elements meeting there
+    mechanics_on = controls["physics"].solves("mechanics")
+    U = primary_variables["u"][:, 0].reshape(-1, nsd) if mechanics_on else np.empty((0, nsd))
+    faces = fracture_face_nodes(mesh) if mechanics_on else np.full((ne_f, nne_f, 2), -1, dtype=np.int64)
+    keys = np.column_stack(
+        (np.repeat(region, nne_f), conn_f.ravel(), faces[:, :, 0].ravel(), faces[:, :, 1].ravel())
+    )
+    pair_keys, pair = np.unique(keys, axis=0, return_inverse=True)
+    pair = pair.reshape(ne_f, nne_f)
+    n_pairs = pair_keys.shape[0]
+    pair_region, pair_node = pair_keys[:, 0], pair_keys[:, 1]
+    index = np.repeat(pair_node, 2)  # fracture node of each strip node
+    strip_nodes = fmesh["nodes"][index]
+    strip_conn = np.column_stack((2 * pair[:, 0], 2 * pair[:, 1], 2 * pair[:, 1] + 1, 2 * pair[:, 0] + 1))
+
+    # ----- Aperture at each strip node pair: Bandis-Barton at the nodes with mechanics, else the input
     aperture_nodal = aperture_gauss = _EMPTY_APERTURE
+    node_aperture = np.repeat(region_aperture[region][:, None], nne_f, axis=1)  # (ne_f, nne_f)
     if mechanics.interface.weights.size:
         aperture = fracture_aperture(mechanics.interface, primary_variables["u"][:, 0:1])
         aperture_nodal, aperture_gauss = aperture.element_nodal[:, :, 0], aperture.gauss[:, :, 0]
-        strip_aperture = aperture_nodal[:, _STRIP_NODE]
+        node_aperture = _fracture_node_aperture(mechanics.interface, faces, U)
+    # mean over the elements sharing the pair; they differ only in the contact penalty across regions
+    pair_count = np.bincount(pair.ravel(), minlength=n_pairs)
+    pair_aperture = np.bincount(pair.ravel(), node_aperture.ravel(), n_pairs) / pair_count
 
     # --- Calculate fluxes
     flux = compute_fluid_flux(fmesh, material, p, T_flow, True, controls["gravity"], aperture_nodal)
     scalardata_node = _build_point_scalars(controls, fmesh, material, p, T)
     scalardata_cell = _build_fracture_cell_data(fmesh, material, aperture_gauss)
 
-    # Face separation by the aperture along each element's normal
-    sign = np.where(strip_side == 0, 1.0, -1.0)
-    displacement = (sign * 0.5 * strip_aperture)[:, :, None] * normal[:, None, :]
+    vectordata_cell: list[dict[str, Any]] = []
 
-    if controls["physics"].solves("mechanics"):
+    # Face separation by the aperture along the fracture normal, (n_pairs, 2, nsd)
+    sign = np.array([1.0, -1.0])
+    displacement = (0.5 * pair_aperture[:, None, None] * sign[None, :, None]) * region_normal[pair_region][
+        :, None, :
+    ]
+
+    if mechanics_on:
         # total displacement of the face on each strip node's side
-        U = primary_variables["u"][:, 0].reshape(-1, nsd)
-        faces = fracture_face_nodes(mesh)
-        local = np.tile(_STRIP_NODE, (ne_f, 1))
-        rows = np.arange(ne_f)[:, None]
-        displacement = displacement + U[faces[rows, local, strip_side]]
+        displacement = displacement + U[pair_keys[:, 2:4]]
         scalardata_cell = scalardata_cell + _fracture_contact_cell_data(
             mesh, material, controls, primary_variables["u"][:, 0]
         )
+        if mechanics.interface.weights.size:
+            cohesive_scalars, vectordata_cell = _fracture_cohesive_cell_data(
+                mechanics.interface, primary_variables["u"][:, 0], primary_variables["history"]
+            )
+            scalardata_cell = scalardata_cell + cohesive_scalars
 
     scalardata_point = [{"name": f["name"], "data": f["data"][index]} for f in scalardata_node]
-    scalardata_point.append({"name": "aperture", "data": _sanitize(strip_aperture.ravel())})
+    scalardata_point.append({"name": "aperture", "data": _sanitize(np.repeat(pair_aperture, 2))})
     vectordata_point = [
         {"name": "flux", "data": _sanitize(flux.T[index])},
         {"name": "displacement", "data": _sanitize(displacement.reshape(-1, nsd))},
@@ -1014,10 +1079,11 @@ def _write_fracture_output(
         filename,
         "TANGO",
         strip_nodes,
-        strip_conn,
+        strip_conn.tolist(),
         scalardata_point,
         vectordata_point,
         scalardata_cell,
+        vectordata_cell,
     )
 
 

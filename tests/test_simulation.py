@@ -570,5 +570,35 @@ def test_fracture_closure() -> None:
     assert test_pass
 
 
+def test_cohesive_opening(tmp_path: Path) -> None:
+    """Check a cemented fracture opened, unloaded, and separated, and the same fracture debonded."""
+    case_dir = _test_data_dir()
+    test_name = "Cohesive Opening"
+    config_filename = test_checks.COHESIVE_CONFIG
+    results, mesh = test_checks.run_at_times(config_filename, case_dir, test_checks.COHESIVE_TIMES)
+
+    plot_on = False
+    test_pass = test_checks.check_cohesive_opening(
+        config_filename, case_dir, results, mesh, test_name, plot_on
+    )
+    assert test_pass
+
+    # initial damage 1: the same opening without traction
+    config_filename = test_checks.write_cohesive_debonded_config(case_dir, tmp_path)
+    results, mesh = test_checks.run_at_times(config_filename, tmp_path, [2.5, 5.0])
+    assert test_checks.check_cohesive_debonded(config_filename, tmp_path, results, mesh)
+
+
+def test_cohesive_shear(tmp_path: Path) -> None:
+    """Check a cemented fracture slid, unloaded, and debonded by a rigid upper block."""
+    test_name = "Cohesive Shear"
+    config_filename = test_checks.write_cohesive_shear_config(_test_data_dir(), tmp_path)
+    slip, force = test_checks.run_cohesive_shear(config_filename, tmp_path, test_checks.COHESIVE_TIMES)
+
+    plot_on = False
+    test_pass = test_checks.check_cohesive_shear(config_filename, tmp_path, slip, force, test_name, plot_on)
+    assert test_pass
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__]))

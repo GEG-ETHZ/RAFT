@@ -39,7 +39,17 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   `normal_stiffness` as the stress that halves it. The aperture sets fracture
   storage, conductance, leak-off, and heat exchange, and the displacement is
   coupled to fracture flow and heat in the Newton system. `Fracture.vtk`
-  writes the aperture and separates the faces by it.
+  writes the aperture, evaluated at the nodes shared by neighbouring
+  elements, and separates the faces by it.
+- **Cohesive fractures** — `material.fracture.cohesive` bonds the fracture
+  faces with a mixed-mode cohesive law (`linear`, `bilinear`, or `cubic`)
+  that carries tension and shear until the bond breaks, with per-fracture
+  tensile strength, shear strength, and fracture energy. Damage is
+  irreversible; `initial_conditions.fracture_damage` sets it per fracture, 1
+  for a debonded fracture. `mechanics_controls.damage_peak_smoothing_coefficient`
+  smooths the traction where loading turns to unloading. `Fracture.vtk` gains
+  the tangential jump and, with cohesion, the damage and the cohesive normal
+  and shear tractions.
 
 ### Changed
 

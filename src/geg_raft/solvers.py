@@ -25,6 +25,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
+from .history import COHESIVE_HISTORY
 from .matrixassembly import (
     integrate_enthlpy_bndry_residual,
     integrate_enthlpy_bndry_tangent,
@@ -34,9 +35,10 @@ from .matrixassembly import (
 )
 from .mechanicsdata import _NO_APERTURE, _NO_MECHANICS, MechanicsMatrices
 from .physics import Physics
-from .solidmechanics import fracture_aperture, fracture_contact, fracture_face_nodes, internal_force
+from .solidmechanics import fracture_aperture, fracture_face_nodes, fracture_interface_force, internal_force
 
 # Stagnation acceptance: no new minimum residual in this many iterations, within this factor of NR_tol
+_NO_HISTORY = np.empty(0)  # history variable not registered
 STAGNATION_WINDOW = 10
 STAGNATION_FACTOR = 10.0
 
@@ -494,10 +496,16 @@ def _newton_raphson_loop(  # noqa
             F_vec["F_u_internal"] = internal_force(mechanics, primary_variables, material, mesh["nn"])
             K_uu = mechanics.K_uu
             if mechanics.interface.weights.size:
-                # Fracture contact, the only nonlinear term of the force balance
-                contact_force, K_contact = fracture_contact(mechanics.interface, primary_variables["u"][:, 0])
-                F_vec["F_u_internal"] = F_vec["F_u_internal"] + contact_force
-                K_uu = sp.csc_matrix(K_uu + K_contact)
+                # Fracture contact and cohesion, the only nonlinear terms of the force balance
+                history = primary_variables["history"]
+                delta_max_c = history.committed.get(COHESIVE_HISTORY, _NO_HISTORY)
+                face_force, K_face, delta = fracture_interface_force(
+                    mechanics.interface, primary_variables["u"][:, 0], delta_max_c
+                )
+                if delta.size:
+                    history.trial[COHESIVE_HISTORY] = np.maximum(delta_max_c, delta)
+                F_vec["F_u_internal"] = F_vec["F_u_internal"] + face_force
+                K_uu = sp.csc_matrix(K_uu + K_face)
 
         # Update reaction flow rates in-loop when coupled, for the enthalpy boundary flux
         if solve_p and solve_T:

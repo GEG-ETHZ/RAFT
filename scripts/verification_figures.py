@@ -21,6 +21,7 @@ Run with `just verification-figures`.
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 import matplotlib
@@ -111,6 +112,23 @@ def _fracture_contact_figures() -> None:
         _save_open_figures(prefix, ["opening" if prefix == "sneddon" else "contact"])
 
 
+def _cohesive_figures() -> None:
+    """Cohesive opening and shear traction paths through loading, unloading, and separation."""
+    plt.close("all")
+    config = test_checks.COHESIVE_CONFIG
+    results, mesh = test_checks.run_at_times(config, CASE_DIR, test_checks.COHESIVE_TIMES)
+    test_checks.check_cohesive_opening(config, CASE_DIR, results, mesh, "Cohesive Opening", True)
+    _save_open_figures("cohesive", ["opening"])
+
+    plt.close("all")
+    with tempfile.TemporaryDirectory() as tmp:
+        shear_dir = Path(tmp)
+        config = test_checks.write_cohesive_shear_config(CASE_DIR, shear_dir)
+        slip, force = test_checks.run_cohesive_shear(config, shear_dir, test_checks.COHESIVE_TIMES)
+        test_checks.check_cohesive_shear(config, shear_dir, slip, force, "Cohesive Shear", True)
+    _save_open_figures("cohesive", ["shear"])
+
+
 def main_figures() -> None:
     """Run each case with plotting on and save its figures."""
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,6 +139,7 @@ def main_figures() -> None:
         _save_open_figures(prefix, suffixes)
     _consolidation_figures()
     _fracture_contact_figures()
+    _cohesive_figures()
 
 
 if __name__ == "__main__":

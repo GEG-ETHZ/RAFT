@@ -34,10 +34,11 @@ import numpy.typing as npt
 from scipy.sparse import csc_matrix, diags
 
 from .dofmap import field_layouts
-from .history import History
+from .history import COHESIVE_HISTORY, History
 from .logging_utils import RunLogger
 from .matprops import get_EOS
 from .mechanicsdata import MechanicsMatrices
+from .mechconstitutive import cohesive_initial_history
 from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
@@ -271,6 +272,7 @@ def _no_wells_problem(
         # displacement lives on matrix nodes only, unaffected by removing wells
         "u_dofs": primary_variables["u_dofs"],
         "u": primary_variables["u"].copy(),
+        "history": copy.deepcopy(primary_variables["history"]),
     }
 
     BC_no_wells = []
@@ -338,6 +340,7 @@ def _assign_ic_bc_compatible(
     primary_variables["T"][:nn_no_wells] = pv_no_wells["T"]
     primary_variables["q"][:nn_no_wells] = pv_no_wells["q"]
     primary_variables["u"][:, :] = pv_no_wells["u"]
+    primary_variables["history"] = pv_no_wells["history"]
     primary_variables["T"][nn_no_wells:] = config_ini["T_ini"]  # fallback for wells never inside the domain
     if "well_mesh" in mesh:
         primary_variables = _assign_well_ic_from_matrix(
@@ -535,6 +538,12 @@ def _assign_initial_conditions(
             print("     Integrating force-balance matrices...")
         mechanics = integrate_mechanics_matrices(mesh, material, controls)
 
+    # Cohesive history from the initial damage
+    cohesive = mechanics.interface.cohesive
+    if cohesive.law:
+        D_0 = material["fracture"]["cohesive_elements"]["D_0"][mechanics.interface.element]
+        primary_variables["history"].add(COHESIVE_HISTORY, cohesive_initial_history(D_0, cohesive))
+
     assign_type = config_ini["assignment"]
     supported_types = ["constant", "gradient", "BC_compatible"]
 
@@ -555,6 +564,8 @@ def _assign_initial_conditions(
             verbose,
             mechanics,
         )
+        # accept the damage of the initial equilibrium
+        primary_variables["history"].commit()
     else:
         raise ValueError(
             f"Unknown initial condition assignment type: '{assign_type}'\n"

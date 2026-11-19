@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Linear (thermo-poro)elastic force balance of the matrix, with fracture face loads and contact.
+"""Linear (thermo-poro)elastic force balance of the matrix, with fracture face loads, contact, and cohesion.
 
 Voigt order: 2D [xx, yy, xy]; axisymmetric [rr, zz, rz, tt]; 3D [xx, yy, zz, xz, yz, xy].
 Shear strains are engineering strains; shear stresses are tensor components.
@@ -32,7 +32,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-from scipy.sparse import csc_matrix, diags
+from scipy.sparse import coo_matrix, csc_matrix, diags
 from scipy.sparse.linalg import splu
 
 from .dofmap import get_scatter
@@ -47,8 +47,14 @@ from .matrixassembly import (
     _pad_sparse,
     _vctrzd_quad_point_integration,
 )
-from .mechanicsdata import FractureAperture, FractureInterface, MechanicsMatrices
-from .mechconstitutive import bandis_barton_aperture, elasticity_matrix, penalty_contact
+from .mechanicsdata import CohesiveParameters, FractureAperture, FractureInterface, MechanicsMatrices
+from .mechconstitutive import (
+    bandis_barton_aperture,
+    cohesive_scales,
+    cohesive_traction,
+    elasticity_matrix,
+    penalty_contact,
+)
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 
 # Stress component names in Voigt order, for output
@@ -239,7 +245,8 @@ def internal_force(
     """Internal force K_uu u + K_up (p - p_0) + K_uT (T - T_0) - F_fracture_0 at the current iterate.
 
     The matrix columns of K_up act on the change from p_0 and the fracture columns on the total
-    fracture pressure, which loads the faces. Fracture contact is added separately (`fracture_contact`).
+    fracture pressure, which loads the faces. Fracture contact and cohesion are added separately
+    (`fracture_interface_force`).
     """
     u = primary_variables["u"][:, 0:1]
     dp = primary_variables["p"][:, 0:1] - material["p_0"].reshape(-1, 1)
@@ -596,6 +603,7 @@ def integrate_fracture_interface(
         shape=(n_q, mesh["nn_total"]),
     )
     w = np.concatenate(weights)
+    element_q = np.concatenate(element)
 
     K_upf = csc_matrix(-(jump_normal.T @ diags(w) @ shape_f))
     F_fracture_0 = np.asarray(jump.T @ (w[:, None] * np.vstack(traction_0)).ravel()).reshape(-1, 1)
@@ -604,26 +612,70 @@ def integrate_fracture_interface(
         jump_normal,
         w,
         np.concatenate(penalty),
-        np.concatenate(element),
+        element_q,
         np.concatenate(w_m),
         np.concatenate(K_w),
         points_e,
         projection,
+        normal,
+        _cohesive_parameters(material, controls, element_q),
     )
     return interface, K_upf, F_fracture_0
 
 
-def fracture_contact(
-    interface: FractureInterface, u: npt.NDArray[np.float64]
-) -> tuple[npt.NDArray[np.float64], csc_matrix]:
-    """Penalty contact residual -int [[N_u]]^T sigma_c n, (nsd*nn, 1), and its tangent at displacement u."""
-    g_n = interface.jump_normal @ u
+def _cohesive_parameters(
+    material: dict[str, Any], controls: dict[str, Any], element: npt.NDArray[np.int64]
+) -> CohesiveParameters:
+    """Cohesive parameters at the fracture Gauss points of the given elements; empty without cohesion."""
+    if "cohesive_elements" not in material["fracture"]:
+        return CohesiveParameters.empty()
+    cohesive = material["fracture"]["cohesive"]
+    elements = material["fracture"]["cohesive_elements"]
+    law = cohesive["law"]
+    weakening_ratio = float(cohesive.get("weakening_ratio", 0.0))
+    f_u = elements["f_u"][element]
+    w_c, delta_p = cohesive_scales(law, f_u, elements["G_c"][element], weakening_ratio)
+    c_eps = controls["mechanics_controls"]["damage_peak_smoothing_coefficient"]
+    gamma = elements["gamma"][element]
+    return CohesiveParameters(law, weakening_ratio, f_u, gamma, w_c, delta_p, c_eps * w_c)
+
+
+def fracture_interface_force(
+    interface: FractureInterface, u: npt.NDArray[np.float64], delta_max_c: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], csc_matrix, npt.NDArray[np.float64]]:
+    """Face force int [[N_u]]^T t_f, (nsd*nn, 1), its tangent, and the cohesive effective displacement
+    (nq,) at displacement u, with t_f = t_coh - sigma_c n.
+
+    Without cohesion (empty delta_max_c) t_f is the contact traction and the effective displacement empty.
+    """
+    normal = interface.normal
+    nq, nsd = normal.shape
+    jump = (interface.jump @ u).reshape(nq, nsd)
+
+    # contact: -sigma_c n and tangent -dsigma_c/dg_n n n^T
+    g_n = np.sum(jump * normal, axis=1)
     sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.penalty)
-    residual = -(interface.jump_normal.T @ (interface.weights * sigma_c)).reshape(-1, 1)
-    tangent = csc_matrix(
-        interface.jump_normal.T @ diags(-interface.weights * dsigma_c_dg) @ interface.jump_normal
+    traction = -sigma_c[:, None] * normal
+    tangent_q = -dsigma_c_dg[:, None, None] * (normal[:, :, None] * normal[:, None, :])  # (nq, nsd, nsd)
+
+    # cohesion
+    delta = np.empty(0)
+    if delta_max_c.size:
+        t_coh, D_coh, delta = cohesive_traction(jump, normal, delta_max_c, interface.cohesive)
+        traction = traction + t_coh
+        tangent_q = tangent_q + D_coh
+
+    # integrate through the jump operator with the block-diagonal point tangents
+    w = interface.weights
+    residual = (interface.jump.T @ (w[:, None] * traction).ravel()).reshape(-1, 1)
+    rows = nsd * np.arange(nq)[:, None, None] + np.arange(nsd)[None, :, None]  # (nq, nsd, 1)
+    cols = nsd * np.arange(nq)[:, None, None] + np.arange(nsd)[None, None, :]  # (nq, 1, nsd)
+    rows, cols = np.broadcast_arrays(rows, cols)
+    block = coo_matrix(
+        ((w[:, None, None] * tangent_q).ravel(), (rows.ravel(), cols.ravel())), shape=(nsd * nq, nsd * nq)
     )
-    return residual, tangent
+    tangent = csc_matrix(interface.jump.T @ block.tocsc() @ interface.jump)
+    return residual, tangent, delta
 
 
 def fracture_aperture(interface: FractureInterface, u: npt.NDArray[np.float64]) -> FractureAperture:
