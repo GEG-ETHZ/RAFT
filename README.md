@@ -472,6 +472,7 @@ Numerical solver controls
   * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.
   * **`aitken_bounds`** *(list of 2 floats, default: `[0.01, 10.0]`)*: Minimum and maximum magnitude of the Aitken relaxation factor, `0 < min <= max`; the factor keeps its sign.
   * **`NR_step`** *(float, default: `1.0`)*: Newton-Raphson step/line-search size; scales each iteration's solution update before any Aitken relaxation is applied.
+  * **`predictor`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) the initial guess of each step extrapolated from the previous steps, following `rate_order`, for the displacement and the transient pressure. It is skipped on steps whose extrapolation spans a change time of a `table` or `ramp` boundary condition.
 
 ## Coupling API
 `raft.RaftModel` couples RAFT to an external simulator running in the same Python process that sets the boundary conditions. The RaftModel relies on the external simulator to determine when a coupling timestep is converged and requires an explicit call to accept the trial state and proceed to the next timestep. Every `solve` restarts from the last accepted state, so it can be repeated as often as needed.

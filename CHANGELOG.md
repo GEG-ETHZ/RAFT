@@ -56,6 +56,10 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   acceleration that follows `rate_order`.
 - **Aitken bounds** — `iterative_controls.aitken_bounds` sets the minimum and
   maximum magnitude of the Aitken relaxation factor, `[0.01, 10.0]` by default.
+- **Step predictor** — each step's Newton solve starts from the displacement and
+  transient pressure extrapolated from the previous steps, except where the
+  extrapolation spans a boundary-condition change time.
+  `iterative_controls.predictor` turns it off.
 
 ### Changed
 

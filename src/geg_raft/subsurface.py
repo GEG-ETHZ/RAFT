@@ -43,7 +43,7 @@ from .parseboundaryconditions import evaluateBCfunctions, parsebcs
 from .postprocessing import export_domain_properties, postprocessing, prepare_output_directory
 from .preprocessing import preprocessing
 from .solidmechanics import insitu_stress, integrate_mechanics_matrices
-from .solvers import monolithic_time_integration, operator_split_time_integration
+from .solvers import monolithic_time_integration, operator_split_time_integration, rate_coefficients
 
 
 class TimestepError(RuntimeError):
@@ -162,6 +162,35 @@ def _update_time(  # noqa
     if verbose:
         print(f"    Next timestep: {dt[0]:.2e}")
     return t, dt, True
+
+
+def _predict_step(
+    primary_variables: dict[str, Any],
+    dt: list[float],
+    controls: dict[str, Any],
+    t_prev: float,
+    critical_times: npt.NDArray[np.float64],
+) -> None:
+    """Initial guess of u and of transient p extrapolated from the previous time levels.
+
+    Switched by iterative_controls.predictor; skipped while an extrapolated step starts at a critical time.
+    """
+    if not controls["iterative_controls"]["predictor"]:
+        return
+    # start times of this step and of the previous steps the extrapolation uses
+    order = controls["rate_order"]
+    starts = t_prev - np.cumsum([0.0, *dt[1 : order + 1]])
+    if np.isclose(critical_times[:, None], starts[None, :], rtol=1.0e-12, atol=1.0e-12).any():
+        return
+    physics = controls["physics"]
+    domains = (physics.matrix, physics.fractures, physics.wells)
+    keys = ["u"] if physics.solves("mechanics") else []
+    if any(d.flow == "transient" for d in domains):
+        keys.append("p")
+    _, _, cx = rate_coefficients(dt, order)
+    for key in keys:
+        levels = primary_variables[key]
+        levels[:, 0] = cx[0] * levels[:, 1] + cx[1] * levels[:, 2] + cx[2] * levels[:, 3]
 
 
 def get_critical_times(BC_config: list[dict[str, Any]]) -> npt.NDArray[np.float64]:
@@ -893,6 +922,8 @@ def advance(  # noqa
     dt = list(state.dt_hist[0:3])
     t, dt = _clamp_to_critical(state.t, dt, critical_times)
     t0 = state.t
+    # loading may change at the start of a call as well as at the BC change times
+    predict_skip = np.union1d(setup.critical_times, [t0])
 
     while True:
         # Loop through timesteps; every attempt is reported, so cut and retried steps show up
@@ -908,6 +939,9 @@ def advance(  # noqa
 
             # Update Boundary Conditions
             boundary_conditions = parsebcs(BC_config, mesh, primary_variables, t, controls)
+
+            # Initial guess extrapolated from the previous steps
+            _predict_step(primary_variables, dt, controls, t - dt[0], predict_skip)
 
             # Perform time integration
             primary_variables, dt, converged, timestep_error = _perform_time_integration(

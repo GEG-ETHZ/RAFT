@@ -114,6 +114,7 @@ DEFAULTS: dict[str, Any] = {
             "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
             "aitken_bounds": [0.01, 10.0],  # [min, max] magnitude of the Aitken relaxation factor
             "NR_step": 1,  # Newton-Raphson line step size
+            "predictor": 1,  # Turn on/off the extrapolated initial guess of each step
         },
     },
 }
