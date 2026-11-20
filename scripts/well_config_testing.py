@@ -21,7 +21,7 @@ import shutil
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Literal, TypedDict, cast
 
 import yaml
 
@@ -32,8 +32,18 @@ from raft.subsurface import main  # noqa: E402
 
 BASE_CONFIG = ROOT / "config" / "config_symmetric_doublet.yaml"
 TARGET_OUTPUT_ROOT = "outputs/symmetric_doublet"
+Verbosity = Literal["quiet", "lite", "full"]
 
-CASE_DEFS = [
+
+class CaseDef(TypedDict):
+    """One well-config test case definition."""
+
+    title: str
+    gravity: float
+    te_cooling: bool
+
+
+CASE_DEFS: list[CaseDef] = [
     {
         "title": "1 (no gravity with TE cooling)",
         "gravity": 0.0,
@@ -74,7 +84,7 @@ def _output_subfolder(title: str) -> str:
     return title.replace("/", "-")
 
 
-def run_all_cases(verbosity: str = "lite") -> None:
+def run_all_cases(verbosity: Verbosity = "lite") -> None:
     """Run all requested cases and place outputs in dedicated symmetric-doublet subfolders."""
     with BASE_CONFIG.open(encoding="utf-8") as f:
         base_cfg = yaml.safe_load(f)
@@ -116,7 +126,7 @@ def main_cli() -> None:
         help="RAFT console output verbosity for each case.",
     )
     args = parser.parse_args()
-    run_all_cases(verbosity=args.verbosity)
+    run_all_cases(verbosity=cast(Verbosity, args.verbosity))
 
 
 if __name__ == "__main__":
