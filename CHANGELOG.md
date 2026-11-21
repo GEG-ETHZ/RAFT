@@ -50,6 +50,11 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   smooths the traction where loading turns to unloading. `Fracture.vtk` gains
   the tangential jump and, with cohesion, the damage and the cohesive normal
   and shear tractions.
+- **Interface viscosity** — `mechanics_controls.interface_viscosity_coefficient`
+  adds a traction proportional to the jump rate on bonded fracture points, to
+  stabilize the softening branch, with a viscosity scaled by the steepest
+  softening slope and the step size. `Fracture.vtk` gains the viscous traction and
+  the energy it dissipates.
 - **Solid inertia** — `physics.matrix.mechanics: dynamic` adds the inertial
   term to the force balance, with a consistent mass matrix from the bulk density
   at the reference state, integrated once, and a backward-difference

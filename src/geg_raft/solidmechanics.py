@@ -51,6 +51,7 @@ from .mechanicsdata import CohesiveParameters, FractureAperture, FractureInterfa
 from .mechconstitutive import (
     bandis_barton_aperture,
     cohesive_scales,
+    cohesive_softening_slope,
     cohesive_traction,
     elasticity_matrix,
     penalty_contact,
@@ -545,6 +546,7 @@ def integrate_fracture_interface(
     weights: list[npt.NDArray[np.float64]] = []
     penalty: list[npt.NDArray[np.float64]] = []
     element: list[npt.NDArray[np.int64]] = []
+    fracture: list[npt.NDArray[np.int64]] = []
     w_m: list[npt.NDArray[np.float64]] = []
     K_w: list[npt.NDArray[np.float64]] = []
     normals: list[npt.NDArray[np.float64]] = []
@@ -599,6 +601,7 @@ def integrate_fracture_interface(
             weights.append(np.asarray(wJ, dtype=np.float64).ravel())
             penalty.append(np.full(nq, penalty_e[e]))
             element.append(np.full(nq, e, dtype=np.int64))
+            fracture.append(np.full(nq, r, dtype=np.int64))
             w_m.append(np.full(nq, w_m_e[e]))
             K_w.append(np.full(nq, K_w_r))
             # lumped projection of Gauss values to the element nodes: N_a w_q / sum_q N_a w_q
@@ -633,40 +636,49 @@ def integrate_fracture_interface(
         w,
         np.concatenate(penalty),
         element_q,
+        np.concatenate(fracture),
         np.concatenate(w_m),
         np.concatenate(K_w),
         points_e,
         projection,
         normal,
-        _cohesive_parameters(material, controls, element_q),
+        _cohesive_parameters(material, controls),
     )
     return interface, K_upf, F_fracture_0
 
 
-def _cohesive_parameters(
-    material: dict[str, Any], controls: dict[str, Any], element: npt.NDArray[np.int64]
-) -> CohesiveParameters:
-    """Cohesive parameters at the fracture Gauss points of the given elements; empty without cohesion."""
-    if "cohesive_elements" not in material["fracture"]:
+def _cohesive_parameters(material: dict[str, Any], controls: dict[str, Any]) -> CohesiveParameters:
+    """Cohesive parameters per fracture; empty without cohesion."""
+    if "cohesive_fractures" not in material["fracture"]:
         return CohesiveParameters.empty()
     cohesive = material["fracture"]["cohesive"]
-    elements = material["fracture"]["cohesive_elements"]
+    fractures = material["fracture"]["cohesive_fractures"]
     law = cohesive["law"]
     weakening_ratio = float(cohesive.get("weakening_ratio", 0.0))
-    f_u = elements["f_u"][element]
-    w_c, delta_p = cohesive_scales(law, f_u, elements["G_c"][element], weakening_ratio)
+    f_u = fractures["f_u"]
+    w_c, delta_p = cohesive_scales(law, f_u, fractures["G_c"], weakening_ratio)
     c_eps = controls["mechanics_controls"]["damage_peak_smoothing_coefficient"]
-    gamma = elements["gamma"][element]
-    return CohesiveParameters(law, weakening_ratio, f_u, gamma, w_c, delta_p, c_eps * w_c)
+    gamma = fractures["gamma"]
+    beta = controls["mechanics_controls"]["interface_viscosity_coefficient"]
+    k_v = beta * cohesive_softening_slope(law, f_u, w_c, delta_p)
+    return CohesiveParameters(law, weakening_ratio, f_u, gamma, w_c, delta_p, c_eps * w_c, k_v)
 
 
 def fracture_interface_force(
-    interface: FractureInterface, u: npt.NDArray[np.float64], delta_max_c: npt.NDArray[np.float64]
-) -> tuple[npt.NDArray[np.float64], csc_matrix, npt.NDArray[np.float64]]:
-    """Face force int [[N_u]]^T t_f, (nsd*nn, 1), its tangent, and the cohesive effective displacement
-    (nq,) at displacement u, with t_f = t_coh - sigma_c n.
+    interface: FractureInterface,
+    u: npt.NDArray[np.float64],
+    delta_max_c: npt.NDArray[np.float64],
+    u_rate: npt.NDArray[np.float64],
+    cv_0: float,
+    dt_n: float,
+) -> tuple[npt.NDArray[np.float64], csc_matrix, npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Face force int [[N_u]]^T t_f, (nsd*nn, 1), its tangent, the cohesive effective displacement (nq,),
+    and the viscous traction (nq, nsd) at displacement u, with t_f = t_coh + t_v - sigma_c n.
 
-    Without cohesion (empty delta_max_c) t_f is the contact traction and the effective displacement empty.
+    The viscous traction t_v = eta (n n^T + gamma P_t) d[[u]]/dt, eta = k_v dt_n, acts on bonded points,
+    delta_max_c < w_c, with the rate from u_rate = sum_j c_v,j u_(n-j) and cv_0 its coefficient of u.
+    Without cohesion (empty delta_max_c) t_f is the contact traction, and the effective displacement and
+    viscous traction are empty.
     """
     normal = interface.normal
     nq, nsd = normal.shape
@@ -680,10 +692,22 @@ def fracture_interface_force(
 
     # cohesion
     delta = np.empty(0)
+    t_v = np.empty((0, nsd))
     if delta_max_c.size:
-        t_coh, D_coh, delta = cohesive_traction(jump, normal, delta_max_c, interface.cohesive)
+        cohesive = interface.cohesive.at(interface.fracture)
+        t_coh, D_coh, delta = cohesive_traction(jump, normal, delta_max_c, cohesive)
         traction = traction + t_coh
         tangent_q = tangent_q + D_coh
+
+        # viscosity on bonded points: t_v = eta P_eta d[[u]]/dt, P_eta = n n^T + gamma (I - n n^T)
+        eta = np.where(delta_max_c < cohesive.w_c, cohesive.k_v * dt_n, 0.0)
+        if np.any(eta > 0.0):
+            nn_T = normal[:, :, None] * normal[:, None, :]  # (nq, nsd, nsd)
+            P_eta = nn_T + cohesive.gamma[:, None, None] * (np.eye(nsd) - nn_T)
+            jump_rate = (interface.jump @ u_rate).reshape(nq, nsd)
+            t_v = eta[:, None] * (P_eta @ jump_rate[:, :, None])[:, :, 0]
+            traction = traction + t_v
+            tangent_q = tangent_q + cv_0 * eta[:, None, None] * P_eta
 
     # integrate through the jump operator with the block-diagonal point tangents
     w = interface.weights
@@ -695,7 +719,7 @@ def fracture_interface_force(
         ((w[:, None, None] * tangent_q).ravel(), (rows.ravel(), cols.ravel())), shape=(nsd * nq, nsd * nq)
     )
     tangent = csc_matrix(interface.jump.T @ block.tocsc() @ interface.jump)
-    return residual, tangent, delta
+    return residual, tangent, delta, t_v
 
 
 def fracture_aperture(interface: FractureInterface, u: npt.NDArray[np.float64]) -> FractureAperture:

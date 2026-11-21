@@ -24,6 +24,8 @@ import numpy as np
 import numpy.typing as npt
 
 COHESIVE_HISTORY = "cohesive_delta_max"  # (nq,) maximum effective displacement per fracture Gauss point
+VISCOUS_DISSIPATION = "viscous_dissipation"  # (nq,) energy per area dissipated by the interface viscosity
+VISCOUS_TRACTION = "viscous_traction"  # (nq, nsd) interface viscous traction of the step, for output
 
 
 @dataclass(slots=True)

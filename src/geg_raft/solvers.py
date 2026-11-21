@@ -25,7 +25,7 @@ import numpy.typing as npt
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
-from .history import COHESIVE_HISTORY
+from .history import COHESIVE_HISTORY, VISCOUS_DISSIPATION, VISCOUS_TRACTION
 from .matrixassembly import (
     integrate_enthlpy_bndry_residual,
     integrate_enthlpy_bndry_tangent,
@@ -434,6 +434,7 @@ def _newton_raphson_loop(  # noqa
     *,
     physics: Physics,
     T_flow_lagged: bool,
+    dt_n: float,
     mechanics: MechanicsMatrices = _NO_MECHANICS,
 ) -> tuple[dict[str, Any], bool, float]:
     """Perform non-linear Newton-Raphson iterations for the fields `physics` solves.
@@ -544,11 +545,20 @@ def _newton_raphson_loop(  # noqa
                 # Fracture contact and cohesion, the only nonlinear terms of the force balance
                 history = primary_variables["history"]
                 delta_max_c = history.committed.get(COHESIVE_HISTORY, _NO_HISTORY)
-                face_force, K_face, delta = fracture_interface_force(
-                    mechanics.interface, primary_variables["u"][:, 0], delta_max_c
+                u_levels = primary_variables["u"]
+                u_rate = u_levels[:, 0:3] @ cv  # (nsd*nn, 3) @ (3,)
+                face_force, K_face, delta, t_v = fracture_interface_force(
+                    mechanics.interface, u_levels[:, 0], delta_max_c, u_rate, cv[0], dt_n
                 )
                 if delta.size:
                     history.trial[COHESIVE_HISTORY] = np.maximum(delta_max_c, delta)
+                if t_v.size:
+                    # dissipation t_v . ([[u]]^n - [[u]]^(n-1)) added to the committed total
+                    u_step = u_levels[:, 0] - u_levels[:, 1]
+                    jump_step = (mechanics.interface.jump @ u_step).reshape(t_v.shape)
+                    dissipated = np.sum(t_v * jump_step, axis=1)
+                    history.trial[VISCOUS_DISSIPATION] = history.committed[VISCOUS_DISSIPATION] + dissipated
+                    history.trial[VISCOUS_TRACTION] = t_v
                 F_vec["F_u_internal"] = F_vec["F_u_internal"] + face_force
                 K_uu = sp.csc_matrix(K_uu + K_face)
 
@@ -870,6 +880,7 @@ def operator_split_time_integration(  # noqa
             export_unconverged,
             physics=physics.with_off("heat"),
             T_flow_lagged=False,
+            dt_n=dt[0],
             mechanics=mechanics,
         )
     else:
@@ -898,6 +909,7 @@ def operator_split_time_integration(  # noqa
             export_unconverged,
             physics=physics.with_off("flow").with_off("mechanics"),
             T_flow_lagged=True,
+            dt_n=dt[0],
             mechanics=mechanics,
         )
     else:
@@ -968,6 +980,7 @@ def monolithic_time_integration(  # noqa
         export_unconverged,
         physics=physics,
         T_flow_lagged=False,
+        dt_n=dt[0],
         mechanics=mechanics,
     )
 

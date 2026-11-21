@@ -586,7 +586,8 @@ def test_fracture_closure() -> None:
 
 
 def test_cohesive_opening(tmp_path: Path) -> None:
-    """Check a cemented fracture opened, unloaded, and separated, and the same fracture debonded."""
+    """Check a cemented fracture opened, unloaded, and separated, with and without interface viscosity, and
+    the same fracture debonded."""
     case_dir = _test_data_dir()
     test_name = "Cohesive Opening"
     config_filename = test_checks.COHESIVE_CONFIG
@@ -597,6 +598,13 @@ def test_cohesive_opening(tmp_path: Path) -> None:
         config_filename, case_dir, results, mesh, test_name, plot_on
     )
     assert test_pass
+
+    # interface viscosity: the same path once the viscous traction is removed
+    viscous_dir = tmp_path / "viscous"
+    viscous_dir.mkdir()
+    config_filename = test_checks.write_cohesive_viscous_config(case_dir, viscous_dir)
+    results, mesh = test_checks.run_at_times(config_filename, viscous_dir, test_checks.COHESIVE_TIMES)
+    assert test_checks.check_cohesive_opening(config_filename, viscous_dir, results, mesh, test_name, plot_on)
 
     # initial damage 1: the same opening without traction
     config_filename = test_checks.write_cohesive_debonded_config(case_dir, tmp_path)

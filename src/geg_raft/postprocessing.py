@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from .history import COHESIVE_HISTORY, History
+from .history import COHESIVE_HISTORY, VISCOUS_DISSIPATION, VISCOUS_TRACTION, History
 from .matprops import get_EOS, get_porosity, get_porosity_lagrangian, get_viscosity
 from .matrixassembly import _get_quad_points_and_shape_functions, _get_region_value
 from .mechanicsdata import _NO_MECHANICS, FractureInterface, MechanicsMatrices
@@ -947,8 +947,9 @@ def _fracture_contact_cell_data(
 def _fracture_cohesive_cell_data(
     interface: FractureInterface, u: npt.NDArray[np.float64], history: History
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Per-element means of the tangential jump and, with cohesion, the damage and the cohesive normal
-    and shear tractions at the solved displacement u: (scalar cell data, vector cell data).
+    """Per-element means of the tangential jump and, with cohesion, the damage, the cohesive normal and
+    shear tractions, and, with interface viscosity, the viscous traction and dissipated energy per area at
+    the solved displacement u: (scalar cell data, vector cell data).
     """
     normal = interface.normal
     nq, nsd = normal.shape
@@ -960,15 +961,23 @@ def _fracture_cohesive_cell_data(
         return [], vectors
 
     # traction with the history of the solve, damage with the history it reached
-    t_coh, _, _ = cohesive_traction(jump, normal, history.committed[COHESIVE_HISTORY], interface.cohesive)
+    cohesive = interface.cohesive.at(interface.fracture)
+    t_coh, _, _ = cohesive_traction(jump, normal, history.committed[COHESIVE_HISTORY], cohesive)
     t_n = np.sum(t_coh * normal, axis=1)
-    damage = cohesive_damage(history.trial[COHESIVE_HISTORY], interface.cohesive)
+    damage = cohesive_damage(history.trial[COHESIVE_HISTORY], cohesive)
     scalars = [
         {"name": "damage", "data": _sanitize(damage[points].mean(axis=1))},
         {"name": "cohesive_normal_traction", "data": _sanitize(t_n[points].mean(axis=1))},
     ]
     t_shear = t_coh - t_n[:, None] * normal
     vectors.append({"name": "cohesive_shear_traction", "data": _sanitize(t_shear[points].mean(axis=1))})
+
+    # interface viscosity of the solved step
+    if VISCOUS_TRACTION in history.trial:
+        t_v = history.trial[VISCOUS_TRACTION]
+        dissipation = history.trial[VISCOUS_DISSIPATION]
+        vectors.append({"name": "viscous_traction", "data": _sanitize(t_v[points].mean(axis=1))})
+        scalars.append({"name": "viscous_dissipation", "data": _sanitize(dissipation[points].mean(axis=1))})
     return scalars, vectors
 
 

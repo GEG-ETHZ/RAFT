@@ -280,7 +280,13 @@ The traction vector splits $t$ between the opening and the tangential jump, with
 
 $$\vec{t}_{coh} = t\left( \frac{\langle g_n\rangle\vec{n}}{\Delta}  + \gamma\frac{\vec{g}_t}{\Delta}\right)$$
 
-so pure shear peaks at $s_u$ and dissipates $\gamma G_c$. Its tangent is
+An optional interface viscosity adds a traction proportional to the jump rate on bonded points, $\Delta_{max}^{c} < w_c$, weighted between opening and shear as the cohesive traction is. The viscosity is scaled by the steepest softening slope and the step size, $\eta = \beta|k_c|_{max}\Delta t$, with $\beta$ the `interface_viscosity_coefficient`, so it adds a stiffness of about $\beta|k_c|_{max}$ at any step size:
+
+$$\vec{t}_v = \eta\left(\vec{n}\vec{n}^\top + \gamma\left(\textbf{I} - \vec{n}\vec{n}^\top\right)\right)\dot{[\![\vec{u}]\!]}, \qquad \dot{[\![\vec{u}]\!]} = \sum_j c_{v,j}[\![\vec{u}]\!]^{n-j}$$
+
+The normal rate is signed, so the term adds no switch at $g_n = 0$. Its tangent, $c_{v,0}\eta$ per unit area, offsets the negative slope $k_c$ of the softening branch, so a point stays stable while $c_{v,0}\eta + k_c + k_e > 0$, with $k_e$ the stiffness of the surrounding matrix. It is a regularization: the dissipated energy $\int\vec{t}_v\cdot d[\![\vec{u}]\!]$ grows with the opening rate and is written out to compare with $G_c$. The initial-condition solve runs without it.
+
+Pure shear peaks at $s_u$ and dissipates $\gamma G_c$. Its tangent is
 
 $$\frac{\partial\vec{t}_{coh}}{\partial[\![\vec{u}]\!]} = \frac{t}{\Delta}\left(H(g_n)\,\vec{n}\vec{n}^\top + \gamma\left(\textbf{I} - \vec{n}\vec{n}^\top\right)\right) + \frac{1}{\Delta^2}\left(\frac{dt}{d\Delta} - \frac{t}{\Delta}\right)\left(\langle g_n\rangle\,\vec{n} + \gamma\,\vec{g}_t\right)\left(\langle g_n\rangle\,\vec{n} + \vec{g}_t\right)^\top$$
 

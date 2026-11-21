@@ -1845,7 +1845,9 @@ def check_cohesive_opening(
     """Block opened across a cemented fracture: the traction follows the cubic envelope on loading and the
     secant on unloading, vanishes once separated, and dissipates G_c.
 
-    The fields are uniform, so the matrix stress sigma_yy is the cohesive traction.
+    The fields are uniform, so the matrix stress sigma_yy is the interface traction. With interface
+    viscosity, eta = beta |k_c|_max dt, the viscous traction eta dg_n/dt on bonded steps is removed first,
+    with the solver's first-order rate.
     """
     # Set tolerance
     tol_uniform = 1.0e-6
@@ -1857,10 +1859,18 @@ def check_cohesive_opening(
     cohesive = config["material"]["fracture"]["cohesive"]
     f_u, G_c = cohesive["tensile_strength"][0], cohesive["fracture_energy"][0]
     w_c = 16.0 * G_c / (9.0 * f_u)
+    dt = config["simulation"]["timestep"]
+    beta = config["simulation"].get("mechanics_controls", {}).get("interface_viscosity_coefficient", 0.0)
+    eta = beta * 2.25 * f_u / w_c * dt
     opening, traction, spread = _opening_traction(config_name, config_dir, results, mesh)
 
-    # envelope down to the unloading point, secant below it
+    # viscous traction on steps that start bonded
     delta_max = np.maximum.accumulate(opening)
+    bonded = np.r_[0.0, delta_max[:-1]] < w_c
+    rate = np.diff(np.r_[0.0, opening]) / dt
+    traction = traction - np.where(bonded, eta * rate, 0.0)
+
+    # envelope down to the unloading point, secant below it
     expected = _cubic_history_traction(opening, delta_max, f_u, G_c)
     err_traction = np.abs(traction - expected).max() / f_u
     separated = np.abs(traction[delta_max >= w_c]).max() / f_u
@@ -1918,6 +1928,18 @@ def write_cohesive_shear_config(case_dir: Path, out_dir: Path) -> str:
     return COHESIVE_CONFIG
 
 
+def write_cohesive_viscous_config(case_dir: Path, out_dir: Path) -> str:
+    """Write the cohesive opening case with interface viscosity into `out_dir`, returning its config name.
+
+    eta dg_n/dt is about a tenth of the tensile strength on the first loading.
+    """
+    config = yaml.safe_load((case_dir / COHESIVE_CONFIG).read_text())
+    config["simulation"].setdefault("mechanics_controls", {})["interface_viscosity_coefficient"] = 3.0
+    (out_dir / COHESIVE_CONFIG).write_text(yaml.safe_dump(config))
+    shutil.copy(case_dir / config["mesh"]["file"], out_dir)
+    return COHESIVE_CONFIG
+
+
 def write_cohesive_debonded_config(case_dir: Path, out_dir: Path) -> str:
     """Write the cohesive opening case with initial damage 1 into `out_dir`, returning its config name."""
     config = yaml.safe_load((case_dir / COHESIVE_CONFIG).read_text())
@@ -1948,7 +1970,7 @@ def run_cohesive_shear(
         delta_max_c = state.primary_variables["history"].committed[COHESIVE_HISTORY].copy()
         state, _ = advance(setup, state, t, False)
         u = state.primary_variables["u"][:, 0]
-        face_force, _, _ = fracture_interface_force(interface, u, delta_max_c)
+        face_force, _, _, _ = fracture_interface_force(interface, u, delta_max_c, np.zeros_like(u), 0.0, 0.0)
         jump_x = (interface.jump @ u)[0::2]
         slip[i] = jump_x.mean()
         # force driving the upper block, balancing the cohesive resistance

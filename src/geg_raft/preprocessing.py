@@ -105,8 +105,9 @@ DEFAULTS: dict[str, Any] = {
         "mechanics_controls": {
             "plane": "strain",  # 2D mechanics: "strain" or "stress"
             "stress_recovery": "element",  # stress output: "element" (cells), "average" or "L2" (nodes)
-            "penalty_factor": 10.0,  # c_N in the fracture contact penalty eps_N = c_N E / h
-            "damage_peak_smoothing_coefficient": 1.0e-3,  # c_eps in the smoothing half-width c_eps w_c
+            "penalty_factor": 1.0,  # c_N in the fracture contact penalty eps_N = c_N E / h
+            "damage_peak_smoothing_coefficient": 1.0e-2,  # c_eps in the smoothing half-width c_eps w_c
+            "interface_viscosity_coefficient": 0.0,  # beta in eta = beta |k_c|_max dt; 0 turns it off
         },
         "iterative_controls": {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
@@ -528,9 +529,7 @@ def _calculate_cohesive_properties(
 ) -> None:
     """Validate the cohesive inputs and store them per fracture element."""
     cohesive = material["fracture"]["cohesive"]
-    fmesh = mesh["fracture_mesh"]
-    region_lists = fmesh["region_lists"]
-    num_fractures = len(region_lists)
+    num_fractures = len(mesh["fracture_mesh"]["region_lists"])
 
     # global law
     law = cohesive.get("law", "")
@@ -555,27 +554,30 @@ def _calculate_cohesive_properties(
         raise ValueError(f"material.fracture.cohesive.initial_damage = {D_0.tolist()} must lie in [0, 1]")
     if law == "linear" and np.any((D_0 > 0.0) & (D_0 < 1.0)):
         raise ValueError("material.fracture.cohesive.initial_damage must be 0 or 1 for the linear law")
+    _check_cohesive_controls(controls["mechanics_controls"], law, weakening_ratio)
+    f_u = values["tensile_strength"]
+    material["fracture"]["cohesive_fractures"] = {  # (num_fractures,) each
+        "f_u": f_u,
+        "gamma": values["shear_strength"] / f_u,
+        "G_c": values["fracture_energy"],
+        "D_0": D_0,
+    }
 
-    # smoothing half-width within the softening branch
-    c_eps = controls["mechanics_controls"]["damage_peak_smoothing_coefficient"]
+
+def _check_cohesive_controls(mechanics_controls: dict[str, Any], law: str, weakening_ratio: float) -> None:
+    """Validate the smoothing coefficient within the softening branch and the viscosity coefficient."""
+    c_eps = mechanics_controls["damage_peak_smoothing_coefficient"]
     c_eps_max = {"linear": np.inf, "bilinear": weakening_ratio, "cubic": 1.0 / 3.0}[law]
     if not 0.0 < c_eps <= c_eps_max:
         raise ValueError(
             f"mechanics_controls.damage_peak_smoothing_coefficient = {c_eps} must lie in "
             f"(0, {c_eps_max:.4g}] for the {law} law"
         )
-    f_u, G_c = values["tensile_strength"], values["fracture_energy"]
-
-    # per fracture element
-    elements: dict[str, npt.NDArray[np.float64]] = {
-        name: np.zeros(fmesh["ne"]) for name in ("f_u", "gamma", "G_c", "D_0")
-    }
-    for r, elems in enumerate(region_lists):
-        elements["f_u"][elems] = f_u[r]
-        elements["gamma"][elems] = values["shear_strength"][r] / f_u[r]
-        elements["G_c"][elems] = G_c[r]
-        elements["D_0"][elems] = D_0[r]
-    material["fracture"]["cohesive_elements"] = elements  # (ne_f,) each
+    beta = mechanics_controls["interface_viscosity_coefficient"]
+    if beta < 0.0:
+        raise ValueError(f"mechanics_controls.interface_viscosity_coefficient = {beta} must be non-negative")
+    if beta > 0.0 and law == "linear":
+        raise ValueError("mechanics_controls.interface_viscosity_coefficient needs a softening law")
 
 
 def _resolve_group_geometry(

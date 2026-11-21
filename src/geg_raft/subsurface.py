@@ -34,7 +34,7 @@ import numpy.typing as npt
 from scipy.sparse import csc_matrix, diags
 
 from .dofmap import field_layouts
-from .history import COHESIVE_HISTORY, History
+from .history import COHESIVE_HISTORY, VISCOUS_DISSIPATION, VISCOUS_TRACTION, History
 from .logging_utils import RunLogger
 from .matprops import get_EOS
 from .mechanicsdata import MechanicsMatrices
@@ -323,7 +323,8 @@ def _no_wells_problem(
 
 
 def _steady_state_mechanics(mechanics: MechanicsMatrices, nn: int, nn_no_wells: int) -> MechanicsMatrices:
-    """Force-balance matrices for the steady-state initial condition, without wells or inertia.
+    """Force-balance matrices for the steady-state initial condition, without wells, inertia, or interface
+    viscosity.
 
     The solved p and T become the reference p_0 and T_0, so the matrix carries no poro- or thermoelastic
     load relative to them; only the fracture pressure columns of K_up remain.
@@ -333,7 +334,11 @@ def _steady_state_mechanics(mechanics: MechanicsMatrices, nn: int, nn_no_wells: 
     fracture_columns = (np.arange(nn_no_wells) >= nn).astype(np.float64)
     K_up = csc_matrix(mechanics.K_up[:, :nn_no_wells] @ diags(fracture_columns))
     K_uT = csc_matrix((mechanics.K_uT.shape[0], nn_no_wells))
-    return dataclasses.replace(mechanics, K_up=K_up, K_uT=K_uT, M_uu=csc_matrix((0, 0)))
+    cohesive = mechanics.interface.cohesive
+    interface = dataclasses.replace(
+        mechanics.interface, cohesive=dataclasses.replace(cohesive, k_v=np.zeros_like(cohesive.k_v))
+    )
+    return dataclasses.replace(mechanics, K_up=K_up, K_uT=K_uT, M_uu=csc_matrix((0, 0)), interface=interface)
 
 
 def _assign_ic_bc_compatible(
@@ -568,10 +573,14 @@ def _assign_initial_conditions(
         mechanics = integrate_mechanics_matrices(mesh, material, controls)
 
     # Cohesive history from the initial damage
-    cohesive = mechanics.interface.cohesive
-    if cohesive.law:
-        D_0 = material["fracture"]["cohesive_elements"]["D_0"][mechanics.interface.element]
+    interface = mechanics.interface
+    if interface.cohesive.law:
+        D_0 = material["fracture"]["cohesive_fractures"]["D_0"][interface.fracture]
+        cohesive = interface.cohesive.at(interface.fracture)
         primary_variables["history"].add(COHESIVE_HISTORY, cohesive_initial_history(D_0, cohesive))
+        if np.any(cohesive.k_v > 0.0):
+            primary_variables["history"].add(VISCOUS_DISSIPATION, np.zeros(interface.fracture.size))
+            primary_variables["history"].add(VISCOUS_TRACTION, np.zeros(interface.normal.shape))
 
     assign_type = config_ini["assignment"]
     supported_types = ["constant", "gradient", "BC_compatible"]

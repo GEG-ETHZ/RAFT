@@ -75,6 +75,17 @@ def penalty_contact(
     return sigma_c, dsigma_c_dg
 
 
+def cohesive_softening_slope(
+    law: str, f_u: npt.NDArray[np.float64], w_c: npt.NDArray[np.float64], delta_p: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """Magnitude of the steepest envelope slope past the peak, |k_c|_max; zero for the linear law."""
+    if law == "cubic":
+        return 2.25 * f_u / w_c  # at delta = 2 w_c / 3
+    if law == "bilinear":
+        return f_u / (w_c - delta_p)
+    return np.zeros_like(f_u)
+
+
 def cohesive_scales(
     law: str, f_u: npt.NDArray[np.float64], G_c: npt.NDArray[np.float64], weakening_ratio: float
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:

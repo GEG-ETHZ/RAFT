@@ -28,20 +28,34 @@ from scipy.sparse import csc_matrix
 
 @dataclass(frozen=True, slots=True)
 class CohesiveParameters:
-    """Cohesive law and its parameters at the fracture Gauss points."""
+    """Cohesive law and its parameters, per fracture or, from `at`, per Gauss point."""
 
     law: str  # "linear", "bilinear" or "cubic"; "" without cohesion
     weakening_ratio: float  # a = w_w / w_c, bilinear only
-    f_u: npt.NDArray[np.float64]  # (nq,) tensile strength
-    gamma: npt.NDArray[np.float64]  # (nq,) shear to tensile strength ratio s_u / f_u
-    w_c: npt.NDArray[np.float64]  # (nq,) critical effective displacement
-    delta_p: npt.NDArray[np.float64]  # (nq,) effective displacement at the peak
-    eps: npt.NDArray[np.float64]  # (nq,) half-width of the smoothed-maximum band
+    f_u: npt.NDArray[np.float64]  # tensile strength
+    gamma: npt.NDArray[np.float64]  # shear to tensile strength ratio s_u / f_u
+    w_c: npt.NDArray[np.float64]  # critical effective displacement
+    delta_p: npt.NDArray[np.float64]  # effective displacement at the peak
+    eps: npt.NDArray[np.float64]  # half-width of the smoothed-maximum band
+    k_v: npt.NDArray[np.float64]  # viscous stiffness beta |k_c|_max; eta = k_v dt on bonded points
 
     @classmethod
     def empty(cls) -> CohesiveParameters:
         """Placeholder without cohesion."""
-        return cls("", 0.0, np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0))
+        return cls("", 0.0, np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0))
+
+    def at(self, fracture: npt.NDArray[np.int64]) -> CohesiveParameters:
+        """Parameters at the points of a point-to-fracture index, (nq,) each."""
+        return CohesiveParameters(
+            self.law,
+            self.weakening_ratio,
+            self.f_u[fracture],
+            self.gamma[fracture],
+            self.w_c[fracture],
+            self.delta_p[fracture],
+            self.eps[fracture],
+            self.k_v[fracture],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,12 +71,13 @@ class FractureInterface:
     weights: npt.NDArray[np.float64]  # (nq,) Gauss weight * face measure (* r axisymmetric)
     penalty: npt.NDArray[np.float64]  # (nq,) contact penalty stiffness eps_N
     element: npt.NDArray[np.int64]  # (nq,) fracture element of each Gauss point
+    fracture: npt.NDArray[np.int64]  # (nq,) fracture of each Gauss point
     w_m: npt.NDArray[np.float64]  # (nq,) unstressed aperture of the point's element
     K_w: npt.NDArray[np.float64]  # (nq,) Bandis-Barton stiffness of the point's fracture
     points: npt.NDArray[np.int64]  # (ne_f, nq_e) Gauss points of each fracture element
     projection: npt.NDArray[np.float64]  # (ne_f, nne_f, nq_e) lumped projection to the element nodes
     normal: npt.NDArray[np.float64]  # (nq, nsd) unit normal of the point's fracture
-    cohesive: CohesiveParameters
+    cohesive: CohesiveParameters  # per fracture; cohesive.at(fracture) gives the Gauss-point values
 
     @classmethod
     def empty(cls) -> FractureInterface:
@@ -72,6 +87,7 @@ class FractureInterface:
             csc_matrix((0, 0)),
             np.empty(0),
             np.empty(0),
+            np.empty(0, dtype=np.int64),
             np.empty(0, dtype=np.int64),
             np.empty(0),
             np.empty(0),

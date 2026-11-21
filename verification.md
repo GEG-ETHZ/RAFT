@@ -391,7 +391,7 @@ $$\left\lvert\frac{\sigma_c}{\sigma_c^{ex}} - 1\right\rvert < 5\times10^{-3}, \q
 
 **Test:** `test_cohesive_opening`
 
-**Setup.** A $0.2 \times 0.2$ m block cut along $y = 0$ by a cemented fracture longer than the block, so the fracture splits the boundary nodes and the two halves are joined only through it. The cubic cohesive law has $f_u = 1$ MPa and $G_c = 100$ J/m², so $w_c = 0.18$ mm. The left and bottom faces are on rollers, and the top is displaced upward past the peak, back down on the damaged branch, and up again to full separation. The in-situ stress and fracture pressure are zero, and flow and heat are off. The same run with an initial damage of 1 checks a debonded fracture.
+**Setup.** A $0.2 \times 0.2$ m block cut along $y = 0$ by a cemented fracture longer than the block, so the fracture splits the boundary nodes and the two halves are joined only through it. The cubic cohesive law has $f_u = 1$ MPa and $G_c = 100$ J/m², so $w_c = 0.18$ mm. The left and bottom faces are on rollers, and the top is displaced upward past the peak, back down on the damaged branch, and up again to full separation. The in-situ stress and fracture pressure are zero, and flow and heat are off. The same run with an interface viscosity coefficient $\beta = 3$, $\eta = \beta|k_c|_{max}\Delta t \approx 9.5\times10^9$ Pa·s/m, checks the viscous traction, and with an initial damage of 1 a debonded fracture.
 
 **Assumptions.** Plane strain, linear elasticity.
 
@@ -399,7 +399,7 @@ $$\left\lvert\frac{\sigma_c}{\sigma_c^{ex}} - 1\right\rvert < 5\times10^{-3}, \q
 
 $$t = \begin{cases} \dfrac{27}{4}f_u\,\dfrac{g_n}{w_c}\left(1 - \dfrac{g_n}{w_c}\right)^2 & g_n \ge \delta_{max} \\[2ex] \dfrac{t_e(\delta_{max})}{\delta_{max}}\,g_n & g_n < \delta_{max} \end{cases}$$
 
-with zero traction once $\delta_{max} \ge w_c$, and the work $\int t\,dg_n$ over the whole path equal to $G_c$. The debonded fracture carries no traction.
+with zero traction once $\delta_{max} \ge w_c$, and the work $\int t\,dg_n$ over the whole path equal to $G_c$. With viscosity, $\sigma_{yy} - \eta\,\dot g_n$ follows the same path on steps that start bonded, with $\dot g_n$ the first-order rate the solver uses; the table is piecewise linear, so the opening rate is constant within each segment. The debonded fracture carries no traction.
 
 **Comparison.** Traction against opening through loading, unloading, reloading, and separation.
 
