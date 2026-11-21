@@ -46,11 +46,12 @@ physics:
 
 simulation:
   # Time; the first-mode period 4H/c is 15.2 ms
-  t_start: 0.0
-  t_end: 0.06
-  timestep: 5.0e-5
-  timestep_min: 5.0e-5
-  timestep_max: 5.0e-5
+  time_controls:
+    t_start: 0.0
+    t_end: 0.06
+    timestep_initial: 5.0e-5
+    timestep_min: 5.0e-5
+    timestep_max: 5.0e-5
   rate_order: 2
   solver_type: monolithic
 

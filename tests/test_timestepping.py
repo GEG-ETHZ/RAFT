@@ -27,7 +27,10 @@ from geg_raft.subsurface import TimestepError, _clamp_to_critical, _update_time
 
 
 def _controls() -> dict[str, Any]:
-    return {"timestep_max": 1.0e4, "timestep_min": 1.0, "rel_error_T": 0.05, "t_start": 0.0}
+    return {
+        "time_controls": {"timestep_max": 1.0e4, "timestep_min": 1.0, "t_start": 0.0, "cut_timestep_hold": 5},
+        "rel_error_T": 0.05,
+    }
 
 
 def test_update_time_raises_on_NR_failure_at_dt_min() -> None:

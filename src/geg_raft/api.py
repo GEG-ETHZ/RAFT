@@ -100,7 +100,7 @@ class RaftModel:
             controls = config["simulation"]
             controls["config_name"] = config["config_name"]
             controls["config_dir"] = config["config_dir"]
-            controls["t_start"] = t_start  # the coupling sets the start time
+            controls["time_controls"]["t_start"] = t_start  # the coupling sets the start time
 
             # Mirror output to run.log; later calls append to it
             self._output_log = bool(controls["output_log"])
@@ -187,6 +187,7 @@ class RaftModel:
                 primary_variables,
                 setup.BC_config,
                 trial.ext_values,
+                trial.hold_steps,
             )
             self._accepted = trial
             self._trial_pending = False

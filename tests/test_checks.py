@@ -1279,7 +1279,9 @@ def run_at_times(
     """Run a config, returning the primary variables at each of `times` and the mesh."""
     config, mesh = preprocessing(config_name, config_dir, verbose=False)
     config["simulation"].update(config_name=config["config_name"], config_dir=config["config_dir"])
-    setup, state = initialize_simulation(config, mesh, config["simulation"]["t_start"], False)
+    setup, state = initialize_simulation(
+        config, mesh, config["simulation"]["time_controls"]["t_start"], False
+    )
     results = []
     for t in times:
         state, _ = advance(setup, state, t, False)
@@ -1859,7 +1861,7 @@ def check_cohesive_opening(
     cohesive = config["material"]["fracture"]["cohesive"]
     f_u, G_c = cohesive["tensile_strength"][0], cohesive["fracture_energy"][0]
     w_c = 16.0 * G_c / (9.0 * f_u)
-    dt = config["simulation"]["timestep"]
+    dt = config["simulation"]["time_controls"]["timestep_initial"]
     beta = config["simulation"].get("mechanics_controls", {}).get("interface_viscosity_coefficient", 0.0)
     eta = beta * 2.25 * f_u / w_c * dt
     opening, traction, spread = _opening_traction(config_name, config_dir, results, mesh)
@@ -1960,7 +1962,9 @@ def run_cohesive_shear(
     """
     config, mesh = preprocessing(config_name, config_dir, verbose=False)
     config["simulation"].update(config_name=config["config_name"], config_dir=config["config_dir"])
-    setup, state = initialize_simulation(config, mesh, config["simulation"]["t_start"], False)
+    setup, state = initialize_simulation(
+        config, mesh, config["simulation"]["time_controls"]["t_start"], False
+    )
     interface = setup.mechanics.interface
     _, upper = block_nodes(mesh)
     length = interface.weights.sum()

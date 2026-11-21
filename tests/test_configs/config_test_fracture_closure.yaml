@@ -58,11 +58,12 @@ physics:
 
 simulation:
   # Time
-  t_start: 0.0
-  t_end: 1.0
-  timestep: 1.0
-  timestep_min: 1.0
-  timestep_max: 1.0
+  time_controls:
+    t_start: 0.0
+    t_end: 1.0
+    timestep_initial: 1.0
+    timestep_min: 1.0
+    timestep_max: 1.0
   solver_type: monolithic
   mechanics_controls:
     penalty_factor: 10.0   # stiff contact, close to rigid

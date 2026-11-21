@@ -438,11 +438,13 @@ Fracture/well-matrix coupling is assembled for a field if either side solves it,
 
 ### `simulation`
  Simulation controls
-* **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
-* **`t_end`** *(float, default: `100.0`)*: End time of the simulation.
-* **`timestep`** *(float, default: `1.0`)*: Simulation timestep.
-* **`timestep_min`** *(float, default: `1.0`)*: Minimum allowed timestep.
-* **`timestep_max`** *(float, default: `1.0`)*: Maximum allowed timestep.
+* **`time_controls`** *(dictionary)*: Simulation time and timestep settings.
+  * **`t_start`** *(float, default: `0.0`)*: Start time of the simulation.
+  * **`t_end`** *(float, default: `100.0`)*: End time of the simulation.
+  * **`timestep_initial`** *(float, default: `1.0`)*: Initial timestep.
+  * **`timestep_min`** *(float, default: `1.0`)*: Minimum allowed timestep.
+  * **`timestep_max`** *(float, default: `1.0`)*: Maximum allowed timestep.
+  * **`cut_timestep_hold`** *(int, default: `5`)*: Number of accepted steps taken at the reduced timestep after a cut before the timestep grows again; 0 grows it after the first.
 
 Output Controls
 * **`output_frequency`** *(integer, default: `1`)*: Controls how often outputs are written (every $N$ timesteps).
@@ -492,7 +494,7 @@ for t_start, t_end in coupling_steps:
     model.get_fresh()  # accept the step and write its output
 ```
 
-* **`RaftModel(config_name, t_start, config_dir=None, verbosity="full")`**: preprocesses the config, assigns initial conditions at `t_start` and writes output frame 0. The config's `t_start` is replaced and its `t_end` is unused. `verbosity` takes `"quiet"`, `"lite"` or `"full"`, as for `--verbosity`.
+* **`RaftModel(config_name, t_start, config_dir=None, verbosity="full")`**: preprocesses the config, assigns initial conditions at `t_start` and writes output frame 0. The config's `time_controls.t_start` is replaced and its `time_controls.t_end` is unused. `verbosity` takes `"quiet"`, `"lite"` or `"full"`, as for `--verbosity`.
 * **`solve(t_start, t_end, bcs)`**: advances from the last accepted state to exactly `t_end` and returns the boundary values there. `t_start` must equal the last accepted time.
   * `bcs` must contain every label of a group with an [`"external"`](#boundary_conditions) field, and only those. Each entry gives `p` (Pa), `T` (K) and `q` (kg/s, positive into the domain); RAFT uses the ones matching the group's types and ignores the rest.
   * Returns, for each label, `p` and `T` (arithmetic mean over the group's nodes, not flow-weighted), `q` (summed over the nodes, kg/s, positive into the domain) and `mode`, the active hydraulic condition: `"flux"`, `"pressure"` (for a pressure group, or a flux group held at a pressure [constraint](#boundary_conditions)) or `"none"` for a thermal-only group.

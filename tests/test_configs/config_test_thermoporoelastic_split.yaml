@@ -54,11 +54,12 @@ physics:
 
 simulation:
   # Time
-  t_start: 0.0
-  t_end: 6.0e+6
-  timestep: 2.0e+4
-  timestep_min: 2.0e+4
-  timestep_max: 2.0e+5
+  time_controls:
+    t_start: 0.0
+    t_end: 6.0e+6
+    timestep_initial: 2.0e+4
+    timestep_min: 2.0e+4
+    timestep_max: 2.0e+5
   rate_order: 2
   solver_type: operator_split
 

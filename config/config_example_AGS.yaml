@@ -107,11 +107,12 @@ physics:
 
 simulation:
   # Time
-  t_start: 0.0
-  t_end: 30.0e+7 # 10 years
-  timestep: 10000.0
-  timestep_min: 1000.0
-  timestep_max: 2.5e+6 # one month
+  time_controls:
+    t_start: 0.0
+    t_end: 30.0e+7 # 10 years
+    timestep_initial: 10000.0
+    timestep_min: 1000.0
+    timestep_max: 2.5e+6 # one month
 
   # Output
   output_frequency: 1

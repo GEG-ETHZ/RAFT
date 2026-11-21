@@ -71,6 +71,13 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
 
 ### Changed
 
+- **Timestep growth after a cut** — after a timestep is cut, the reduced
+  timestep is kept for `simulation.time_controls.cut_timestep_hold` accepted
+  steps (5 by default) before it grows again.
+- **Time controls block** — `t_start`, `t_end`, `timestep_min`, and
+  `timestep_max` move from `simulation` into `simulation.time_controls`, and
+  `timestep` becomes `time_controls.timestep_initial`. Move these keys in
+  existing configs; at the top level of `simulation` they are no longer read.
 - **Newton solve scaling** — each field's rows of the coupled tangent are
   scaled to a common magnitude before the solve, which removes the round-off
   that badly scaled displacement-pressure systems left in the pressure update.

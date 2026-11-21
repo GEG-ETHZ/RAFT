@@ -85,11 +85,14 @@ DEFAULTS: dict[str, Any] = {
     },
     # ---- simulation ----------------------------------------------------------
     "simulation": {
-        "t_start": 0.0,
-        "t_end": 100.0,
-        "timestep": 1.0,
-        "timestep_min": 1.0,
-        "timestep_max": 1.0,
+        "time_controls": {
+            "t_start": 0.0,
+            "t_end": 100.0,
+            "timestep_initial": 1.0,
+            "timestep_min": 1.0,
+            "timestep_max": 1.0,
+            "cut_timestep_hold": 5,  # accepted steps after a cut before the timestep grows again
+        },
         "solver_type": "operator_split",
         "output_frequency": 1,
         "output_vtk": 0,
@@ -250,8 +253,15 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     # Wells
     controls["wells_on"] = 1 if "wells" in config["mesh"] else 0
 
+    # Timestep growth after a cut
+    hold = controls["time_controls"]["cut_timestep_hold"]
+    if isinstance(hold, bool) or not isinstance(hold, int) or hold < 0:
+        raise ValueError(
+            f"simulation.time_controls.cut_timestep_hold = {hold}; expected a non-negative integer"
+        )
+
     # Aitken relaxation
-    bounds = controls["iterative_controls"]["aitken_bounds"]
+    bounds =controls["iterative_controls"]["aitken_bounds"]
     if (
         len(bounds) != 3
         or not bounds[0] <= bounds[1]

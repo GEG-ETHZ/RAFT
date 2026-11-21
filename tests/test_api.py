@@ -42,7 +42,9 @@ def _transient_config(tmp_path: Path) -> str:
     shutil.copy(CONFIG_DIR / config["mesh"]["file"], tmp_path)
     config["physics"]["wells"] = {"flow": "steady", "heat": "transient", "advection": True}
     simulation = config["simulation"]
-    simulation.update({"t_end": T_END, "timestep": DT, "timestep_min": DT, "timestep_max": DT})
+    simulation["time_controls"].update(
+        {"t_end": T_END, "timestep_initial": DT, "timestep_min": DT, "timestep_max": DT}
+    )
     simulation["output_directory"] = str(tmp_path / "out")
     (tmp_path / "transient.yaml").write_text(yaml.safe_dump(config))
     return "transient.yaml"
@@ -130,7 +132,7 @@ def _external_config(tmp_path: Path, t_end: float = T_END, **inlet_hydraulics: A
     """The transient config with the inlet (flux, temperature) and outlet (pressure) set externally."""
     _transient_config(tmp_path)
     config = yaml.safe_load((tmp_path / "transient.yaml").read_text())
-    config["simulation"]["t_end"] = t_end
+    config["simulation"]["time_controls"]["t_end"] = t_end
     inlet, outlet = config["boundary_conditions"][1], config["boundary_conditions"][2]
     inlet["label"] = "inlet"
     inlet["hydraulics"].update({"function": "external", **inlet_hydraulics})
@@ -167,7 +169,7 @@ def test_external_linear_matches_table_batch_run(tmp_path: Path) -> None:
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
 
     table = yaml.safe_load((tmp_path / "transient.yaml").read_text())
-    table["simulation"]["t_end"] = 400.0
+    table["simulation"]["time_controls"]["t_end"] = 400.0
     table["boundary_conditions"][1]["thermal"] = {
         "type": "temperature",
         "function": "table",
@@ -284,7 +286,7 @@ def test_solve_stats_count_steps_and_cuts(tmp_path: Path, monkeypatch: pytest.Mo
     """A cut attempt is counted, and the accepted steps exactly cover the coupling step."""
     config_name = _transient_config(tmp_path)
     config = yaml.safe_load((tmp_path / config_name).read_text())
-    config["simulation"]["timestep_min"] = 10.0
+    config["simulation"]["time_controls"]["timestep_min"] = 10.0
     (tmp_path / config_name).write_text(yaml.safe_dump(config))
     monkeypatch.setattr(geg_raft.subsurface, "_perform_time_integration", _FailFirstAttempt())
 

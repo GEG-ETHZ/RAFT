@@ -118,11 +118,12 @@ physics:
 
 simulation:
   # Time
-  t_start: 0.0
-  t_end: 3.0e+7
-  timestep: 10.0
-  timestep_min: 1.0
-  timestep_max: 6.0e+5
+  time_controls:
+    t_start: 0.0
+    t_end: 3.0e+7
+    timestep_initial: 10.0
+    timestep_min: 1.0
+    timestep_max: 6.0e+5
 
   # Output
   output_frequency: 1

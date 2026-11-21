@@ -67,11 +67,12 @@ physics:
 
 simulation:
   # Time
-  t_start: 0.0
-  t_end: 25.0
-  timestep: 0.25
-  timestep_min: 0.25
-  timestep_max: 0.25
+  time_controls:
+    t_start: 0.0
+    t_end: 25.0
+    timestep_initial: 0.25
+    timestep_min: 0.25
+    timestep_max: 0.25
   solver_type: monolithic
   mechanics_controls:
     damage_peak_smoothing_coefficient: 1.0e-3   # traction checked against the unsmoothed law

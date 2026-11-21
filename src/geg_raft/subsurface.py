@@ -68,10 +68,11 @@ def _propose_dt(  # noqa
     converged: bool,
     timestep_error: float,
     verbose: bool,
+    hold: bool = False,
 ) -> tuple[float, list[float], bool]:
-    """Cut a failed timestep or grow the next one, ignoring critical times."""
-    dt_max = controls["timestep_max"]
-    dt_min = controls["timestep_min"]
+    """Cut a failed timestep or grow the next one, ignoring critical times; `hold` blocks the growth."""
+    dt_max = controls["time_controls"]["timestep_max"]
+    dt_min = controls["time_controls"]["timestep_min"]
     rel_tol_T = controls["rel_error_T"]
 
     if not converged:  # Decrease the timestep
@@ -95,7 +96,7 @@ def _propose_dt(  # noqa
             else:
                 # Newton-raphson failure
                 cut_factor = 0.5
-            t0 = controls["t_start"]
+            t0 = controls["time_controls"]["t_start"]
             t = t - dt[0]
             dt[0] = max(cut_factor * dt[0], dt_min)
             t = max(t + dt[0], t0)
@@ -110,6 +111,8 @@ def _propose_dt(  # noqa
         increase_factor = min(4 / (1 + 3 * timestep_error / rel_tol_T), 2)
     else:
         increase_factor = 1.5
+    if hold:
+        increase_factor = min(increase_factor, 1.0)
 
     dt[2] = dt[1]
     dt[1] = dt[0]
@@ -822,6 +825,7 @@ class SimState:
     primary_variables: dict[str, Any]
     wb_flags: dict[int, dict[str, Any]]  # BC_config index -> wellbore keys
     ext_values: dict[str, dict[str, float]]  # accepted external BC inputs, by label; empty before the first
+    hold_steps: int = 0  # accepted steps left before the timestep may grow after a cut
 
 
 def _snapshot_wb(BC_config: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -848,6 +852,7 @@ def snapshot_state(
     primary_variables: dict[str, Any],
     BC_config: list[dict[str, Any]],
     ext_values: dict[str, dict[str, float]],
+    hold_steps: int = 0,
 ) -> SimState:
     """Capture an independent copy of the simulation state."""
     return SimState(
@@ -858,6 +863,7 @@ def snapshot_state(
         primary_variables=copy.deepcopy(primary_variables),
         wb_flags=_snapshot_wb(BC_config),
         ext_values=copy.deepcopy(ext_values),
+        hold_steps=hold_steps,
     )
 
 
@@ -931,6 +937,7 @@ def advance(  # noqa
     dt = list(state.dt_hist[0:3])
     t, dt = _clamp_to_critical(state.t, dt, critical_times)
     t0 = state.t
+    hold_steps = state.hold_steps
     # loading may change at the start of a call as well as at the BC change times
     predict_skip = np.union1d(setup.critical_times, [t0])
 
@@ -938,7 +945,8 @@ def advance(  # noqa
         # Loop through timesteps; every attempt is reported, so cut and retried steps show up
         stats.attempts += 1
         if verbose:
-            print(f"Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
+            elapsed = datetime.timedelta(seconds=round(time.perf_counter() - wall_start))
+            print(f"{elapsed}: Timestep {n_step}, t = {t:.2e}, {(100 * t / t_target):.2f} % complete")
         elif progress:
             percent = 100 * (t - t0) / (t_target - t0)
             print(f"     Timestep {n_step}, t = {t:.2e} with dt = {dt[0]:.2e}, {percent:.0f} % complete")
@@ -975,10 +983,12 @@ def advance(  # noqa
         # Check error and propose the next timestep
         t_solved = t
         dt_step = list(dt)  # this step's timestep sizes, before the update, for postprocessing T_flow
+        hold_steps = max(hold_steps - 1, 0) if converged else hold_steps
         t, dt, accepted = _propose_dt(
-            controls["solver_type"], t, dt, controls, converged, timestep_error, verbose
+            controls["solver_type"], t, dt, controls, converged, timestep_error, verbose, hold_steps > 0
         )
         if not accepted:  # retry current timestep
+            hold_steps = controls["time_controls"]["cut_timestep_hold"]
             if controls["solver_type"] == "operator_split" and timestep_error != -1:
                 stats.cut_extrapolation += 1
             else:
@@ -1007,7 +1017,14 @@ def advance(  # noqa
             dt_hist = [dt[0], *dt_step]  # dt[0] is the unclamped proposal
             stats.wall_time = time.perf_counter() - wall_start
             final = snapshot_state(
-                t_solved, n_step, state.n_out, dt_hist, primary_variables, BC_config, state.ext_values
+                t_solved,
+                n_step,
+                state.n_out,
+                dt_hist,
+                primary_variables,
+                BC_config,
+                state.ext_values,
+                hold_steps,
             )
             return final, stats
 
@@ -1034,7 +1051,7 @@ def initialize_simulation(
     t = t_start
     # initialize timesteps and store 3 timesteps (necessary for higher order)
     # dt = [dt_n, dt_(n-1), dt_(n-2)]
-    dt = [controls["timestep"]] * 3
+    dt = [controls["time_controls"]["timestep_initial"]] * 3
     # Gather any important time points as specified in the boundary conditions
     critical_times = get_critical_times(BC_config)
 
@@ -1127,9 +1144,16 @@ def main(  # noqa
         if controls["output_log"]:
             run_logger.attach_file(prepare_output_directory(controls))
 
-        setup, state = initialize_simulation(config, mesh, controls["t_start"], detailed)
+        setup, state = initialize_simulation(config, mesh, controls["time_controls"]["t_start"], detailed)
         try:
-            state, _ = advance(setup, state, controls["t_end"], detailed, write_steps=True, progress=progress)
+            state, _ = advance(
+                setup,
+                state,
+                controls["time_controls"]["t_end"],
+                detailed,
+                write_steps=True,
+                progress=progress,
+            )
         except TimestepError as err:
             print(f"     {err}")
             sys.exit(1)
