@@ -472,7 +472,8 @@ Numerical solver controls
     * *Stagnation check*: A residual that reaches no new minimum in 10 iterations is accepted if it is within 10 times `NR_tol`.
   * **`iter_max`** *(integer, default: `100`)*: Maximum number of iterations per timestep.
   * **`aitken_relaxation`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) Aitken's $\Delta^2$ relaxation for non-linear convergence.
-  * **`aitken_bounds`** *(list of 2 floats, default: `[0.01, 10.0]`)*: Minimum and maximum magnitude of the Aitken relaxation factor, `0 < min <= max`; the factor keeps its sign.
+  * **`aitken_bounds`** *(list of 3 floats, default: `[-10.0, 10.0, 0.01]`)*: Signed minimum ($\psi_a$), signed maximum ($\psi_b$), and absolute minimum ($\psi_c$) magnitude of the Aitken relaxation factor: $\psi \in [\psi_a \leq \psi \leq -\psi_c, \psi_c \leq \psi \leq \psi_b]$.
+  * **`aitken_start`** *(integer, default: `0`)*: Iteration when Aitken relaxation starts.
   * **`NR_step`** *(float, default: `1.0`)*: Newton-Raphson step/line-search size; scales each iteration's solution update before any Aitken relaxation is applied.
   * **`predictor`** *(integer/boolean, default: `1`)*: Turn on (`1`) or off (`0`) the initial guess of each step extrapolated from the previous steps, following `rate_order`, for the displacement and the transient pressure. It is skipped on steps whose extrapolation spans a change time of a `table` or `ramp` boundary condition.
 

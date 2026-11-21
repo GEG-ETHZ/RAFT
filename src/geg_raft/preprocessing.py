@@ -114,7 +114,8 @@ DEFAULTS: dict[str, Any] = {
             "NR_tol": 1.0e-6,  # Newton-Raphson residual tolerance
             "iter_max": 100,  # Maximum number of iterations
             "aitken_relaxation": 1,  # Turn on/off Aitken's delta^2 relaxation
-            "aitken_bounds": [0.01, 10.0],  # [min, max] magnitude of the Aitken relaxation factor
+            "aitken_bounds": [-10.0, 10.0, 0.01],  # [min, max, abs_min] of the Aitken relaxation factor
+            "aitken_start": 0,  # Iteration when Aitken relaxation starts
             "NR_step": 1,  # Newton-Raphson line step size
             "predictor": 1,  # Turn on/off the extrapolated initial guess of each step
         },
@@ -251,8 +252,19 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
 
     # Aitken relaxation
     bounds = controls["iterative_controls"]["aitken_bounds"]
-    if len(bounds) != 2 or not 0.0 < bounds[0] <= bounds[1]:
-        raise ValueError(f"iterative_controls.aitken_bounds = {bounds}; expected [min, max], 0 < min <= max")
+    if (
+        len(bounds) != 3
+        or not bounds[0] <= bounds[1]
+        or not bounds[2] > 0.0
+        or not (bounds[0] <= -bounds[2] or bounds[1] >= bounds[2])
+    ):
+        raise ValueError(
+            f"iterative_controls.aitken_bounds = {bounds}; expected [min, max, abs_min] with min <= max, "
+            "abs_min > 0, and min <= -abs_min or max >= abs_min"
+        )
+    start = controls["iterative_controls"]["aitken_start"]
+    if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+        raise ValueError(f"iterative_controls.aitken_start = {start}; expected a non-negative integer")
 
     # Mechanics
     if controls["physics"].solves("mechanics"):

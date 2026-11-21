@@ -1147,7 +1147,7 @@ def warn_nonmonotone_pressure_diffusion(Kpp: csc_matrix[Any], rel_tol: float = 0
         "This usually means a region's permeability tensor is too anisotropic and/or "
         "rotated relative to the mesh for the linear FEM discretization to remain "
         "monotonic. Spurious pressure/temperature oscillations may occur in that area."
-        f"Worst offenders as (node, neighbor, off-diag/diag ratio): {worst}."
+        f" Worst offenders are (node, neighbor, off-diag/diag ratio): {worst}."
         "If this occurs, reduce the anisotropic ratio and/or align and stretch"
         f"the mesh to the anisotropy ratio.{_RESET}",
         stacklevel=2,

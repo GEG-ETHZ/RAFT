@@ -270,7 +270,7 @@ def _aitken_relax(
     idx_sol: npt.NDArray[np.int64] | list[int],
     res_m: npt.NDArray[np.float64],
     delta_m: float | None,
-    bounds: tuple[float, float],
+    bounds: tuple[float, float, float],
     max_init_relax: float = 1.0,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float, npt.NDArray[np.float64]]:
     """Apply Aitken delta^2 method with a limited range of relaxation parameters.
@@ -289,11 +289,14 @@ def _aitken_relax(
     delta_m : float or None
         Damping coefficient from the previous iteration.
     bounds : tuple
-        Bounds (min_relax, max_relax) on the magnitude of the relaxation parameter; its sign is kept.
+        Bounds (min_relax, max_relax, abs_min) on the relaxation parameter.
+        min_relax: signed minimum
+        max_relax: signed maxxmum
+        abs_min: absolute minimum
     max_init_relax : float
         Control parameter flag (NaN: no relaxation, <1e-8: fixed factor, >=1e-8: Aitken).
     """
-    min_relax, max_relax = bounds
+    min_relax, max_relax, abs_min = bounds
 
     # Residual of current iterate (defined as the difference between successive iterates)
     res_mp1 = sol_mp1 - sol_m
@@ -326,8 +329,9 @@ def _aitken_relax(
             del_sign = np.sign(aitken_para)
             if del_sign == 0:
                 del_sign = 1.0
-
-            delta = max(min(max_relax, abs(aitken_para)), min_relax) * del_sign
+                
+            delta = del_sign * max(abs_min, abs(delta))
+            delta = max(min(max_relax, delta), min_relax)
 
     if np.isnan(delta):
         delta = 1.0
@@ -447,9 +451,10 @@ def _newton_raphson_loop(  # noqa
     # Newton-Raphson controls
     iter_max = controls["iterative_controls"]["iter_max"]
     NR_tol = controls["iterative_controls"]["NR_tol"]
-    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     NR_step = controls["iterative_controls"]["NR_step"]
+    aitken_on = controls["iterative_controls"]["aitken_relaxation"]
     aitken_bounds = tuple(controls["iterative_controls"]["aitken_bounds"])
+    aitken_start = controls["iterative_controls"]["aitken_start"]
     one_pass = controls["iterative_controls"]["one_pass"] and T_flow_lagged
     converged = False
 
@@ -486,9 +491,6 @@ def _newton_raphson_loop(  # noqa
         # Initialize relaxation
         free_dofs_key = np.setdiff1d(_relax_dofs(key, local_dofs, mesh, mechanics), fixed_dofs[key])
         free_dofs_key = free_dofs_key.astype(int) + key_dofs[key][0]
-        aitken_state["variables_km1"] = np.vstack(
-            (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
-        )
         aitken_state["relax_dofs"] = np.concatenate((aitken_state["relax_dofs"], free_dofs_key))
 
     nE = nE.ravel()
@@ -758,14 +760,19 @@ def _newton_raphson_loop(  # noqa
                 break
 
             # Apply relaxation
-            if aitken_on:
+            if iteration == aitken_start:
+                for key in keys:
+                    aitken_state["variables_km1"] = np.vstack(
+                        (aitken_state["variables_km1"], primary_variables[key][:, 0:1])
+                    )
+            if aitken_on and iteration >= aitken_start:
                 (
                     d_new,
                     aitken_state["delta_variables_km1"],
                     aitken_state["aitken_coefficient"][iteration + 1],
                     aitken_state["variables_km1"],
                 ) = _aitken_relax(
-                    iteration,
+                    iteration - aitken_start,
                     d_n,
                     aitken_state["variables_km1"],
                     aitken_state["relax_dofs"],
@@ -948,7 +955,7 @@ def monolithic_time_integration(  # noqa
     This monolithic iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = False
+    debug_plot_on = True
     export_unconverged = False  # write the fields every Newton iteration to <output>/unconverged
     rate_order = controls["rate_order"]
     physics = controls["physics"]
