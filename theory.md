@@ -237,15 +237,21 @@ $$\textbf{R}_u \mathrel{+}= -\int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\left[(p_f 
 
 The full pressure acts on the face and partitioning between the pressure and stress happens internally. Normal contact is enforced by a penalty, which keeps the faces from interpenetrating beyond a small, numerical penetration:
 
-$$\sigma_c = \epsilon_N\langle -g_n\rangle, \qquad \epsilon_N = c_N\frac{\bar{E}}{h}$$
+$$\sigma_c = k_N\langle -g_n\rangle, \qquad k_N = c_N\frac{\bar{E}}{h}$$
 
 with $\bar{E}$ the mean Young's modulus of the two adjacent matrix elements, $h$ the mean element length of the fracture, and $c_N$ is the `penalty_factor`. Scaling with $E/h$ keeps the contact stiffness a fixed multiple of the local rock stiffness, so the penetration $\sigma_c h/(c_N\bar{E})$ vanishes under mesh refinement and the solution converges to rigid contact. The penalty acts normally only, so a debonded fracture is frictionless.
 
 The pressure and in-situ terms are linear and integrated once with the other force-balance matrices. The fracture pressure term adds to the fracture columns of $\textbf{K}_{up}$, and the in-situ load is a constant force. Only the contact and cohesive terms are nonlinear. The contact tangent is
 
-$$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\epsilon_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
+$$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top k_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
 
 with $H(0) = 1$.
+
+With `contact_smoothing_stress` $\sigma_s > 0$, the bracket is smoothed over a length $\ell_g$, chosen per fracture element so that the contact pressure at $g_n = 0$ is $\sigma_s$:
+
+$$\langle x\rangle_\ell = \ell_g\ln\!\left(1 + e^{x/\ell_g}\right), \qquad \frac{d\langle x\rangle_\ell}{dx} = \frac{1}{1 + e^{-x/\ell_g}}, \qquad \ell_g = \frac{\sigma_s}{k_N\ln 2}$$
+
+It tends to $\langle x\rangle$ for $\lvert x\rvert \gg \ell_g$, so $\sigma_c = k_N\langle -g_n\rangle_\ell$ and its tangent pass continuously from the penalty to zero across $g_n = 0$.
 
 The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
 
@@ -266,9 +272,9 @@ $$t = \begin{cases}
 t_e(\Delta) & \delta_{max}^{c} \le \Delta_p \\
  \dfrac{t_e(\kappa)}{\kappa}\,\Delta & \delta_{max}^{c} > \Delta_p \end{cases}$$
 
-To prevent oscillations around the traction peak, the damage traction is smoothed using the damage driver $\kappa$ is $\max(\Delta_{max}^{c}, \Delta)$ in a band of half-width $\varepsilon = c_\varepsilon w_c$ (`damage_peak_smoothing_coefficient`) so that the tangent is continuous.
+To prevent oscillations around the traction peak, the damage traction is smoothed using the damage driver $\kappa$ is $\max(\Delta_{max}^{c}, \Delta)$ in a band of half-width $w_\varepsilon = c_\varepsilon w_c$ (`damage_peak_smoothing_coefficient`) so that the tangent is continuous.
 
-$$\kappa = \begin{cases} \Delta_{max}^{c} & \Delta \le \Delta_{max}^{c} - \varepsilon \\[1ex] \Delta_{max}^{c} + \dfrac{\left(\Delta - \Delta_{max}^{c} + \varepsilon\right)^2}{4\varepsilon} & \lvert\Delta - \Delta_{max}^{c}\rvert < \varepsilon \\[2ex] \Delta & \Delta \ge \Delta_{max}^{c} + \varepsilon \end{cases}$$
+$$\kappa = \begin{cases} \Delta_{max}^{c} & \Delta \le \Delta_{max}^{c} - w_\varepsilon \\[1ex] \Delta_{max}^{c} + \dfrac{\left(\Delta - \Delta_{max}^{c} + w_\varepsilon\right)^2}{4w_\varepsilon} & \lvert\Delta - \Delta_{max}^{c}\rvert < w_\varepsilon \\[2ex] \Delta & \Delta \ge \Delta_{max}^{c} + w_\varepsilon \end{cases}$$
 
 The smoothing introduces a smaller error in the dissipated fracture energy in cyclic loading cases proportional to $O(c_\varepsilon)$. The damage is
 
@@ -307,7 +313,11 @@ The earlier time levels of $\partial(w\rho_f)/\partial t$ and $\partial(w\rho_f 
 
 $$\frac{\partial \textbf{R}}{\partial \textbf{u}} = \frac{\partial \textbf{R}}{\partial \textbf{w}}\,\text{diag}\!\left(\frac{\partial w}{\partial g_n}\right)\textbf{G}_n, \qquad \frac{\partial w}{\partial g_n} = \begin{cases}\dfrac{\epsilon_N\,w^2}{w_m K_w} & \text{in contact} \\[1ex] 1 & \text{open}\end{cases}$$
 
-with $\textbf{G}_n$ the normal jump at the Gauss points. The tangent omits the aperture dependence of the SUPG stabilization. With mechanics off, $w$ is the constant `aperture`, $w_m$.
+with $\textbf{G}_n$ the normal jump at the Gauss points. With contact smoothing, the two branches are summed rather than switched, with the smoothed bracket on the opening:
+
+$$w = \frac{w_m K_w}{K_w + \sigma_c} + \langle g_n\rangle_\ell, \qquad \frac{\partial w}{\partial g_n} = -\frac{w_m K_w}{(K_w + \sigma_c)^2}\frac{\partial\sigma_c}{\partial g_n} + \frac{1}{1 + e^{-g_n/\ell_g}}$$
+
+which tends to the Bandis–Barton aperture when closed and to $w_m + g_n$ when open. The tangent omits the aperture dependence of the SUPG stabilization. With mechanics off, $w$ is the constant `aperture`, $w_m$.
 
 **Initial state.** The initial displacement is zero and it is assumed that the specified initial forces (pressure and in-situ stress) are in equilibrium. If not, the system moves dynamically to equilibrium from the unbalanced initial condition. Only `BC_compatible` starts in equilibrium: its steady-state solve includes the force balance, with the fractures in contact at $\sigma_{c,0} = -\vec{n}\cdot\boldsymbol{\sigma}_0\cdot\vec{n} - p_{f,0}$. The solved $\textbf{u}$, $p$ and $T$ become the references $\textbf{u}_0$, $p_0$ and $T_0$. The strain in the porosity and the stress use $\textbf{u} - \textbf{u}_0$; the displacement output is the total $\textbf{u}$. 
 

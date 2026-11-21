@@ -34,7 +34,8 @@ from .mechconstitutive import bandis_barton_aperture, cohesive_damage, cohesive_
 from .shapefunctions import GNMATRIX_FUNCS, NMATRIX_FUNCS, getB
 from .solidmechanics import (
     STRESS_NAMES,
-    element_penalty,
+    contact_smoothing_length,
+    element_contact_stiffness,
     element_stress,
     element_volumetric_strain,
     fracture_aperture,
@@ -907,9 +908,10 @@ def _fracture_node_aperture(
     normal = interface.normal[first]
     # normal jump n . (u+ - u-) at each element node, (ne_f, nne_f)
     g_n = np.sum((U[faces[:, :, 0]] - U[faces[:, :, 1]]) * normal[:, None, :], axis=2)
-    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.penalty[first][:, None])
+    ell_g = interface.ell_g[first][:, None]
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.k_N[first][:, None], ell_g)
     w, _ = bandis_barton_aperture(
-        g_n, sigma_c, dsigma_c_dg, interface.w_m[first][:, None], interface.K_w[first][:, None]
+        g_n, sigma_c, dsigma_c_dg, interface.w_m[first][:, None], interface.K_w[first][:, None], ell_g
     )
     return w
 
@@ -936,8 +938,8 @@ def _fracture_contact_cell_data(
         fmesh["n_quadrature"][0], nsd - 1, fmesh["element_type"][0]
     )
     g_q = g_nodes @ N_q[:, 0, :].T
-    penalty = element_penalty(mesh, material, controls)
-    sigma_c, _ = penalty_contact(g_q, np.repeat(penalty[:, None], nq, axis=1))
+    k_N = np.repeat(element_contact_stiffness(mesh, material, controls)[:, None], nq, axis=1)
+    sigma_c, _ = penalty_contact(g_q, k_N, contact_smoothing_length(k_N, controls))
     return [
         {"name": "normal_jump", "data": _sanitize(g_q.mean(axis=1))},
         {"name": "contact_pressure", "data": _sanitize(sigma_c.mean(axis=1))},
@@ -1048,7 +1050,7 @@ def _write_fracture_output(
         aperture = fracture_aperture(mechanics.interface, primary_variables["u"][:, 0:1])
         aperture_nodal, aperture_gauss = aperture.element_nodal[:, :, 0], aperture.gauss[:, :, 0]
         node_aperture = _fracture_node_aperture(mechanics.interface, faces, U)
-    # mean over the elements sharing the pair; they differ only in the contact penalty across regions
+    # mean over the elements sharing the pair; they differ only in k_N across regions
     pair_count = np.bincount(pair.ravel(), minlength=n_pairs)
     pair_aperture = np.bincount(pair.ravel(), node_aperture.ravel(), n_pairs) / pair_count
 

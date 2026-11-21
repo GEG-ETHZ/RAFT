@@ -36,7 +36,7 @@ class CohesiveParameters:
     gamma: npt.NDArray[np.float64]  # shear to tensile strength ratio s_u / f_u
     w_c: npt.NDArray[np.float64]  # critical effective displacement
     delta_p: npt.NDArray[np.float64]  # effective displacement at the peak
-    eps: npt.NDArray[np.float64]  # half-width of the smoothed-maximum band
+    w_eps: npt.NDArray[np.float64]  # half-width of the smoothed-maximum band
     k_v: npt.NDArray[np.float64]  # viscous stiffness beta |k_c|_max; eta = k_v dt on bonded points
 
     @classmethod
@@ -53,7 +53,7 @@ class CohesiveParameters:
             self.gamma[fracture],
             self.w_c[fracture],
             self.delta_p[fracture],
-            self.eps[fracture],
+            self.w_eps[fracture],
             self.k_v[fracture],
         )
 
@@ -69,7 +69,8 @@ class FractureInterface:
     jump: csc_matrix  # (nsd*nq, nsd*nn)
     jump_normal: csc_matrix  # (nq, nsd*nn)
     weights: npt.NDArray[np.float64]  # (nq,) Gauss weight * face measure (* r axisymmetric)
-    penalty: npt.NDArray[np.float64]  # (nq,) contact penalty stiffness eps_N
+    k_N: npt.NDArray[np.float64]  # noqa: N815  (nq,) contact penalty stiffness
+    ell_g: npt.NDArray[np.float64]  # (nq,) smoothing length of the g_n brackets; 0 is exact
     element: npt.NDArray[np.int64]  # (nq,) fracture element of each Gauss point
     fracture: npt.NDArray[np.int64]  # (nq,) fracture of each Gauss point
     w_m: npt.NDArray[np.float64]  # (nq,) unstressed aperture of the point's element
@@ -85,6 +86,7 @@ class FractureInterface:
         return cls(
             csc_matrix((0, 0)),
             csc_matrix((0, 0)),
+            np.empty(0),
             np.empty(0),
             np.empty(0),
             np.empty(0, dtype=np.int64),

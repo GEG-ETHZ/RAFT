@@ -105,8 +105,9 @@ DEFAULTS: dict[str, Any] = {
         "mechanics_controls": {
             "plane": "strain",  # 2D mechanics: "strain" or "stress"
             "stress_recovery": "element",  # stress output: "element" (cells), "average" or "L2" (nodes)
-            "penalty_factor": 1.0,  # c_N in the fracture contact penalty eps_N = c_N E / h
-            "damage_peak_smoothing_coefficient": 1.0e-2,  # c_eps in the smoothing half-width c_eps w_c
+            "penalty_factor": 1.0,  # c_N in the fracture contact stiffness k_N = c_N E / h
+            "damage_peak_smoothing_coefficient": 1.0e-2,  # c_eps in the band half-width w_eps = c_eps w_c
+            "contact_smoothing_stress": 0.0,  # sigma_s (Pa), smoothed contact pressure at g_n = 0
             "interface_viscosity_coefficient": 0.0,  # beta in eta = beta |k_c|_max dt; 0 turns it off
         },
         "iterative_controls": {
@@ -257,6 +258,8 @@ def _determine_physics_controls(config: dict[str, Any], verbose: bool = True) ->
     if controls["physics"].solves("mechanics"):
         if controls["mechanics_controls"]["penalty_factor"] <= 0:
             raise ValueError("mechanics_controls.penalty_factor must be positive")
+        if controls["mechanics_controls"]["contact_smoothing_stress"] < 0:
+            raise ValueError("mechanics_controls.contact_smoothing_stress must be non-negative")
         plane = controls["mechanics_controls"]["plane"]
         if plane not in ("strain", "stress"):
             raise ValueError(f"mechanics_controls.plane = {plane!r}; expected 'strain' or 'stress'")

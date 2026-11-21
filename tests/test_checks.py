@@ -32,7 +32,7 @@ from geg_raft.matrixassembly import _get_quad_points_and_shape_functions
 from geg_raft.mechconstitutive import HISTORY_MARGIN
 from geg_raft.preprocessing import load_config, preprocessing
 from geg_raft.solidmechanics import (
-    element_penalty,
+    element_contact_stiffness,
     element_stress,
     fracture_face_nodes,
     fracture_interface_force,
@@ -1751,10 +1751,10 @@ def check_fracture_closure(
     tol_local = 5.0e-3
     tol_mean = 1.5e-2
 
-    # Load config and the penalty of each fracture element
+    # Load config and the contact stiffness of each fracture element
     config = load_config(config_name, config_dir, verbose=False)
     cfg, _ = preprocessing(config_name, config_dir, verbose=False)
-    penalty = element_penalty(mesh, cfg["material"], cfg["simulation"])
+    k_N = element_contact_stiffness(mesh, cfg["material"], cfg["simulation"])
     geometry = _fracture_geometry(config)
 
     # contact pressure at the Gauss points from the linear normal jump
@@ -1762,7 +1762,7 @@ def check_fracture_closure(
     element_nodes = fmesh["nodes"][np.asarray(fmesh["conn"])]
     _, _, N_q, _ = _get_quad_points_and_shape_functions(fmesh["n_quadrature"][0], 1, fmesh["element_type"][0])
     g_q = _fracture_normal_jump(mesh, results["u"][:, 0]) @ N_q[:, 0, :].T
-    sigma_c = penalty[:, None] * np.clip(-g_q, 0.0, None)
+    sigma_c = k_N[:, None] * np.clip(-g_q, 0.0, None)
     x_q = N_q[:, 0, :] @ element_nodes  # Gauss point coordinates, (ne_f, nq, nsd)
 
     h = np.linalg.norm(element_nodes[:, -1] - element_nodes[:, 0], axis=1)

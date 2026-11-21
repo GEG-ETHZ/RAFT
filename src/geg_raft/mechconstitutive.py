@@ -21,6 +21,7 @@ aperture, returning values with their derivatives where the solve needs a tangen
 
 import numpy as np
 import numpy.typing as npt
+from scipy.special import expit
 
 from .mechanicsdata import CohesiveParameters
 
@@ -62,17 +63,27 @@ def elasticity_matrix(
     return c * np.array([[1.0 - nu, nu, 0.0], [nu, 1.0 - nu, 0.0], [0.0, 0.0, 0.5 - nu]])
 
 
-def penalty_contact(
-    g_n: npt.NDArray[np.float64], penalty: npt.NDArray[np.float64]
+def smooth_bracket(
+    x: npt.NDArray[np.float64], ell_g: npt.NDArray[np.float64]
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Normal contact pressure sigma_c = eps_N <-g_n> (compression positive) and d(sigma_c)/d(g_n).
-
-    Closed at g_n = 0.
+    """Positive part <x> and its slope: ell_g ln(1 + exp(x / ell_g)) where the smoothing length ell_g > 0,
+    and exact, with slope 1 at x = 0, where ell_g = 0.
     """
-    closed = g_n <= 0.0
-    sigma_c = np.where(closed, -penalty * g_n, 0.0)
-    dsigma_c_dg = np.where(closed, -penalty, 0.0)
-    return sigma_c, dsigma_c_dg
+    smooth = ell_g > 0.0
+    ell = np.where(smooth, ell_g, 1.0)
+    value = np.where(smooth, ell * np.logaddexp(0.0, x / ell), np.maximum(x, 0.0))
+    slope = np.where(smooth, expit(x / ell), (x >= 0.0).astype(np.float64))
+    return value, slope
+
+
+def penalty_contact(
+    g_n: npt.NDArray[np.float64], k_N: npt.NDArray[np.float64], ell_g: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Normal contact pressure sigma_c = k_N <-g_n> (compression positive) and d(sigma_c)/d(g_n), with
+    the bracket smoothed over the length ell_g where it is positive. Closed at g_n = 0.
+    """
+    closure, slope = smooth_bracket(-g_n, ell_g)
+    return k_N * closure, -k_N * slope
 
 
 def cohesive_softening_slope(
@@ -174,7 +185,7 @@ def cohesive_traction(
 
     t_coh = t / delta (<g_n> n + gamma g_t), delta = sqrt(<g_n>^2 + g_t . g_t), from the envelope before
     the peak and from the secant t_e(kappa) / kappa delta after it, with kappa = max(h, delta) smoothed in a
-    band of half-width eps about the unloading point h = HISTORY_MARGIN delta_max_c.
+    band of half-width w_eps about the unloading point h = HISTORY_MARGIN delta_max_c.
     """
     nsd = normal.shape[1]
     gamma = params.gamma
@@ -189,11 +200,11 @@ def cohesive_traction(
     # secant branch: damaged, or debonded at w_c
     h = HISTORY_MARGIN * delta_max_c
     x = delta - h
-    eps = params.eps
-    in_band = np.abs(x) < eps
-    band = h + (x + eps) ** 2 / (4.0 * eps)
-    kappa = np.where(x <= -eps, h, np.where(x >= eps, delta, band))
-    dkappa = np.where(x <= -eps, 0.0, np.where(in_band, (x + eps) / (2.0 * eps), 1.0))
+    w_eps = params.w_eps
+    in_band = np.abs(x) < w_eps
+    band = h + (x + w_eps) ** 2 / (4.0 * w_eps)
+    kappa = np.where(x <= -w_eps, h, np.where(x >= w_eps, delta, band))
+    dkappa = np.where(x <= -w_eps, 0.0, np.where(in_band, (x + w_eps) / (2.0 * w_eps), 1.0))
     _, slope_k, secant_k = cohesive_envelope(kappa, params)
     # kappa >= h > 0 wherever the secant branch is used
     dsecant_k = (slope_k - secant_k) / np.where(kappa > 0.0, kappa, 1.0)
@@ -223,14 +234,19 @@ def bandis_barton_aperture(
     dsigma_c_dg: npt.NDArray[np.float64],
     w_m: npt.NDArray[np.float64],
     K_w: npt.NDArray[np.float64],
+    ell_g: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Hydraulic aperture w and dw/dg_n from the normal jump g_n and contact pressure sigma_c.
 
     In contact: w = w_m K_w / (K_w + sigma_c) == w_m (1 - (sigma_c/K_w) / (1 + (sigma_c/K_w)) )
     Open: w = w_m + g_n
+    Smoothed (ell_g > 0): w = w_m K_w / (K_w + sigma_c) + <g_n>, with the smoothed bracket, which
+    tends to each branch away from g_n = 0.
     """
-    closed = sigma_c > 0.0
     w_closed = w_m * K_w / (K_w + sigma_c)
-    w = np.where(closed, w_closed, w_m + g_n)
-    dw_dg = np.where(closed, -w_closed / (K_w + sigma_c) * dsigma_c_dg, 1.0)
+    dw_closed = -w_closed / (K_w + sigma_c) * dsigma_c_dg
+    opening, dopening = smooth_bracket(g_n, ell_g)
+    closed = sigma_c > 0.0
+    w = np.where(ell_g > 0.0, w_closed + opening, np.where(closed, w_closed, w_m + g_n))
+    dw_dg = np.where(ell_g > 0.0, dw_closed + dopening, np.where(closed, dw_closed, 1.0))
     return w, dw_dg

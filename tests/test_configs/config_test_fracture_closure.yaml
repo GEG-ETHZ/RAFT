@@ -64,6 +64,8 @@ simulation:
   timestep_min: 1.0
   timestep_max: 1.0
   solver_type: monolithic
+  mechanics_controls:
+    penalty_factor: 10.0   # stiff contact, close to rigid
 
   # Output
   output_frequency: 1

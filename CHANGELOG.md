@@ -50,6 +50,9 @@ pre-release. Starting with `1.0.0`, the project will follow SemVer strictly.
   smooths the traction where loading turns to unloading. `Fracture.vtk` gains
   the tangential jump and, with cohesion, the damage and the cohesive normal
   and shear tractions.
+- **Contact smoothing** — `mechanics_controls.contact_smoothing_stress` smooths
+  the open–closed switch of the contact pressure and the hydraulic aperture at
+  zero normal jump, so both tangents are continuous across the opening front.
 - **Interface viscosity** — `mechanics_controls.interface_viscosity_coefficient`
   adds a traction proportional to the jump rate on bonded fracture points, to
   stabilize the softening branch, with a viscosity scaled by the steepest

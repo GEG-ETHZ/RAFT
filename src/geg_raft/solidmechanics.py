@@ -489,13 +489,24 @@ def fracture_face_nodes(mesh: dict[str, Any]) -> npt.NDArray[np.int64]:
     return face_nodes
 
 
-def element_penalty(
+def contact_smoothing_length(
+    k_N: npt.NDArray[np.float64], controls: dict[str, Any]
+) -> npt.NDArray[np.float64]:
+    """Smoothing length ell_g = sigma_s / (k_N ln 2) of the g_n brackets, so the smoothed contact pressure at
+    g_n = 0 is sigma_s on every element; zero (exact brackets) when sigma_s = 0.
+    """
+    sigma_s = controls["mechanics_controls"]["contact_smoothing_stress"]
+    ell_g: npt.NDArray[np.float64] = sigma_s / (k_N * np.log(2.0))
+    return ell_g
+
+
+def element_contact_stiffness(
     mesh: dict[str, Any], material: dict[str, Any], controls: dict[str, Any]
 ) -> npt.NDArray[np.float64]:
-    """Contact penalty eps_N = c_N E / h per fracture element, (ne_f,).
+    """Contact penalty stiffness k_N = c_N E / h per fracture element, (ne_f,).
 
     E is the mean Young's modulus of the two adjacent matrix elements and h the mean element length of
-    the fracture. A per-fracture h keeps the penalty uniform where the cutter leaves uneven segments.
+    the fracture. A per-fracture h keeps k_N uniform where the cutter leaves uneven segments.
     """
     fmesh = mesh["fracture_mesh"]
     nodes_f = fmesh["nodes"]
@@ -509,11 +520,11 @@ def element_penalty(
     for elems in fmesh["region_lists"]:
         h[elems] = lengths[elems].mean()
 
-    penalty = np.empty(conn_f.shape[0])
+    k_N = np.empty(conn_f.shape[0])
     for e in range(conn_f.shape[0]):
         E = np.mean([_get_region_value(youngs, regions[e_m]) for e_m in fmesh["matrix_conn"][e]])
-        penalty[e] = factor * E / h[e]
-    return penalty
+        k_N[e] = factor * E / h[e]
+    return k_N
 
 
 def integrate_fracture_interface(
@@ -531,7 +542,7 @@ def integrate_fracture_interface(
     mesh_data = _get_region_mesh_data(mesh, is_fracture=True, is_well=False)
     nodes_f = fmesh["nodes"]
     sigma_0 = material["sigma_0"]
-    penalty_e = element_penalty(mesh, material, controls)
+    k_N_e = element_contact_stiffness(mesh, material, controls)
     w_m_e = material["fracture"]["w_m"]
     ne_f, nne_f = np.asarray(fmesh["conn"]).shape
     points_e = np.zeros((ne_f, 0), dtype=np.int64)
@@ -544,7 +555,7 @@ def integrate_fracture_interface(
     cols_N: list[npt.NDArray[np.int64]] = []
     vals_N: list[npt.NDArray[np.float64]] = []
     weights: list[npt.NDArray[np.float64]] = []
-    penalty: list[npt.NDArray[np.float64]] = []
+    k_N: list[npt.NDArray[np.float64]] = []
     element: list[npt.NDArray[np.int64]] = []
     fracture: list[npt.NDArray[np.int64]] = []
     w_m: list[npt.NDArray[np.float64]] = []
@@ -599,7 +610,7 @@ def integrate_fracture_interface(
             sigma_0_q = N_pos[:, 0, :] @ sigma_0[enodes_pos]
             traction_0.append(np.array([_voigt_traction(sigma_0_q[q], n) for q in range(nq)]))
             weights.append(np.asarray(wJ, dtype=np.float64).ravel())
-            penalty.append(np.full(nq, penalty_e[e]))
+            k_N.append(np.full(nq, k_N_e[e]))
             element.append(np.full(nq, e, dtype=np.int64))
             fracture.append(np.full(nq, r, dtype=np.int64))
             w_m.append(np.full(nq, w_m_e[e]))
@@ -630,11 +641,13 @@ def integrate_fracture_interface(
 
     K_upf = csc_matrix(-(jump_normal.T @ diags(w) @ shape_f))
     F_fracture_0 = np.asarray(jump.T @ (w[:, None] * np.vstack(traction_0)).ravel()).reshape(-1, 1)
+    k_N_q = np.concatenate(k_N)
     interface = FractureInterface(
         jump,
         jump_normal,
         w,
-        np.concatenate(penalty),
+        k_N_q,
+        contact_smoothing_length(k_N_q, controls),
         element_q,
         np.concatenate(fracture),
         np.concatenate(w_m),
@@ -686,7 +699,7 @@ def fracture_interface_force(
 
     # contact: -sigma_c n and tangent -dsigma_c/dg_n n n^T
     g_n = np.sum(jump * normal, axis=1)
-    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.penalty)
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.k_N, interface.ell_g)
     traction = -sigma_c[:, None] * normal
     tangent_q = -dsigma_c_dg[:, None, None] * (normal[:, :, None] * normal[:, None, :])  # (nq, nsd, nsd)
 
@@ -725,10 +738,10 @@ def fracture_interface_force(
 def fracture_aperture(interface: FractureInterface, u: npt.NDArray[np.float64]) -> FractureAperture:
     """Bandis-Barton aperture at the Gauss points and element nodes for every column of u, and dw/du."""
     g_n = interface.jump_normal @ u  # (nq, n_levels)
-    penalty = interface.penalty[:, None]
-    sigma_c, dsigma_c_dg = penalty_contact(g_n, penalty)
+    ell_g = interface.ell_g[:, None]
+    sigma_c, dsigma_c_dg = penalty_contact(g_n, interface.k_N[:, None], ell_g)
     w, dw_dg = bandis_barton_aperture(
-        g_n, sigma_c, dsigma_c_dg, interface.w_m[:, None], interface.K_w[:, None]
+        g_n, sigma_c, dsigma_c_dg, interface.w_m[:, None], interface.K_w[:, None], ell_g
     )
     gauss = w[interface.points]  # (ne_f, nq_e, n_levels)
     element_nodal = interface.projection @ gauss  # (ne_f, nne_f, n_levels)
