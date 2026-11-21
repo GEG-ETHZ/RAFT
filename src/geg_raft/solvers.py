@@ -330,7 +330,7 @@ def _aitken_relax(
             if del_sign == 0:
                 del_sign = 1.0
                 
-            delta = del_sign * max(abs_min, abs(delta))
+            delta = del_sign * max(abs_min, abs(aitken_para))
             delta = max(min(max_relax, delta), min_relax)
 
     if np.isnan(delta):
@@ -955,7 +955,7 @@ def monolithic_time_integration(  # noqa
     This monolithic iterative scheme uses Newton-Raphson to solve for temperature
     and pressure monolithically.
     """
-    debug_plot_on = True
+    debug_plot_on = False
     export_unconverged = False  # write the fields every Newton iteration to <output>/unconverged
     rate_order = controls["rate_order"]
     physics = controls["physics"]
