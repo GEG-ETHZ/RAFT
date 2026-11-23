@@ -225,6 +225,10 @@ Each side takes the advective exchange only if it has advection on. With matrix 
 
 $Nu$ is the Nusselt number based on the parallel-plate hydraulic diameter $2w$, $F$ is the heat transfer factor, $p_m$/$T_m$ are the matrix pressure/temperature at the fracture face, and $p_f/T_f$ are the mean pressure and temperature across the fracture aperture. Heat and mass exchange between the fractures and matrix do not assume thermal equilibrium across the aperture. Cubic-law flow is laminar, for which steady, fully-developed flow between parallel plates gives $Nu = 7.54$ at constant wall temperature and $Nu = 8.23$ at constant wall heat flux (Bejan, 2013). The coupled fracture-matrix problem fits neither boundary condition exactly, so their average, $Nu = 7.885$, is used. The factor $F$ scales the exchange: $F < 1$ reduces it, $F = 0$ insulates the fracture, and local thermal equilibrium can be approached with an arbitrarily large $F$.
 
+![Conceptual Coupling Diagram](figures/couplingdiagram.png)
+_Process coupling and idealizations between rock, fracture, and well domains. The true pressure/temperature distributions are illustrated compared against the discontinuous distributions at the interfaces with wells and fractures. As lower-dimensional bodies, temperature and pressure fields in the fracture and wells represent the average pressure and temperature over their respective cross-sections. Fractures permit a discontinuity across the fracture plane ($T_m^+ \neq T_m^-$), while wells do not permit discontinuities ($T_m^+ = T_m^- = T_m$)._
+
+
 ### Mechanics across fractures
 #### Contact
 With mechanics on, displacement may jump across the fracture. At each fracture Gauss point, the jump is taken between the positive and negative matrix elements of the fracture element, with the unit normal $\vec{n}$ pointing from the negative to the positive side:
@@ -245,7 +249,7 @@ The pressure and in-situ terms are linear and integrated once with the other for
 
 $$\textbf{K}_{uu}^c = \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top k_N H(-g_n)\,\vec{n}\vec{n}^\top[\![\textbf{N}_u]\!]\,d\Gamma$$
 
-with $H(0) = 1$.
+with $H(0) = 1$. The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
 
 With `contact_smoothing_stress` $\sigma_s > 0$, the bracket is smoothed over a length $\ell_g$, chosen per fracture element so that the contact pressure at $g_n = 0$ is $\sigma_s$:
 
@@ -253,24 +257,31 @@ $$\langle x\rangle_\ell = \ell_g\ln\!\left(1 + e^{x/\ell_g}\right), \qquad \frac
 
 It tends to $\langle x\rangle$ for $\lvert x\rvert \gg \ell_g$, so $\sigma_c = k_N\langle -g_n\rangle_\ell$ and its tangent pass continuously from the penalty to zero across $g_n = 0$.
 
-The rock matrix force acts on the change in pressure $p-p_0$, while the fracture columns act on the total fracture pressure, which loads the faces in full.
+![Contact Stress](figures/contact_stress.png)
+_Contact stress with and without smoothing. The change in slope at $g_n=0$ can make convergence difficult. Smoothed contact creates a seamless transition in the tangent, but leaves a small residual stress after opening._
+
+
 
 #### Cohesion
 A cemented fracture carries tension and shear across its faces until the bond breaks. The cohesive law acts on the effective displacement of the opening and the tangential jump:
 
 $$\vec{g}_t = \left(\textbf{I} - \vec{n}\vec{n}^\top\right)[\![\vec{u}]\!], \qquad \Delta = \sqrt{\langle g_n\rangle^2 + \vec{g}_t\cdot\vec{g}_t}$$
 
-in which $\Delta$ is the effective displacement, combining both shear and normal displacement. The envelope $t_e(\Delta)$, with tensile strength $f_u$, fracture energy $G_c$, and critical displacement $w_c$, is one of:
+in which $\Delta$ is the effective displacement, combining both shear and normal displacement. The envelope $t_e(x)$ of an effective displacement $x$, with tensile strength $f_u$, fracture energy $G_c$, and critical displacement $w_c$, is one of:
 
-$$t_e = \begin{cases} f_u\,\dfrac{\Delta}{w_c}, \quad w_c = \dfrac{2G_c}{f_u} & \text{linear} \\[2ex] f_u\,\dfrac{\Delta}{w_w} \ \ (\Delta < w_w), \quad f_u\,\dfrac{w_c - \Delta}{w_c - w_w} \ \ (\Delta \ge w_w), \quad w_w = a\,w_c, \quad w_c = \dfrac{2G_c}{f_u} & \text{bilinear} \\[2ex] \dfrac{27}{4}f_u\,\dfrac{\Delta}{w_c}\left(1 - \dfrac{\Delta}{w_c}\right)^2, \quad w_c = \dfrac{16G_c}{9f_u} & \text{cubic} \end{cases}$$
+$$t_e(x) = \begin{cases} f_u\,\dfrac{x}{w_c}, \quad w_c = \dfrac{2G_c}{f_u} & \text{linear} \\[2ex] f_u\,\dfrac{x}{w_w} \ \ (x < w_w), \quad f_u\,\dfrac{w_c - x}{w_c - w_w} \ \ (x \ge w_w), \quad w_w = a\,w_c, \quad w_c = \dfrac{2G_c}{f_u} & \text{bilinear} \\[2ex] \dfrac{27}{4}f_u\,\dfrac{x}{w_c}\left(1 - \dfrac{x}{w_c}\right)^2, \quad w_c = \dfrac{16G_c}{9f_u} & \text{cubic} \end{cases}$$
 
-and $t_e = 0$ for $\Delta \ge w_c$. Each dissipates $G_c$ in pure opening. The linear law is elastic up to $f_u$ and then fully debonded. The bilinear law adds a softening branch from the peak at $w_w$ for numerical robustness, and recovers the linear law as $a \to 1$. The cubic law peaks at $\Delta_p = w_c/3$  (Tvegaard 1990).
+and $t_e = 0$ for $x \ge w_c$. Each dissipates $G_c$ in pure opening. The linear law is elastic up to $f_u$ and then fully debonded. The bilinear law adds a softening branch from the peak at $w_w$ for numerical robustness, and recovers the linear law as $a \to 1$. The cubic law peaks at $\Delta_p = w_c/3$  (Tvegaard 1990).
 
 The damage is irreversible. Each fracture Gauss point holds the largest effective displacement reached, $\Delta_{max}$, committed at the end of each accepted step. With $\Delta_{max}^{c}$ the committed value, the traction magnitude is the envelope before the peak, where the law is reversible, and a secant to the origin after it:
 
 $$t = \begin{cases} 
-t_e(\Delta) & \delta_{max}^{c} \le \Delta_p \\
- \dfrac{t_e(\kappa)}{\kappa}\,\Delta & \delta_{max}^{c} > \Delta_p \end{cases}$$
+t_e(\Delta) & \Delta_{max}^{c} \le \Delta_p \\
+ \dfrac{t_e(\kappa)}{\kappa}\,\Delta & \Delta_{max}^{c} > \Delta_p \end{cases}$$
+
+The branch of $t_e$ is set by its argument. After the peak, $\kappa \ge \Delta_{max}^{c} > \Delta_p$, so $t_e(\kappa)$ is on the softening branch and unloading follows the secant from $(\kappa, t_e(\kappa))$ to the origin. For the bilinear law,
+
+$$t = f_u\,\frac{w_c - \kappa}{w_c - w_w}\,\frac{\Delta}{\kappa}, \qquad \Delta_{max}^{c} > w_w$$
 
 To prevent oscillations around the traction peak, the damage traction is smoothed using the damage driver $\kappa$ is $\max(\Delta_{max}^{c}, \Delta)$ in a band of half-width $w_\varepsilon = c_\varepsilon w_c$ (`damage_peak_smoothing_coefficient`) so that the tangent is continuous.
 
@@ -300,6 +311,10 @@ with $H(0) = 0$, so the normal stiffness at $g_n = 0$ belongs to the contact. At
 
 $$\textbf{R}_u \mathrel{+}= \int_{\Gamma_f}[\![\textbf{N}_u]\!]^\top\left(\vec{t}_{coh} - \sigma_c\,\vec{n}\right)d\Gamma$$
 
+![Cohesive Laws](figures/cohesive_laws.png)
+_Coheisve laws for fracture opening, illustrated for mode I fracture opening. All three laws dissipate the same fracture energy $G_c$. Past the peak strength,unloading the cubic and bilinear laws unload and reload along the damaged secant. Smoothing can be applied to the damage peak to help convergence._
+
+
 ### Aperture
 With mechanics on, the hydraulic aperture follows the contact state through the Bandis–Barton closure law, written with the unstressed aperture $w_m$ (the `aperture` input / the maximum aperture) and the normal stiffness $K_w$ (`normal_stiffness`):
 
@@ -311,7 +326,7 @@ $$\bar{w}_{a} = \frac{\sum_q N_a(\xi_q)\,W_q\lvert J\rvert\,w_q}{\sum_q N_a(\xi_
 
 The earlier time levels of $\partial(w\rho_f)/\partial t$ and $\partial(w\rho_f u_f)/\partial t$ apply the same law to the displacement of each time level. The displacement enters the fracture flow and heat only through $w$, with the Jacobian
 
-$$\frac{\partial \textbf{R}}{\partial \textbf{u}} = \frac{\partial \textbf{R}}{\partial \textbf{w}}\,\text{diag}\!\left(\frac{\partial w}{\partial g_n}\right)\textbf{G}_n, \qquad \frac{\partial w}{\partial g_n} = \begin{cases}\dfrac{\epsilon_N\,w^2}{w_m K_w} & \text{in contact} \\[1ex] 1 & \text{open}\end{cases}$$
+$$\frac{\partial \textbf{R}}{\partial \textbf{u}} = \frac{\partial \textbf{R}}{\partial \textbf{w}}\,\text{diag}\!\left(\frac{\partial w}{\partial g_n}\right)\textbf{G}_n, \qquad \frac{\partial w}{\partial g_n} = \begin{cases}\dfrac{k_N\,w^2}{w_m K_w} & \text{in contact} \\[1ex] 1 & \text{open}\end{cases}$$
 
 with $\textbf{G}_n$ the normal jump at the Gauss points. With contact smoothing, the two branches are summed rather than switched, with the smoothed bracket on the opening:
 
@@ -319,10 +334,12 @@ $$w = \frac{w_m K_w}{K_w + \sigma_c} + \langle g_n\rangle_\ell, \qquad \frac{\pa
 
 which tends to the Bandis–Barton aperture when closed and to $w_m + g_n$ when open. The tangent omits the aperture dependence of the SUPG stabilization. With mechanics off, $w$ is the constant `aperture`, $w_m$.
 
+![Aperture](figures/aperture_bandis_barton.png)
+_Aperture as a function of contact stress. In contact, the Bandis-Barton controls the aperture. When open, aperture is a function of the normal gap between faces._
+
+
 **Initial state.** The initial displacement is zero and it is assumed that the specified initial forces (pressure and in-situ stress) are in equilibrium. If not, the system moves dynamically to equilibrium from the unbalanced initial condition. Only `BC_compatible` starts in equilibrium: its steady-state solve includes the force balance, with the fractures in contact at $\sigma_{c,0} = -\vec{n}\cdot\boldsymbol{\sigma}_0\cdot\vec{n} - p_{f,0}$. The solved $\textbf{u}$, $p$ and $T$ become the references $\textbf{u}_0$, $p_0$ and $T_0$. The strain in the porosity and the stress use $\textbf{u} - \textbf{u}_0$; the displacement output is the total $\textbf{u}$. 
 
-![Conceptual Coupling Diagram](figures/couplingdiagram.png)
-_Process coupling and idealizations between rock, fracture, and well domains. The true pressure/temperature distributions are illustrated compared against the discontinuous distributions at the interfaces with wells and fractures. As lower-dimensional bodies, temperature and pressure fields in the fracture and wells represent the average pressure and temperature over their respective cross-sections. Fractures permit a discontinuity across the fracture plane ($T_m^+ \neq T_m^-$), while wells do not permit discontinuities ($T_m^+ = T_m^- = T_m$)._
 
 ## Fracture Mesh Cutting Algorithm
 Fracture coupling requires a mesh that conforms to each fracture line, so RAFT cuts an ordinary matrix mesh to fit (2D only).

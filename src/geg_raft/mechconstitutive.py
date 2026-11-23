@@ -124,22 +124,31 @@ def cohesive_envelope(
     if params.law == "cubic":
         # Cubic cohesive law - Tvegaard 1990
         x = np.minimum(delta / w_c, 1.0)
-        secant = 6.75 * f_u / w_c * (1.0 - x) ** 2  # 6.75 = 27 / 4
-        slope = 6.75 * f_u / w_c * (1.0 - x) * (1.0 - 3.0 * x)
-        return secant * delta, np.where(bonded, slope, 0.0), secant
+        t_e = 27.0 / 4.0 * f_u * x * (1.0 - x) ** 2
+        slope = np.where(bonded, 27.0 / 4.0 * f_u / w_c * (1.0 - x) * (1.0 - 3.0 * x), 0.0)
+        # secant from the law directly, so delta = 0 gives K_0 rather than 0 / 0
+        secant = 27.0 / 4.0 * f_u / w_c * (1.0 - x) ** 2
+        return t_e, slope, secant
+
     if params.law == "bilinear":
-        # linear then softening
+        # linear rise to the peak at w_w, then softening to w_c
         w_w = params.weakening_ratio * w_c
         rising = delta < w_w
+        k_rise = f_u / w_w
         k_soft = f_u / (w_c - w_w)
-        t_e = np.where(rising, f_u * delta / w_w, np.where(bonded, k_soft * (w_c - delta), 0.0))
-        slope = np.where(rising, f_u / w_w, np.where(bonded, -k_soft, 0.0))
-        # secant on the softening branch, delta >= w_w > 0
-        secant = np.where(rising, f_u / w_w, t_e / np.where(rising, 1.0, delta))
+        t_e = np.where(rising, k_rise * delta, np.where(bonded, k_soft * (w_c - delta), 0.0))
+        slope = np.where(rising, k_rise, np.where(bonded, -k_soft, 0.0))
+        # softening secant; delta >= w_w > 0 wherever it is used
+        delta_soft = np.where(rising, w_w, delta)
+        secant_soft = np.where(bonded, k_soft * (w_c - delta_soft) / delta_soft, 0.0)
+        secant = np.where(rising, k_rise, secant_soft)
         return t_e, slope, secant
-    # linear
+
+    # linear rise to f_u at w_c, then debonded
     secant = np.where(bonded, f_u / w_c, 0.0)
-    return secant * delta, secant, secant
+    t_e = secant * delta
+    slope = secant
+    return t_e, slope, secant
 
 
 def cohesive_damage(
@@ -165,13 +174,47 @@ def cohesive_initial_history(
     w_c = params.w_c
     if params.law == "cubic":
         delta_max = w_c * (1.0 - 2.0 / 3.0 * np.sqrt(1.0 - D_0))
+
     elif params.law == "bilinear":
         w_w = params.weakening_ratio * w_c
         delta_max = w_w * w_c / (w_w + (1.0 - D_0) * (w_c - w_w))
+
     else:
         # linear: intact or debonded
         delta_max = D_0 * w_c
     return np.where(D_0 > 0.0, delta_max / HISTORY_MARGIN, 0.0)
+
+
+def _outer(a: npt.NDArray[np.float64], b: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Outer product a_q b_q^T at each point q: (nq, n), (nq, m) -> (nq, n, m)."""
+    nq = a.shape[0]
+    product: npt.NDArray[np.float64] = a.reshape(nq, -1, 1) * b.reshape(nq, 1, -1)
+    return product
+
+
+def _damage_driver(
+    delta: npt.NDArray[np.float64], h: npt.NDArray[np.float64], w_eps: npt.NDArray[np.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Damage driver kappa = max(h, delta), smoothed in a band of half-width w_eps about the unloading
+    point h, and d(kappa)/d(delta).
+    """
+    dx = delta - h  # offset from the unloading point
+    unloading = dx <= -w_eps
+    in_band = np.abs(dx) < w_eps
+
+    # loading: kappa follows delta
+    kappa = delta.copy()
+    dkappa = np.ones_like(delta)
+
+    # unloading: kappa held at h
+    kappa[unloading] = h[unloading]
+    dkappa[unloading] = 0.0
+
+    # band: quadratic blend from h to delta
+    s = dx[in_band] + w_eps[in_band]
+    kappa[in_band] = h[in_band] + s**2 / (4.0 * w_eps[in_band])
+    dkappa[in_band] = s / (2.0 * w_eps[in_band])
+    return kappa, dkappa
 
 
 def cohesive_traction(
@@ -187,45 +230,54 @@ def cohesive_traction(
     the peak and from the secant t_e(kappa) / kappa delta after it, with kappa = max(h, delta) smoothed in a
     band of half-width w_eps about the unloading point h = HISTORY_MARGIN delta_max_c.
     """
-    nsd = normal.shape[1]
+    nq, nsd = normal.shape
     gamma = params.gamma
-    # normal and tangential jumps
-    g_n = np.sum(jump * normal, axis=1)
-    g_t = jump - g_n[:, None] * normal
-    open_n = np.maximum(g_n, 0.0)
-    delta = np.sqrt(open_n**2 + np.sum(g_t * g_t, axis=1))
 
-    # envelope branch: intact before the peak
-    _, slope_env, secant_env = cohesive_envelope(delta, params)
-    # secant branch: damaged, or debonded at w_c
+    # Effective displacement delta = sqrt(<g_n>^2 + g_t . g_t)
+    g_n = np.sum(jump * normal, axis=1)  # (nq,)
+    g_t = jump - g_n.reshape(nq, 1) * normal  # (nq, nsd)
+    g_n_open = np.maximum(g_n, 0.0)
+    delta = np.sqrt(g_n_open**2 + np.sum(g_t * g_t, axis=1))  # (nq,)
+
+    # Regime of each point from its unloading point h
     h = HISTORY_MARGIN * delta_max_c
-    x = delta - h
-    w_eps = params.w_eps
-    in_band = np.abs(x) < w_eps
-    band = h + (x + w_eps) ** 2 / (4.0 * w_eps)
-    kappa = np.where(x <= -w_eps, h, np.where(x >= w_eps, delta, band))
-    dkappa = np.where(x <= -w_eps, 0.0, np.where(in_band, (x + w_eps) / (2.0 * w_eps), 1.0))
-    _, slope_k, secant_k = cohesive_envelope(kappa, params)
-    # kappa >= h > 0 wherever the secant branch is used
-    dsecant_k = (slope_k - secant_k) / np.where(kappa > 0.0, kappa, 1.0)
-    damaged = (h > params.delta_p) | (h >= params.w_c)
-    t_over_delta = np.where(damaged, secant_k, secant_env)
-    dt_ddelta = np.where(damaged, secant_k + delta * dsecant_k * dkappa, slope_env)
+    damaged = (h > params.delta_p) | (h >= params.w_c)  # h >= w_c: linear law, delta_p = w_c
+    intact = ~damaged
 
-    # traction t / delta (<g_n> n + gamma g_t)
-    a = open_n[:, None] * normal + gamma[:, None] * g_t  # (nq, nsd)
-    b = open_n[:, None] * normal + g_t  # (nq, nsd), delta * d(delta)/d([[u]])
-    traction = t_over_delta[:, None] * a
+    # Secant stiffness k_s = t / delta, finite at delta = 0, and dt/d(delta)
+    k_s = np.empty(nq)
+    dt_ddelta = np.empty(nq)
 
-    # tangent t / delta (H n n^T + gamma P_t) + (dt/ddelta - t / delta) / delta^2 a b^T
-    nn_T = normal[:, :, None] * normal[:, None, :]  # (nq, nsd, nsd)
+    # intact: reversible envelope, t = t_e(delta)
+    _, slope, secant = cohesive_envelope(delta[intact], params.at(np.flatnonzero(intact)))
+    k_s[intact] = secant
+    dt_ddelta[intact] = slope
+
+    # damaged: secant from the damage driver, t = t_e(kappa) / kappa * delta, with kappa >= h > 0
+    delta_d = delta[damaged]
+    kappa, dkappa = _damage_driver(delta_d, h[damaged], params.w_eps[damaged])
+    _, slope_k, secant_k = cohesive_envelope(kappa, params.at(np.flatnonzero(damaged)))
+    k_s[damaged] = secant_k
+    dt_ddelta[damaged] = secant_k + delta_d * (slope_k - secant_k) / kappa * dkappa
+
+    # Cohesive traction t_coh = t / delta (<g_n> n + gamma g_t)
+    direction = g_n_open.reshape(nq, 1) * normal + gamma.reshape(nq, 1) * g_t  # (nq, nsd)
+    t_coh = k_s.reshape(nq, 1) * direction
+
+    # Tangent d(t_coh)/d([[u]]) = k_s (H n n^T + gamma P_t) + (dt/d(delta) - k_s) / delta^2 direction b^T,
+    # with H = 1 where open and b = delta d(delta)/d([[u]]) = <g_n> n + g_t
+    nn_T = _outer(normal, normal)  # (nq, nsd, nsd)
     P_t = np.eye(nsd) - nn_T
-    H = (g_n > 0.0).astype(np.float64)
-    tangent = t_over_delta[:, None, None] * (H[:, None, None] * nn_T + gamma[:, None, None] * P_t)
-    safe = np.where(delta > 0.0, delta, 1.0)
-    coeff = np.where(delta > 0.0, (dt_ddelta - t_over_delta) / safe**2, 0.0)
-    tangent = tangent + coeff[:, None, None] * a[:, :, None] * b[:, None, :]
-    return traction, tangent, delta
+    H = (g_n > 0.0).astype(np.float64).reshape(nq, 1, 1)
+    tangent = k_s.reshape(nq, 1, 1) * (H * nn_T + gamma.reshape(nq, 1, 1) * P_t)
+
+    # second term, zero where delta = 0 (closed with no shear)
+    b = g_n_open.reshape(nq, 1) * normal + g_t  # (nq, nsd)
+    has_delta = delta > 0.0
+    correction = np.zeros(nq)
+    correction[has_delta] = (dt_ddelta[has_delta] - k_s[has_delta]) / delta[has_delta] ** 2
+    tangent = tangent + correction.reshape(nq, 1, 1) * _outer(direction, b)
+    return t_coh, tangent, delta
 
 
 def bandis_barton_aperture(
@@ -243,10 +295,15 @@ def bandis_barton_aperture(
     Smoothed (ell_g > 0): w = w_m K_w / (K_w + sigma_c) + <g_n>, with the smoothed bracket, which
     tends to each branch away from g_n = 0.
     """
+    # Bandis-Barton
     w_closed = w_m * K_w / (K_w + sigma_c)
     dw_closed = -w_closed / (K_w + sigma_c) * dsigma_c_dg
-    opening, dopening = smooth_bracket(g_n, ell_g)
     closed = sigma_c > 0.0
+
+    # Smoothed opening
+    opening, dopening = smooth_bracket(g_n, ell_g)
+    
+    # Smoothed aperture across contact
     w = np.where(ell_g > 0.0, w_closed + opening, np.where(closed, w_closed, w_m + g_n))
     dw_dg = np.where(ell_g > 0.0, dw_closed + dopening, np.where(closed, dw_closed, 1.0))
     return w, dw_dg

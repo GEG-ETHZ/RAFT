@@ -45,7 +45,7 @@ class CohesiveParameters:
         return cls("", 0.0, np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0), np.empty(0))
 
     def at(self, fracture: npt.NDArray[np.int64]) -> CohesiveParameters:
-        """Parameters at the points of a point-to-fracture index, (nq,) each."""
+        """Parameters at an index, such as a point-to-fracture index or a subset of points."""
         return CohesiveParameters(
             self.law,
             self.weakening_ratio,
