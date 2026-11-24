@@ -127,10 +127,10 @@ physics:
 simulation:
   # Time
   t_start: 0.0
-  t_end: 3.0e+7
+  t_end: 9.467e+8
   timestep: 10.0
   timestep_min: 1.0
-  timestep_max: 1.0e+6
+  timestep_max: 1.0e+8
 
   # Output
   output_frequency: 1
