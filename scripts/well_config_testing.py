@@ -22,11 +22,13 @@ Outputs are written under:
 Run with:
     uv run python scripts/well_config_testing.py
 
-Choose a configuration from the displayed menu, or bypass it with:
+Choose a configuration and case(s) from the displayed menus, or bypass them with:
     uv run python scripts/well_config_testing.py --setup doublet
     uv run python scripts/well_config_testing.py --setup five-spot
     uv run python scripts/well_config_testing.py --setup winerack
     uv run python scripts/well_config_testing.py --setup all
+    uv run python scripts/well_config_testing.py --setup doublet --cases 1,3
+    uv run python scripts/well_config_testing.py --setup all --cases all
 """
 
 import argparse
@@ -47,6 +49,7 @@ from raft.subsurface import main  # noqa: E402
 BASE_CONFIG = ROOT / "config" / "config_symmetric_doublet.yaml"
 Verbosity = Literal["quiet", "lite", "full"]
 SetupChoice = Literal["all", "doublet", "five-spot", "winerack"]
+CaseNumber = Literal[1, 2, 3]
 
 
 class CaseDef(TypedDict):
@@ -131,9 +134,53 @@ def _prompt_setup() -> str:
         print("Invalid selection. Please enter a number from the list.")
 
 
-def run_all_cases(verbosity: Verbosity = "lite", setup_choice: SetupChoice = "all") -> None:
+def _parse_case_selection(raw_selection: str) -> list[CaseNumber]:
+    """Parse a case selection string into one or more case numbers."""
+    selection = raw_selection.strip().lower()
+    all_cases = cast(list[CaseNumber], list(range(1, len(CASE_DEFS) + 1)))
+    if selection == "all":
+        return all_cases
+
+    case_numbers: list[CaseNumber] = []
+    for part in selection.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise ValueError("Case selection must be 'all' or comma-separated numbers like 1,3.")
+        case_number = int(part)
+        if case_number < 1 or case_number > len(CASE_DEFS):
+            raise ValueError(f"Case number {case_number} is out of range.")
+        case_number_typed = cast(CaseNumber, case_number)
+        if case_number_typed not in case_numbers:
+            case_numbers.append(case_number_typed)
+
+    if not case_numbers:
+        raise ValueError("No valid case numbers were provided.")
+    return case_numbers
+
+
+def _prompt_cases() -> list[CaseNumber]:
+    """Ask the user which case(s) to run."""
+    print("\nChoose case(s) to run:")
+    for number, case in enumerate(CASE_DEFS, start=1):
+        print(f"  {number}. {case['title']}")
+    print("  all. all cases")
+
+    while True:
+        selection = input("Enter case number(s) (e.g. 1,3) or 'all': ").strip()
+        try:
+            return _parse_case_selection(selection)
+        except ValueError:
+            print("Invalid selection. Enter 'all' or one/more comma-separated case numbers from the list.")
+
+
+def run_all_cases(
+    verbosity: Verbosity = "lite", setup_choice: SetupChoice = "all", cases: list[CaseNumber] | None = None
+) -> None:
     """Run all requested cases for each well-pattern setup."""
     setups = SETUPS.values() if setup_choice == "all" else [SETUPS[setup_choice]]
+    selected_cases = set(cases) if cases is not None else set(range(1, len(CASE_DEFS) + 1))
     for setup in setups:
         setup_name = setup["name"]
         setup_config = setup["config"]
@@ -146,6 +193,8 @@ def run_all_cases(verbosity: Verbosity = "lite", setup_choice: SetupChoice = "al
         with TemporaryDirectory(prefix="raft_well_cases_") as tmp_dir:
             tmp_path = Path(tmp_dir)
             for idx, case in enumerate(CASE_DEFS, start=1):
+                if idx not in selected_cases:
+                    continue
                 title = case["title"]
                 gravity = case["gravity"]
                 te_cooling = case["te_cooling"]
@@ -179,14 +228,25 @@ def main_cli() -> None:
     parser.add_argument(
         "--setup",
         choices=("all", *SETUPS),
-        help="Skip the menu and select a configuration; each runs all three cases.",
+        help="Skip the setup menu and select a configuration.",
+    )
+    parser.add_argument(
+        "--cases",
+        help="Skip the case menu and select case(s): 'all' or comma-separated numbers (e.g. 1,3).",
     )
     args = parser.parse_args()
     try:
         setup_choice = args.setup if args.setup is not None else _prompt_setup()
+        case_selection = _parse_case_selection(args.cases) if args.cases is not None else _prompt_cases()
+    except ValueError as exc:
+        parser.exit(2, f"\n{exc}\n")
     except EOFError:
-        parser.exit(2, "\nNo selection provided. Run interactively or specify --setup.\n")
-    run_all_cases(verbosity=cast(Verbosity, args.verbosity), setup_choice=cast(SetupChoice, setup_choice))
+        parser.exit(2, "\nNo selection provided. Run interactively or specify --setup and --cases.\n")
+    run_all_cases(
+        verbosity=cast(Verbosity, args.verbosity),
+        setup_choice=cast(SetupChoice, setup_choice),
+        cases=case_selection,
+    )
 
 
 if __name__ == "__main__":

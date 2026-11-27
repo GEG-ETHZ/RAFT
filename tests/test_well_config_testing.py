@@ -9,10 +9,10 @@ from scripts import well_config_testing as runner
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        (["--setup", "all"], ["doublet", "five-spot", "winerack"]),
-        (["--setup", "doublet"], ["doublet"]),
-        (["--setup", "five-spot"], ["five-spot"]),
-        (["--setup", "winerack"], ["winerack"]),
+        (["--setup", "all", "--cases", "all"], ["doublet", "five-spot", "winerack"]),
+        (["--setup", "doublet", "--cases", "all"], ["doublet"]),
+        (["--setup", "five-spot", "--cases", "all"], ["five-spot"]),
+        (["--setup", "winerack", "--cases", "all"], ["winerack"]),
     ],
 )
 def test_setup_selection_runs_three_cases(
@@ -68,17 +68,27 @@ def test_menu_dispatches_selection(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], selection: str, expected: str
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["well_config_testing.py"])
-    monkeypatch.setattr("builtins.input", lambda _: selection)
-    calls: list[tuple[str, str]] = []
+    answers = iter([selection, "all"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    calls: list[tuple[str, str, list[int] | None]] = []
 
-    def fake_run_all_cases(verbosity: str, setup_choice: str) -> None:
-        calls.append((verbosity, setup_choice))
+    def fake_run_all_cases(verbosity: str, setup_choice: str, cases: list[int] | None = None) -> None:
+        calls.append((verbosity, setup_choice, cases))
 
     monkeypatch.setattr(runner, "run_all_cases", fake_run_all_cases)
     runner.main_cli()
-    assert calls == [("lite", expected)]
+    assert calls == [("lite", expected, [1, 2, 3])]
     output = capsys.readouterr().out
-    assert all(name in output for name in ("symmetric doublet", "symmetric five-spot", "wine-rack", "all"))
+    assert all(
+        name in output
+        for name in (
+            "symmetric doublet",
+            "symmetric five-spot",
+            "wine-rack",
+            "all",
+            "no gravity with TE cooling",
+        )
+    )
 
 
 def test_menu_reprompts_on_invalid_input(
@@ -88,6 +98,42 @@ def test_menu_reprompts_on_invalid_input(
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
     assert runner._prompt_setup() == "five-spot"
     assert capsys.readouterr().out.count("Invalid selection") == 3
+
+
+def test_case_menu_reprompts_on_invalid_input(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    answers = iter(["", "5", "hello", "1,3"])
+    monkeypatch.setattr("builtins.input", lambda _: next(answers))
+    assert runner._prompt_cases() == [1, 3]
+    assert capsys.readouterr().out.count("Invalid selection") == 3
+
+
+def test_case_selection_filters_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "doublet.yaml"
+    config = {
+        "mesh": {"file": "example.msh"},
+        "material": {"solid": {"b_BB": [1]}},
+        "simulation": {"output_directory": str(tmp_path / "doublet")},
+    }
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(runner, "SETUPS", {"doublet": {"name": "doublet", "config": config_path}})
+    monkeypatch.setattr(sys, "argv", ["well_config_testing.py", "--setup", "doublet", "--cases", "1,3"])
+
+    calls: list[float] = []
+
+    def fake_main(*, config_name: str, config_dir: Path, verbosity: str) -> None:
+        assert verbosity == "lite"
+        cfg = yaml.safe_load((config_dir / config_name).read_text(encoding="utf-8"))
+        calls.append(cfg["simulation"]["gravity"])
+        (tmp_path / "doublet" / Path(config_name).stem).mkdir(parents=True)
+
+    monkeypatch.setattr(runner, "main", fake_main)
+    runner.main_cli()
+    assert calls == [0.0, 10.0]
+    assert (tmp_path / "doublet" / "1 (no gravity with TE cooling)").is_dir()
+    assert (tmp_path / "doublet" / "3 (gravity and TE cooling)").is_dir()
+    assert not (tmp_path / "doublet" / "2 (no gravity w-o TE cooling)").exists()
 
 
 def test_menu_reports_end_of_input(
