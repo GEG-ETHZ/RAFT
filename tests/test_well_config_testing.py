@@ -15,7 +15,7 @@ from scripts import well_config_testing as runner
         (["--setup", "winerack", "--cases", "all"], ["winerack"]),
     ],
 )
-def test_setup_selection_runs_three_cases(
+def test_setup_selection_runs_all_cases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: list[str], expected: list[str]
 ) -> None:
     setups: dict[str, runner.SetupDef] = {}
@@ -46,7 +46,7 @@ def test_setup_selection_runs_three_cases(
     assert calls == [
         (key, gravity, cooling)
         for key in expected
-        for gravity, cooling in [(0.0, True), (0.0, False), (10.0, True)]
+        for gravity, cooling in [(case["gravity"], case["te_cooling"]) for case in runner.CASE_DEFS]
     ]
     for key in expected:
         for case in runner.CASE_DEFS:
@@ -130,7 +130,7 @@ def test_case_selection_filters_runs(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(runner, "main", fake_main)
     runner.main_cli()
-    assert calls == [0.0, 10.0]
+    assert calls == [runner.CASE_DEFS[0]["gravity"], runner.CASE_DEFS[2]["gravity"]]
     assert (tmp_path / "doublet" / "1 (no gravity with TE cooling)").is_dir()
     assert (tmp_path / "doublet" / "3 (gravity and TE cooling)").is_dir()
     assert not (tmp_path / "doublet" / "2 (no gravity w-o TE cooling)").exists()

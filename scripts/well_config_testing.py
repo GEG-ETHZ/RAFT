@@ -3,7 +3,7 @@
 Cases:
 1) gravity = 0, with pressure-temperature dependent permeability (TE cooling on)
 2) gravity = 0, without pressure-temperature dependent permeability (TE cooling off)
-3) gravity = 10, with pressure-temperature dependent permeability (TE cooling on)
+3) gravity = -9.81, with pressure-temperature dependent permeability (TE cooling on)
 
 Outputs are written under:
     outputs/symmetric_doublet/
@@ -80,7 +80,7 @@ CASE_DEFS: list[CaseDef] = [
     },
     {
         "title": "3 (gravity and TE cooling)",
-        "gravity": 10.0,
+        "gravity": -9.81,
         "te_cooling": True,
     },
 ]
